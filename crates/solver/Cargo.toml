@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "2D sketch constraint solver (planegcs FFI wrapper, later phases)."
+description = "2D sketch constraint solver: a pure-Rust Levenberg-Marquardt least-squares core."
 
 [dependencies]
+rmf-core = { workspace = true }

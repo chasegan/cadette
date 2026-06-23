@@ -2057,6 +2057,9 @@ dependencies = [
 [[package]]
 name = "rmf-solver"
 version = "0.1.0"
+dependencies = [
+ "rmf-core",
+]
 
 [[package]]
 name = "rmf-ui"

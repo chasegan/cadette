@@ -73,3 +73,115 @@ impl Profile {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Constraint-based 2D sketch
+//
+// The richer sketcher: points, lines, and circles related by geometric and
+// dimensional constraints, solved numerically (see the `rmf-solver` crate).
+// `Profile` above is the simple shortcut still used by the current extrude
+// path; this model is what grows into real CAD sketching.
+// ---------------------------------------------------------------------------
+
+/// Index of a point in [`Sketch2d::points`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub struct PointId(pub usize);
+
+/// Index of a line in [`Sketch2d::lines`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub struct LineId(pub usize);
+
+/// Index of a circle in [`Sketch2d::circles`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub struct CircleId(pub usize);
+
+/// A sketch point. `x`/`y` are the current/initial position in sketch-plane
+/// coordinates; the solver updates them to satisfy the constraints.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SketchPoint {
+    pub x: f64,
+    pub y: f64,
+}
+
+/// A straight segment between two points.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SketchLine {
+    pub a: PointId,
+    pub b: PointId,
+}
+
+/// A circle defined by a center point and a radius.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SketchCircle {
+    pub center: PointId,
+    pub radius: f64,
+}
+
+/// A geometric or dimensional constraint relating sketch entities.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Constraint {
+    /// Pin a point at its current location.
+    Fixed(PointId),
+    /// Two points share a position.
+    Coincident(PointId, PointId),
+    /// A line is horizontal (its endpoints share `y`).
+    Horizontal(LineId),
+    /// A line is vertical (its endpoints share `x`).
+    Vertical(LineId),
+    /// The distance between two points equals `value`.
+    Distance(PointId, PointId, f64),
+    /// Two lines are parallel.
+    Parallel(LineId, LineId),
+    /// Two lines are perpendicular.
+    Perpendicular(LineId, LineId),
+    /// Two lines have equal length.
+    EqualLength(LineId, LineId),
+    /// A circle's radius equals `value`.
+    Radius(CircleId, f64),
+}
+
+/// A 2D constraint sketch: entities plus the constraints relating them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Sketch2d {
+    pub points: Vec<SketchPoint>,
+    pub lines: Vec<SketchLine>,
+    pub circles: Vec<SketchCircle>,
+    pub constraints: Vec<Constraint>,
+}
+
+impl Sketch2d {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn add_point(&mut self, x: f64, y: f64) -> PointId {
+        self.points.push(SketchPoint { x, y });
+        PointId(self.points.len() - 1)
+    }
+
+    pub fn add_line(&mut self, a: PointId, b: PointId) -> LineId {
+        self.lines.push(SketchLine { a, b });
+        LineId(self.lines.len() - 1)
+    }
+
+    pub fn add_circle(&mut self, center: PointId, radius: f64) -> CircleId {
+        self.circles.push(SketchCircle { center, radius });
+        CircleId(self.circles.len() - 1)
+    }
+
+    pub fn add_constraint(&mut self, constraint: Constraint) {
+        self.constraints.push(constraint);
+    }
+
+    pub fn point(&self, id: PointId) -> SketchPoint {
+        self.points[id.0]
+    }
+
+    pub fn line(&self, id: LineId) -> SketchLine {
+        self.lines[id.0]
+    }
+
+    pub fn circle(&self, id: CircleId) -> SketchCircle {
+        self.circles[id.0]
+    }
+}

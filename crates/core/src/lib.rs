@@ -27,5 +27,8 @@ pub use features::{BooleanOp, Feature, FeatureId, FeatureKind};
 pub use glam::DVec3;
 pub use history::{DependencyError, History};
 pub use regen::{regenerate, RegenError, Regeneration};
-pub use sketch::{Profile, SketchPlane};
+pub use sketch::{
+    CircleId, Constraint, LineId, PointId, Profile, Sketch2d, SketchCircle, SketchLine,
+    SketchPlane, SketchPoint,
+};
 pub use units::LengthUnit;
