@@ -1,15 +1,19 @@
-//! The wgpu rendering core, exposed two ways:
-//! - [`run`] — a live winit window with an orbit camera (the Milestone B goal).
-//! - [`render_to_png`] — a one-frame offscreen render to an image file, for
-//!   automated/visual verification without a display.
+//! The interactive viewport: wgpu 3D scene + egui overlay, driven by a
+//! [`Controller`] the application implements.
 //!
-//! Both share [`Scene`], which owns the pipeline, mesh buffers, and uniforms.
-//! This is deliberately one self-contained viewer for Phase 0; the
-//! scene/material/picking split from the project outline grows out of it later.
+//! Two entry points share the same render path:
+//! - [`run`] — a live winit window (orbit camera + egui panels).
+//! - [`screenshot`] — one composited frame (3D + egui) to a PNG, for headless
+//!   verification.
+//!
+//! Layering: this module knows nothing about documents or the kernel. The
+//! application supplies a [`Controller`] that draws egui UI and produces the
+//! mesh to display; re-meshing happens whenever `ui` reports a change.
 
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
+use egui_wgpu::{Renderer as EguiRenderer, RendererOptions, ScreenDescriptor};
 use glam::Vec3;
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -27,6 +31,25 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     b: 0.12,
     a: 1.0,
 };
+
+/// A mesh ready for display: interleaved vertices + triangle indices.
+#[derive(Clone, Default)]
+pub struct MeshData {
+    pub vertices: Vec<Vertex>,
+    pub indices: Vec<u32>,
+}
+
+/// The application's hook into the viewport.
+///
+/// `ui` draws egui for the frame and returns `true` if the displayed model
+/// needs rebuilding; `mesh` then produces the new geometry. `mesh` is also
+/// called once at startup for the initial display.
+pub trait Controller {
+    /// Draw this frame's egui UI. Return true if the model changed.
+    fn ui(&mut self, ctx: &egui::Context) -> bool;
+    /// Produce the mesh to display.
+    fn mesh(&mut self) -> MeshData;
+}
 
 /// GPU uniform block, mirrored by `Globals` in `shader.wgsl`.
 #[repr(C)]
@@ -49,7 +72,7 @@ impl Globals {
 }
 
 // ---------------------------------------------------------------------------
-// Scene: device + pipeline + mesh, drawable to any color/depth target.
+// Scene: the 3D pipeline + mesh buffers, encodable into any color/depth target.
 // ---------------------------------------------------------------------------
 
 struct Scene {
@@ -68,11 +91,8 @@ impl Scene {
         device: wgpu::Device,
         queue: wgpu::Queue,
         color_format: wgpu::TextureFormat,
-        vertices: &[Vertex],
-        indices: &[u32],
+        mesh: &MeshData,
     ) -> Self {
-        use wgpu::util::DeviceExt;
-
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rmf-shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
@@ -144,8 +164,6 @@ impl Scene {
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
-                // Two-sided shading in the fragment stage means we can show the
-                // inside of bored holes without per-face winding worries.
                 cull_mode: None,
                 ..Default::default()
             },
@@ -161,16 +179,7 @@ impl Scene {
             cache: None,
         });
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("rmf-vertices"),
-            contents: bytemuck::cast_slice(vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("rmf-indices"),
-            contents: bytemuck::cast_slice(indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let (vertex_buffer, index_buffer, index_count) = make_mesh_buffers(&device, mesh);
 
         Self {
             device,
@@ -178,15 +187,24 @@ impl Scene {
             pipeline,
             vertex_buffer,
             index_buffer,
-            index_count: indices.len() as u32,
+            index_count,
             globals_buffer,
             bind_group,
         }
     }
 
-    /// Encode and submit a single frame into the given color/depth views.
-    fn draw(
+    /// Replace the displayed mesh.
+    fn upload_mesh(&mut self, mesh: &MeshData) {
+        let (v, i, n) = make_mesh_buffers(&self.device, mesh);
+        self.vertex_buffer = v;
+        self.index_buffer = i;
+        self.index_count = n;
+    }
+
+    /// Record the 3D pass (clearing color + depth) into `encoder`.
+    fn encode(
         &self,
+        encoder: &mut wgpu::CommandEncoder,
         color_view: &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
         camera: &OrbitCamera,
@@ -198,43 +216,70 @@ impl Scene {
         self.queue
             .write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("rmf-encoder"),
-            });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("rmf-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: color_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(CLEAR_COLOR),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("rmf-3d-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(CLEAR_COLOR),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
                 }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        if self.index_count > 0 {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.index_count, 0, 0..1);
         }
-        self.queue.submit(Some(encoder.finish()));
     }
+}
+
+fn make_mesh_buffers(
+    device: &wgpu::Device,
+    mesh: &MeshData,
+) -> (wgpu::Buffer, wgpu::Buffer, u32) {
+    use wgpu::util::DeviceExt;
+    // Avoid zero-sized buffers when the mesh is empty (failed regen): use a
+    // single dummy vertex/index and draw nothing (index_count = 0).
+    if mesh.vertices.is_empty() || mesh.indices.is_empty() {
+        let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("rmf-vertices-empty"),
+            contents: bytemuck::bytes_of(&Vertex::default()),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("rmf-indices-empty"),
+            contents: bytemuck::cast_slice(&[0u32]),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        return (vbuf, ibuf, 0);
+    }
+    let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("rmf-vertices"),
+        contents: bytemuck::cast_slice(&mesh.vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("rmf-indices"),
+        contents: bytemuck::cast_slice(&mesh.indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+    (vbuf, ibuf, mesh.indices.len() as u32)
 }
 
 fn create_depth(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
@@ -255,7 +300,6 @@ fn create_depth(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture
     texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-/// Bounding-sphere fit so the model lands nicely framed.
 fn frame_camera(vertices: &[Vertex]) -> OrbitCamera {
     if vertices.is_empty() {
         return OrbitCamera::framing(Vec3::ZERO, 1.0);
@@ -298,15 +342,55 @@ async fn request_device(
     (adapter, device, queue)
 }
 
+fn egui_renderer(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> EguiRenderer {
+    EguiRenderer::new(
+        device,
+        color_format,
+        RendererOptions {
+            msaa_samples: 1,
+            depth_stencil_format: None,
+            ..Default::default()
+        },
+    )
+}
+
+/// Record the egui pass (loading the existing color, no depth) into `encoder`.
+/// Caller must have run `update_texture`/`update_buffers` beforehand.
+fn encode_egui(
+    encoder: &mut wgpu::CommandEncoder,
+    renderer: &EguiRenderer,
+    color_view: &wgpu::TextureView,
+    jobs: &[egui::ClippedPrimitive],
+    screen: &ScreenDescriptor,
+) {
+    let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("rmf-egui-pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: color_view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            },
+            depth_slice: None,
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    });
+    renderer.render(&mut pass.forget_lifetime(), jobs, screen);
+}
+
 // ---------------------------------------------------------------------------
 // Live window
 // ---------------------------------------------------------------------------
 
-/// Open the viewport and display `vertices`/`indices` until the window closes.
-pub fn run(vertices: Vec<Vertex>, indices: Vec<u32>) -> anyhow::Result<()> {
+/// Open the interactive viewport, driven by `controller`, until closed.
+pub fn run(controller: impl Controller + 'static) -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = App::new(vertices, indices);
+    let mut app = WindowApp::new(controller);
     event_loop.run_app(&mut app)?;
     Ok(())
 }
@@ -318,48 +402,48 @@ struct MouseState {
     panning: bool,
 }
 
-struct App {
-    vertices: Vec<Vertex>,
-    indices: Vec<u32>,
+struct WindowApp<C: Controller> {
+    controller: C,
     camera: OrbitCamera,
     mouse: MouseState,
-    window: Option<Window>,
+    state: Option<WindowState>,
 }
 
-struct Window {
-    handle: Arc<winit::window::Window>,
+struct WindowState {
+    window: Arc<winit::window::Window>,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     depth_view: wgpu::TextureView,
     scene: Scene,
+    egui_ctx: egui::Context,
+    egui_state: egui_winit::State,
+    egui_renderer: EguiRenderer,
 }
 
-impl App {
-    fn new(vertices: Vec<Vertex>, indices: Vec<u32>) -> Self {
-        let camera = frame_camera(&vertices);
+impl<C: Controller> WindowApp<C> {
+    fn new(controller: C) -> Self {
         Self {
-            vertices,
-            indices,
-            camera,
+            controller,
+            camera: OrbitCamera::framing(Vec3::ZERO, 1.0),
             mouse: MouseState::default(),
-            window: None,
+            state: None,
         }
     }
 }
 
-impl ApplicationHandler for App {
+impl<C: Controller> ApplicationHandler for WindowApp<C> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
+        if self.state.is_some() {
             return;
         }
         let attrs = winit::window::Window::default_attributes()
-            .with_title("Riemanifold — viewport")
-            .with_inner_size(PhysicalSize::new(1100, 760));
-        let handle = Arc::new(event_loop.create_window(attrs).expect("create window"));
+            .with_title("Riemanifold")
+            .with_inner_size(PhysicalSize::new(1280, 820));
+        let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
 
-        let size = handle.inner_size();
+        let size = window.inner_size();
         let instance = wgpu::Instance::default();
-        let surface = instance.create_surface(handle.clone()).expect("create surface");
+        let surface = instance.create_surface(window.clone()).expect("create surface");
         let (adapter, device, queue) =
             pollster::block_on(request_device(&instance, Some(&surface)));
 
@@ -382,58 +466,76 @@ impl ApplicationHandler for App {
         };
         surface.configure(&device, &config);
 
-        let scene = Scene::new(device.clone(), queue, format, &self.vertices, &self.indices);
-        let depth_view = create_depth(&device, config.width, config.height);
+        let mesh = self.controller.mesh();
+        self.camera = frame_camera(&mesh.vertices);
+        let scene = Scene::new(device.clone(), queue, format, &mesh);
 
-        self.window = Some(Window {
-            handle,
+        let egui_ctx = egui::Context::default();
+        let egui_state = egui_winit::State::new(
+            egui_ctx.clone(),
+            egui::ViewportId::ROOT,
+            &*window,
+            Some(window.scale_factor() as f32),
+            None,
+            None,
+        );
+        let egui_renderer = egui_renderer(&device, format);
+
+        window.request_redraw();
+        self.state = Some(WindowState {
+            window,
             surface,
             config,
-            depth_view,
+            depth_view: create_depth(&device, size.width, size.height),
             scene,
+            egui_ctx,
+            egui_state,
+            egui_renderer,
         });
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let Some(window) = self.window.as_mut() else {
+        let Some(state) = self.state.as_mut() else {
             return;
         };
+
+        // egui gets first look; if it consumes the event, the viewport ignores it.
+        let response = state.egui_state.on_window_event(&state.window, &event);
+        let egui_used = response.consumed;
+
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
 
             WindowEvent::Resized(size) if size.width > 0 && size.height > 0 => {
-                window.config.width = size.width;
-                window.config.height = size.height;
-                window
-                    .surface
-                    .configure(&window.scene.device, &window.config);
-                window.depth_view =
-                    create_depth(&window.scene.device, size.width, size.height);
-                window.handle.request_redraw();
+                state.config.width = size.width;
+                state.config.height = size.height;
+                state.surface.configure(&state.scene.device, &state.config);
+                state.depth_view = create_depth(&state.scene.device, size.width, size.height);
+                state.window.request_redraw();
             }
 
-            WindowEvent::MouseInput { state, button, .. } => {
-                let pressed = state == ElementState::Pressed;
+            WindowEvent::MouseInput { button, state: pressed, .. } if !egui_used => {
+                let down = pressed == ElementState::Pressed;
                 match button {
-                    MouseButton::Left => self.mouse.orbiting = pressed,
-                    MouseButton::Right | MouseButton::Middle => self.mouse.panning = pressed,
+                    MouseButton::Left => self.mouse.orbiting = down,
+                    MouseButton::Right | MouseButton::Middle => self.mouse.panning = down,
                     _ => {}
                 }
-                if !pressed {
+                if !down {
                     self.mouse.last = None;
                 }
             }
 
-            WindowEvent::CursorMoved { position, .. } => {
+            WindowEvent::CursorMoved { position, .. } if !egui_used => {
                 if let Some(last) = self.mouse.last {
                     let dx = (position.x - last.x) as f32;
                     let dy = (position.y - last.y) as f32;
                     if self.mouse.orbiting {
                         self.camera.orbit(dx * 0.01, dy * 0.01);
-                        window.handle.request_redraw();
+                        state.window.request_redraw();
                     } else if self.mouse.panning {
                         self.camera.pan(dx, dy);
-                        window.handle.request_redraw();
+                        state.window.request_redraw();
                     }
                 }
                 self.mouse.last = if self.mouse.orbiting || self.mouse.panning {
@@ -443,63 +545,141 @@ impl ApplicationHandler for App {
                 };
             }
 
-            WindowEvent::MouseWheel { delta, .. } => {
+            WindowEvent::MouseWheel { delta, .. } if !egui_used => {
                 let amount = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => (p.y as f32) * 0.02,
                 };
                 self.camera.dolly(amount);
-                window.handle.request_redraw();
+                state.window.request_redraw();
             }
 
             WindowEvent::RedrawRequested => {
-                let frame = match window.surface.get_current_texture() {
-                    wgpu::CurrentSurfaceTexture::Success(t)
-                    | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-                    _ => {
-                        window
-                            .surface
-                            .configure(&window.scene.device, &window.config);
-                        return;
-                    }
-                };
-                let view = frame
-                    .texture
-                    .create_view(&wgpu::TextureViewDescriptor::default());
-                window.scene.draw(
-                    &view,
-                    &window.depth_view,
-                    &self.camera,
-                    window.config.width,
-                    window.config.height,
-                );
-                frame.present();
+                self.redraw();
             }
 
             _ => {}
+        }
+
+        // Keep redrawing while egui wants animation/repaint (hover, drags, etc.).
+        if let Some(state) = self.state.as_ref() {
+            if egui_used || state.egui_ctx.has_requested_repaint() {
+                state.window.request_redraw();
+            }
+        }
+    }
+}
+
+impl<C: Controller> WindowApp<C> {
+    fn redraw(&mut self) {
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
+
+        let raw_input = state.egui_state.take_egui_input(&state.window);
+        state.egui_ctx.begin_pass(raw_input);
+        let changed = self.controller.ui(&state.egui_ctx);
+        let full_output = state.egui_ctx.end_pass();
+        if changed {
+            let mesh = self.controller.mesh();
+            state.scene.upload_mesh(&mesh);
+        }
+        state
+            .egui_state
+            .handle_platform_output(&state.window, full_output.platform_output);
+
+        let jobs = state
+            .egui_ctx
+            .tessellate(full_output.shapes, full_output.pixels_per_point);
+        let screen = ScreenDescriptor {
+            size_in_pixels: [state.config.width, state.config.height],
+            pixels_per_point: full_output.pixels_per_point,
+        };
+
+        let frame = match state.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            _ => {
+                state.surface.configure(&state.scene.device, &state.config);
+                return;
+            }
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let device = &state.scene.device;
+        let queue = &state.scene.queue;
+        for (id, delta) in &full_output.textures_delta.set {
+            state.egui_renderer.update_texture(device, queue, *id, delta);
+        }
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let egui_cmds =
+            state
+                .egui_renderer
+                .update_buffers(device, queue, &mut encoder, &jobs, &screen);
+
+        state.scene.encode(
+            &mut encoder,
+            &view,
+            &state.depth_view,
+            &self.camera,
+            state.config.width,
+            state.config.height,
+        );
+        encode_egui(&mut encoder, &state.egui_renderer, &view, &jobs, &screen);
+
+        queue.submit(egui_cmds.into_iter().chain(std::iter::once(encoder.finish())));
+        frame.present();
+
+        for id in &full_output.textures_delta.free {
+            state.egui_renderer.free_texture(id);
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Offscreen render to PNG (verification / headless)
+// Offscreen composited screenshot (3D + egui), for verification
 // ---------------------------------------------------------------------------
 
-/// Render a single framed view of the mesh to a PNG at `path`. No window or
-/// display required — used to verify the render pipeline produces real pixels.
-pub fn render_to_png(
-    vertices: &[Vertex],
-    indices: &[u32],
+/// Render one composited frame (3D scene + egui UI) to a PNG at `path`.
+pub fn screenshot(
+    mut controller: impl Controller,
     width: u32,
     height: u32,
     path: &str,
 ) -> anyhow::Result<()> {
-    let camera = frame_camera(vertices);
+    const PPP: f32 = 1.5;
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
 
     let instance = wgpu::Instance::default();
     let (_adapter, device, queue) = pollster::block_on(request_device(&instance, None));
-    let scene = Scene::new(device.clone(), queue.clone(), format, vertices, indices);
+
+    let mesh = controller.mesh();
+    let camera = frame_camera(&mesh.vertices);
+    let mut scene = Scene::new(device.clone(), queue.clone(), format, &mesh);
+    let _ = &mut scene;
+
+    let egui_ctx = egui::Context::default();
+    egui_ctx.set_pixels_per_point(PPP);
+    let mut egui_renderer = egui_renderer(&device, format);
+
+    let raw_input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(width as f32 / PPP, height as f32 / PPP),
+        )),
+        ..Default::default()
+    };
+    egui_ctx.begin_pass(raw_input);
+    controller.ui(&egui_ctx);
+    let full_output = egui_ctx.end_pass();
+    let jobs = egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+    let screen = ScreenDescriptor {
+        size_in_pixels: [width, height],
+        pixels_per_point: full_output.pixels_per_point,
+    };
 
     let color = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("rmf-offscreen-color"),
@@ -518,10 +698,30 @@ pub fn render_to_png(
     let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
     let depth_view = create_depth(&device, width, height);
 
-    scene.draw(&color_view, &depth_view, &camera, width, height);
+    for (id, delta) in &full_output.textures_delta.set {
+        egui_renderer.update_texture(&device, &queue, *id, delta);
+    }
+    let mut encoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    let egui_cmds = egui_renderer.update_buffers(&device, &queue, &mut encoder, &jobs, &screen);
+    scene.encode(&mut encoder, &color_view, &depth_view, &camera, width, height);
+    encode_egui(&mut encoder, &egui_renderer, &color_view, &jobs, &screen);
+    queue.submit(egui_cmds.into_iter().chain(std::iter::once(encoder.finish())));
+    for id in &full_output.textures_delta.free {
+        egui_renderer.free_texture(id);
+    }
 
-    // Copy the rendered texture into a CPU-readable buffer. Rows must be padded
-    // to COPY_BYTES_PER_ROW_ALIGNMENT (256).
+    save_texture_png(&device, &queue, &color, width, height, path)
+}
+
+fn save_texture_png(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+    path: &str,
+) -> anyhow::Result<()> {
     let unpadded = width * 4;
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let padded = unpadded.div_ceil(align) * align;
@@ -536,7 +736,7 @@ pub fn render_to_png(
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
-            texture: &color,
+            texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,

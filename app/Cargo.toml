@@ -11,5 +11,6 @@ default-run = "rmf-app"
 rmf-core = { workspace = true }
 rmf-kernel = { workspace = true }
 rmf-render = { workspace = true }
+rmf-ui = { workspace = true }
 anyhow = { workspace = true }
 env_logger = { workspace = true }

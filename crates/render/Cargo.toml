@@ -16,3 +16,6 @@ wgpu = "29"
 winit = "0.30"
 pollster = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"] }
+egui = { workspace = true }
+egui-wgpu = { workspace = true }
+egui-winit = { workspace = true }

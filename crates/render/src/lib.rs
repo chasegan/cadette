@@ -8,8 +8,11 @@
 pub mod camera;
 mod viewer;
 
+// Re-export egui so `rmf-ui` and the app share exactly this version.
+pub use egui;
+
 pub use camera::OrbitCamera;
-pub use viewer::{render_to_png, run};
+pub use viewer::{run, screenshot, Controller, MeshData};
 
 use bytemuck::{Pod, Zeroable};
 

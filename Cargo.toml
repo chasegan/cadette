@@ -33,6 +33,9 @@ glam = "0.29"
 bytemuck = { version = "1", features = ["derive"] }
 log = "0.4"
 env_logger = "0.11"
+egui = "0.34"
+egui-wgpu = "0.34"
+egui-winit = { version = "0.34", default-features = false }
 
 [profile.dev]
 # OCCT + wgpu are heavy at runtime; some optimization keeps the viewport usable
