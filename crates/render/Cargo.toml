@@ -7,6 +7,12 @@ rust-version.workspace = true
 description = "wgpu viewport: scene buffers, camera, picking, gizmos, overlays."
 
 [dependencies]
-# wgpu/winit land here in Milestone B; kept dependency-light until then.
 glam = { workspace = true }
 bytemuck = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+wgpu = "29"
+winit = "0.30"
+pollster = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }

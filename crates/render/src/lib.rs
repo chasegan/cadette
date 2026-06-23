@@ -1,9 +1,15 @@
 //! # rmf-render
 //!
 //! The wgpu viewport: render graph, mesh buffers, camera, ray-cast picking,
-//! gizmos, grid, and measurement overlays. Milestone B turns this into a live
-//! window that displays kernel meshes; for now it defines the vertex layout the
-//! kernel tessellation feeds into.
+//! gizmos, grid, and measurement overlays. Milestone B brings up a live window
+//! ([`run`]) that displays kernel meshes with an orbit camera; later phases
+//! split this into the scene/picking/overlay structure from the outline.
+
+pub mod camera;
+mod viewer;
+
+pub use camera::OrbitCamera;
+pub use viewer::{render_to_png, run};
 
 use bytemuck::{Pod, Zeroable};
 
