@@ -325,29 +325,26 @@ impl Controller for Modeler {
         use egui::Key;
         let mut changed = false;
 
-        // --- Top toolbar: sketch-mode controls ---
-        let drawing = self.sketch_session.is_some();
+        // --- Top toolbar: shown only while drawing a sketch ---
         let mut finish = false;
         let mut cancel = false;
-        let mut new_sketch = false;
-        #[allow(deprecated)]
-        egui::Panel::top("toolbar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                if drawing {
+        if let Some(session) = self.sketch_session.as_ref() {
+            let points = session.sketch.points.len();
+            #[allow(deprecated)]
+            egui::Panel::top("toolbar").show(ctx, |ui| {
+                ui.horizontal(|ui| {
                     finish = ui.button("✓ Finish sketch").clicked();
                     cancel = ui.button("✗ Cancel").clicked();
                     ui.separator();
-                    ui.label("Click on the plane to add points; click the first point to close.");
-                } else {
-                    new_sketch = ui.button("✏ New sketch (XY)").clicked();
-                }
+                    ui.label(format!(
+                        "Sketch · {points} point(s) — click the plane to add a point; \
+                         click the first point to close."
+                    ));
+                });
             });
-        });
+        }
         if cancel {
             self.sketch_session = None;
-        }
-        if new_sketch {
-            self.start_sketch(SketchPlane::Xy);
         }
         if finish {
             changed |= self.finish_sketch();
@@ -382,6 +379,11 @@ impl Controller for Modeler {
         }
         if resp.redo || redo_key {
             changed |= self.redo();
+        }
+
+        // The "Sketch" tool in the Add panel enters interactive draw mode.
+        if resp.start_sketch && self.sketch_session.is_none() {
+            self.start_sketch(SketchPlane::Xy);
         }
 
         // --- Interactive sketch overlay ---
@@ -433,18 +435,23 @@ fn main() -> anyhow::Result<()> {
 
     let mut modeler = Modeler::new();
 
-    // Verification aid: render a sketch mid-draw to confirm the overlay paints.
+    // Verification aid: draw a closed triangle and finish it, mirroring the
+    // interactive flow, so we can confirm the Extrude button enables afterward.
     if std::env::args().any(|a| a == "--sketch-demo") {
+        let mut empty = Document::new("draw");
+        std::mem::swap(&mut modeler.doc, &mut empty); // start from a clean doc
         modeler.start_sketch(SketchPlane::Xy);
         if let Some(s) = modeler.sketch_session.as_mut() {
             let p0 = s.sketch.add_point(-15.0, -12.0);
             let p1 = s.sketch.add_point(15.0, -12.0);
-            let p2 = s.sketch.add_point(15.0, 12.0);
+            let p2 = s.sketch.add_point(0.0, 14.0);
             s.sketch.add_line(p0, p1);
             s.sketch.add_line(p1, p2);
+            s.sketch.add_line(p2, p0); // close
             s.start = Some(p0);
             s.last = Some(p2);
         }
+        modeler.finish_sketch(); // commits + selects the sketch
         let path = "out/sketch-demo.png";
         std::fs::create_dir_all("out")?;
         rmf_render::screenshot(modeler, 1280, 820, path)?;

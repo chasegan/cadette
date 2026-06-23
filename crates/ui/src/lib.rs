@@ -40,6 +40,8 @@ pub struct HistoryResponse {
     pub undo: bool,
     /// The redo button was clicked.
     pub redo: bool,
+    /// The "Sketch" tool was clicked — the host should enter sketch-draw mode.
+    pub start_sketch: bool,
 }
 
 impl HistoryState {
@@ -119,7 +121,11 @@ pub fn history_panel(
             });
             ui.separator();
 
-            resp.changed |= add_feature_toolbar(ui, doc, state);
+            let mut started = false;
+            resp.changed |= add_feature_toolbar(ui, doc, state, &mut started);
+            if started {
+                resp.start_sketch = true;
+            }
             ui.separator();
 
             resp.changed |= rollback_controls(ui, doc);
@@ -144,7 +150,12 @@ pub fn history_panel(
 /// Buttons to create new features. Primitives are always available; unary ops
 /// (Move, Fillet) and booleans require visible bodies to act on, so they enable
 /// only when valid inputs exist. New features are selected on creation.
-fn add_feature_toolbar(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> bool {
+fn add_feature_toolbar(
+    ui: &mut Ui,
+    doc: &mut Document,
+    state: &mut HistoryState,
+    start_sketch: &mut bool,
+) -> bool {
     let mut changed = false;
 
     // Pick operation inputs up front (immutable borrows of doc/state) so the
@@ -154,7 +165,7 @@ fn add_feature_toolbar(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState
     let extrude_source = unary.filter(|id| {
         matches!(
             doc.history.get(*id).map(|f| &f.kind),
-            Some(FeatureKind::Sketch { .. })
+            Some(FeatureKind::Sketch { .. } | FeatureKind::ConstraintSketch { .. })
         )
     });
 
@@ -176,18 +187,12 @@ fn add_feature_toolbar(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState
         if ui.button("Sphere").clicked() {
             add(state, "Sphere", FeatureKind::Sphere { radius: 10.0 });
         }
-        if ui.button("Sketch").clicked() {
-            add(
-                state,
-                "Sketch",
-                FeatureKind::Sketch {
-                    plane: SketchPlane::Xy,
-                    profile: Profile::Rectangle {
-                        width: 30.0,
-                        height: 30.0,
-                    },
-                },
-            );
+        if ui
+            .button("Sketch")
+            .on_hover_text("Draw a 2D profile on the XY plane")
+            .clicked()
+        {
+            *start_sketch = true;
         }
     });
 
