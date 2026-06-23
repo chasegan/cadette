@@ -1,0 +1,86 @@
+//! Safe, owned wrappers over the OCCT FFI.
+//!
+//! [`Solid`] owns a B-rep `TopoDS_Shape` behind a `UniquePtr` and exposes the
+//! modeling operations as ordinary, fallible Rust methods. This is the surface
+//! the rest of the application builds on — nothing above this layer should ever
+//! reach into [`crate::ffi`].
+
+use cxx::UniquePtr;
+
+use crate::{ffi, Result};
+
+/// Re-export the tessellated mesh produced by [`Solid::tessellate`].
+pub use crate::ffi::Mesh;
+
+/// An owned B-rep solid (or, generally, any OCCT topology).
+pub struct Solid(UniquePtr<ffi::Shape>);
+
+impl Solid {
+    fn wrap(inner: UniquePtr<ffi::Shape>) -> Self {
+        Solid(inner)
+    }
+
+    // --- Primitives ---------------------------------------------------------
+
+    /// An axis-aligned box with one corner at the origin and the opposite at
+    /// `(dx, dy, dz)`.
+    pub fn cuboid(dx: f64, dy: f64, dz: f64) -> Result<Self> {
+        Ok(Self::wrap(ffi::make_box(dx, dy, dz)?))
+    }
+
+    /// A sphere of the given `radius`, centered at the origin.
+    pub fn sphere(radius: f64) -> Result<Self> {
+        Ok(Self::wrap(ffi::make_sphere(radius)?))
+    }
+
+    /// A cylinder of `radius` and `height`, axis along +Z from the origin.
+    pub fn cylinder(radius: f64, height: f64) -> Result<Self> {
+        Ok(Self::wrap(ffi::make_cylinder(radius, height)?))
+    }
+
+    // --- Transforms ---------------------------------------------------------
+
+    /// A copy of this solid translated by `(dx, dy, dz)`.
+    pub fn translate(&self, dx: f64, dy: f64, dz: f64) -> Result<Self> {
+        Ok(Self::wrap(ffi::translate(&self.0, dx, dy, dz)?))
+    }
+
+    // --- Booleans -----------------------------------------------------------
+
+    /// Union: merge `self` and `other` into one body.
+    pub fn fuse(&self, other: &Solid) -> Result<Self> {
+        Ok(Self::wrap(ffi::fuse(&self.0, &other.0)?))
+    }
+
+    /// Difference: remove `other` from `self`.
+    pub fn cut(&self, other: &Solid) -> Result<Self> {
+        Ok(Self::wrap(ffi::cut(&self.0, &other.0)?))
+    }
+
+    /// Intersection: keep only the volume shared by `self` and `other`.
+    pub fn common(&self, other: &Solid) -> Result<Self> {
+        Ok(Self::wrap(ffi::common(&self.0, &other.0)?))
+    }
+
+    // --- Edge treatments ----------------------------------------------------
+
+    /// Fillet every edge with a constant `radius`. Returns an error if the
+    /// radius is infeasible for some edge (OCCT rejects the whole operation).
+    pub fn fillet_all_edges(&self, radius: f64) -> Result<Self> {
+        Ok(Self::wrap(ffi::fillet_all_edges(&self.0, radius)?))
+    }
+
+    // --- Display / export ---------------------------------------------------
+
+    /// Tessellate into a render-ready triangle [`Mesh`]. `deflection` is the
+    /// maximum chord deviation in model units (smaller = smoother, heavier).
+    pub fn tessellate(&self, deflection: f64) -> Result<Mesh> {
+        Ok(ffi::tessellate(&self.0, deflection)?)
+    }
+
+    /// Write a binary STL to `path` at the given mesh `deflection`.
+    pub fn write_stl(&self, path: &str, deflection: f64) -> Result<()> {
+        ffi::write_stl(&self.0, path, deflection)?;
+        Ok(())
+    }
+}

@@ -1,0 +1,9 @@
+[package]
+name = "rmf-solver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "2D sketch constraint solver (planegcs FFI wrapper, later phases)."
+
+[dependencies]

@@ -1,0 +1,14 @@
+[package]
+name = "rmf-kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OpenCASCADE (OCCT) FFI boundary and safe B-rep wrappers for Riemanifold."
+
+[dependencies]
+cxx = "1"
+thiserror = { workspace = true }
+
+[build-dependencies]
+cxx-build = "1"

@@ -1,0 +1,12 @@
+[package]
+name = "rmf-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "wgpu viewport: scene buffers, camera, picking, gizmos, overlays."
+
+[dependencies]
+# wgpu/winit land here in Milestone B; kept dependency-light until then.
+glam = { workspace = true }
+bytemuck = { workspace = true }

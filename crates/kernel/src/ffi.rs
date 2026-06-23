@@ -1,0 +1,63 @@
+//! The raw OCCT FFI boundary.
+//!
+//! This is the **only** place in the codebase that crosses into C++. Everything
+//! declared here is unsafe-by-nature; the safe, ergonomic surface lives in
+//! [`crate::solids`]. Keep this module small, mechanical, and well-mirrored by
+//! the C++ in `src/ffi/bridge.{hpp,cpp}`.
+//!
+//! Conventions:
+//! - A B-rep solid is an opaque C++ `Shape` handed back as `UniquePtr<Shape>`.
+//! - Any OCCT failure is translated to a thrown `std::runtime_error` on the C++
+//!   side, which cxx surfaces to Rust as `Err` because every fallible function
+//!   returns `Result`.
+
+#[cxx::bridge(namespace = "rmf")]
+pub mod ffi {
+    /// A tessellated, render-ready triangle mesh produced from a B-rep `Shape`.
+    ///
+    /// All arrays are flat. `positions` and `normals` hold `3 * vertex_count`
+    /// floats (xyz); `indices` holds `3 * triangle_count` vertex indices wound
+    /// counter-clockwise (front-facing) in a right-handed, Z-up frame.
+    #[derive(Clone, Debug, Default)]
+    struct Mesh {
+        positions: Vec<f32>,
+        normals: Vec<f32>,
+        indices: Vec<u32>,
+    }
+
+    unsafe extern "C++" {
+        include!("rmf-kernel/src/ffi/bridge.hpp");
+
+        /// Opaque handle to an OCCT `TopoDS_Shape`.
+        type Shape;
+
+        // --- Primitives ---------------------------------------------------
+        fn make_box(dx: f64, dy: f64, dz: f64) -> Result<UniquePtr<Shape>>;
+        fn make_sphere(radius: f64) -> Result<UniquePtr<Shape>>;
+        fn make_cylinder(radius: f64, height: f64) -> Result<UniquePtr<Shape>>;
+
+        // --- Transforms ---------------------------------------------------
+        fn translate(shape: &Shape, dx: f64, dy: f64, dz: f64) -> Result<UniquePtr<Shape>>;
+
+        // --- Booleans -----------------------------------------------------
+        fn fuse(a: &Shape, b: &Shape) -> Result<UniquePtr<Shape>>;
+        fn cut(a: &Shape, b: &Shape) -> Result<UniquePtr<Shape>>;
+        fn common(a: &Shape, b: &Shape) -> Result<UniquePtr<Shape>>;
+
+        // --- Edge treatments ----------------------------------------------
+        /// Fillet every edge of `shape` with a constant `radius`.
+        fn fillet_all_edges(shape: &Shape, radius: f64) -> Result<UniquePtr<Shape>>;
+
+        // --- Display / export ---------------------------------------------
+        /// Tessellate to a triangle mesh. `deflection` is the max chord
+        /// deviation (model units); smaller = smoother and heavier.
+        fn tessellate(shape: &Shape, deflection: f64) -> Result<Mesh>;
+
+        /// Write a binary STL. `deflection` controls mesh resolution.
+        fn write_stl(shape: &Shape, path: &str, deflection: f64) -> Result<()>;
+    }
+}
+
+// Re-export the bridge contents at module root so consumers write
+// `kernel::ffi::Shape` rather than `kernel::ffi::ffi::Shape`.
+pub use ffi::*;
