@@ -568,6 +568,15 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
             }
         }
     }
+
+    /// Drive continuous redraws. Without this, `ControlFlow::Wait` can present a
+    /// single frame and then idle forever if the user never interacts — which
+    /// left the egui panels unpainted after the first frame.
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(state) = self.state.as_ref() {
+            state.window.request_redraw();
+        }
+    }
 }
 
 impl<C: Controller> WindowApp<C> {

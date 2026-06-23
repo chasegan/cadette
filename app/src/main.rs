@@ -73,12 +73,22 @@ fn build_document() -> Document {
     doc
 }
 
+/// Maximum number of undo snapshots retained.
+const UNDO_LIMIT: usize = 200;
+
 /// Ties the document, the OCCT backend, and the history panel together as a
 /// [`Controller`] the viewport drives.
 struct Modeler {
     doc: Document,
     backend: KernelBackend,
     ui: HistoryState,
+    /// Snapshot stacks for undo/redo. The whole document is cloned per edit;
+    /// cheap for these models and trivially correct.
+    undo: Vec<Document>,
+    redo: Vec<Document>,
+    /// True while a continuous edit (e.g. dragging a value) is in progress, so
+    /// the whole drag collapses into a single undo entry.
+    editing: bool,
 }
 
 impl Modeler {
@@ -87,13 +97,82 @@ impl Modeler {
             doc: build_document(),
             backend: KernelBackend::default(),
             ui: HistoryState::default(),
+            undo: Vec::new(),
+            redo: Vec::new(),
+            editing: false,
+        }
+    }
+
+    /// Record the pre-edit document on the undo stack and drop the redo stack.
+    fn record_undo(&mut self, before: Document) {
+        if self.undo.len() >= UNDO_LIMIT {
+            self.undo.remove(0);
+        }
+        self.undo.push(before);
+        self.redo.clear();
+    }
+
+    /// Restore the previous document state. Returns whether anything changed.
+    fn undo(&mut self) -> bool {
+        match self.undo.pop() {
+            Some(prev) => {
+                self.redo.push(std::mem::replace(&mut self.doc, prev));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Reapply an undone change. Returns whether anything changed.
+    fn redo(&mut self) -> bool {
+        match self.redo.pop() {
+            Some(next) => {
+                self.undo.push(std::mem::replace(&mut self.doc, next));
+                true
+            }
+            None => false,
         }
     }
 }
 
 impl Controller for Modeler {
     fn ui(&mut self, ctx: &rmf_render::egui::Context) -> bool {
-        history_panel(ctx, &mut self.doc, &mut self.ui)
+        use rmf_render::egui::Key;
+
+        self.ui.can_undo = !self.undo.is_empty();
+        self.ui.can_redo = !self.redo.is_empty();
+
+        // Snapshot the pre-edit state only when not already mid-edit, so a drag
+        // produces one undo entry rather than one per frame.
+        let snapshot = (!self.editing).then(|| self.doc.clone());
+        let resp = history_panel(ctx, &mut self.doc, &mut self.ui);
+        let mut changed = resp.changed;
+
+        if resp.changed {
+            if let Some(before) = snapshot {
+                self.record_undo(before);
+            }
+            self.editing = true;
+        } else {
+            self.editing = false;
+        }
+
+        let (undo_key, redo_key) = ctx.input(|i| {
+            let cmd = i.modifiers.command;
+            let undo = cmd && !i.modifiers.shift && i.key_pressed(Key::Z);
+            let redo = cmd
+                && ((i.modifiers.shift && i.key_pressed(Key::Z)) || i.key_pressed(Key::Y));
+            (undo, redo)
+        });
+
+        if resp.undo || undo_key {
+            changed |= self.undo();
+        }
+        if resp.redo || redo_key {
+            changed |= self.redo();
+        }
+
+        changed
     }
 
     /// Regenerate the document through OCCT and tessellate every visible body
@@ -219,6 +298,40 @@ mod tests {
     }
 
     #[test]
+    fn undo_and_redo_restore_document_state() {
+        let mut m = Modeler::new();
+        let n0 = m.doc.history.len();
+
+        // Simulate an edit: record the pre-edit state, then mutate.
+        m.record_undo(m.doc.clone());
+        m.doc.add("Sphere", FeatureKind::Sphere { radius: 10.0 });
+        assert_eq!(m.doc.history.len(), n0 + 1);
+
+        assert!(m.undo());
+        assert_eq!(m.doc.history.len(), n0, "undo removes the added feature");
+
+        assert!(m.redo());
+        assert_eq!(m.doc.history.len(), n0 + 1, "redo restores it");
+
+        assert!(!m.redo(), "nothing left to redo");
+    }
+
+    #[test]
+    fn a_new_edit_clears_the_redo_stack() {
+        let mut m = Modeler::new();
+
+        m.record_undo(m.doc.clone());
+        m.doc.add("Sphere", FeatureKind::Sphere { radius: 10.0 });
+        assert!(m.undo());
+        assert!(!m.redo.is_empty(), "an undone change is redoable");
+
+        // A fresh edit must invalidate the redo history.
+        m.record_undo(m.doc.clone());
+        m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(5.0) });
+        assert!(m.redo.is_empty(), "a new edit clears redo");
+    }
+
+    #[test]
     fn adding_a_primitive_adds_a_visible_body() {
         let mut m = Modeler::new();
         let _ = m.mesh();
@@ -255,6 +368,9 @@ mod tests {
             doc,
             backend: KernelBackend::default(),
             ui: HistoryState::default(),
+            undo: Vec::new(),
+            redo: Vec::new(),
+            editing: false,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());

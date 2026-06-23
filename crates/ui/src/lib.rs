@@ -24,6 +24,20 @@ pub struct HistoryState {
     /// Feature ids whose bodies are currently visible, set by the host after
     /// each rebuild. Operations added from the toolbar reference these.
     pub visible: Vec<FeatureId>,
+    /// Whether undo/redo are available, set by the host from its undo stacks.
+    pub can_undo: bool,
+    pub can_redo: bool,
+}
+
+/// What the history panel reports back to the host for one frame.
+#[derive(Default)]
+pub struct HistoryResponse {
+    /// The document changed and geometry should be regenerated.
+    pub changed: bool,
+    /// The undo button was clicked.
+    pub undo: bool,
+    /// The redo button was clicked.
+    pub redo: bool,
 }
 
 impl HistoryState {
@@ -60,10 +74,13 @@ impl HistoryState {
     }
 }
 
-/// Draw the history side panel. Returns `true` if the document changed in a way
-/// that requires regeneration.
-pub fn history_panel(ctx: &Context, doc: &mut Document, state: &mut HistoryState) -> bool {
-    let mut changed = false;
+/// Draw the history side panel and report what the user did this frame.
+pub fn history_panel(
+    ctx: &Context,
+    doc: &mut Document,
+    state: &mut HistoryState,
+) -> HistoryResponse {
+    let mut resp = HistoryResponse::default();
 
     // egui 0.34 is mid-migration to a unified `Panel`; the context-level
     // `.show(ctx)` is deprecated in favor of `show_inside(ui)`, but at the top
@@ -81,19 +98,36 @@ pub fn history_panel(ctx: &Context, doc: &mut Document, state: &mut HistoryState
                     .small()
                     .weak(),
             );
+
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(state.can_undo, egui::Button::new("↶ Undo"))
+                    .on_hover_text("Undo (⌘Z)")
+                    .clicked()
+                {
+                    resp.undo = true;
+                }
+                if ui
+                    .add_enabled(state.can_redo, egui::Button::new("↷ Redo"))
+                    .on_hover_text("Redo (⇧⌘Z)")
+                    .clicked()
+                {
+                    resp.redo = true;
+                }
+            });
             ui.separator();
 
-            changed |= add_feature_toolbar(ui, doc, state);
+            resp.changed |= add_feature_toolbar(ui, doc, state);
             ui.separator();
 
-            changed |= rollback_controls(ui, doc);
+            resp.changed |= rollback_controls(ui, doc);
             ui.separator();
 
-            changed |= feature_list(ui, doc, state);
+            resp.changed |= feature_list(ui, doc, state);
 
             if let Some(selected) = state.selected {
                 ui.separator();
-                changed |= selected_editor(ui, doc, selected);
+                resp.changed |= selected_editor(ui, doc, selected);
             }
 
             if !state.errors.is_empty() {
@@ -102,7 +136,7 @@ pub fn history_panel(ctx: &Context, doc: &mut Document, state: &mut HistoryState
             }
         });
 
-    changed
+    resp
 }
 
 /// Buttons to create new features. Primitives are always available; unary ops
@@ -487,7 +521,7 @@ mod tests {
         HistoryState {
             selected: selected.map(FeatureId),
             visible: visible.iter().copied().map(FeatureId).collect(),
-            errors: Vec::new(),
+            ..Default::default()
         }
     }
 
