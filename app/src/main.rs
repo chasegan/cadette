@@ -92,6 +92,7 @@ impl Controller for Modeler {
             .iter()
             .map(|e| (e.feature(), error_message(e)))
             .collect();
+        self.ui.visible = regen.visible().to_vec();
 
         let mut mesh = MeshData::default();
         for body in regen.visible_bodies() {
@@ -191,6 +192,17 @@ mod tests {
         };
         let after = bounds(&m.mesh());
         assert!(before.1[0] < 50.0 && after.1[0] > 70.0, "box should grow");
+    }
+
+    #[test]
+    fn adding_a_primitive_adds_a_visible_body() {
+        let mut m = Modeler::new();
+        let _ = m.mesh();
+        let before = m.ui.visible.len();
+        m.doc.add("Sphere", FeatureKind::Sphere { radius: 10.0 });
+        let _ = m.mesh();
+        assert_eq!(m.ui.visible.len(), before + 1);
+        assert!(m.ui.errors.is_empty());
     }
 
     #[test]

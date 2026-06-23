@@ -10,7 +10,7 @@
 //! no kernel.
 
 use egui::{Color32, Context, RichText, Ui};
-use rmf_core::{BooleanOp, Document, FeatureId, FeatureKind};
+use rmf_core::{BooleanOp, Document, FeatureId, FeatureKind, DVec3};
 
 const ERROR_COLOR: Color32 = Color32::from_rgb(232, 92, 92);
 
@@ -21,6 +21,9 @@ pub struct HistoryState {
     pub selected: Option<FeatureId>,
     /// Per-feature regeneration errors, set by the host after each rebuild.
     pub errors: Vec<(FeatureId, String)>,
+    /// Feature ids whose bodies are currently visible, set by the host after
+    /// each rebuild. Operations added from the toolbar reference these.
+    pub visible: Vec<FeatureId>,
 }
 
 impl HistoryState {
@@ -29,6 +32,31 @@ impl HistoryState {
             .iter()
             .find(|(e, _)| *e == id)
             .map(|(_, m)| m.as_str())
+    }
+
+    /// The body a new unary op (move, fillet) should act on: the selection if
+    /// it is currently visible, otherwise the most recently visible body.
+    fn unary_source(&self) -> Option<FeatureId> {
+        if let Some(sel) = self.selected {
+            if self.visible.contains(&sel) {
+                return Some(sel);
+            }
+        }
+        self.visible.last().copied()
+    }
+
+    /// The (target, tool) a new boolean should combine: the selection (or the
+    /// first visible body) as target, and a different visible body as tool.
+    fn binary_inputs(&self) -> Option<(FeatureId, FeatureId)> {
+        if self.visible.len() < 2 {
+            return None;
+        }
+        let target = self
+            .selected
+            .filter(|s| self.visible.contains(s))
+            .unwrap_or(self.visible[0]);
+        let tool = self.visible.iter().rev().find(|v| **v != target).copied()?;
+        Some((target, tool))
     }
 }
 
@@ -55,6 +83,9 @@ pub fn history_panel(ctx: &Context, doc: &mut Document, state: &mut HistoryState
             );
             ui.separator();
 
+            changed |= add_feature_toolbar(ui, doc, state);
+            ui.separator();
+
             changed |= rollback_controls(ui, doc);
             ui.separator();
 
@@ -70,6 +101,81 @@ pub fn history_panel(ctx: &Context, doc: &mut Document, state: &mut HistoryState
                 error_list(ui, doc, state);
             }
         });
+
+    changed
+}
+
+/// Buttons to create new features. Primitives are always available; unary ops
+/// (Move, Fillet) and booleans require visible bodies to act on, so they enable
+/// only when valid inputs exist. New features are selected on creation.
+fn add_feature_toolbar(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> bool {
+    let mut changed = false;
+    let mut add = |state: &mut HistoryState, name: &str, kind: FeatureKind| {
+        let id = doc.add(name, kind);
+        state.selected = Some(id);
+        changed = true;
+    };
+
+    ui.label(RichText::new("Add").small().weak());
+
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("Box").clicked() {
+            add(state, "Box", FeatureKind::Box { size: DVec3::splat(20.0) });
+        }
+        if ui.button("Cylinder").clicked() {
+            add(state, "Cylinder", FeatureKind::Cylinder { radius: 10.0, height: 20.0 });
+        }
+        if ui.button("Sphere").clicked() {
+            add(state, "Sphere", FeatureKind::Sphere { radius: 10.0 });
+        }
+    });
+
+    let unary = state.unary_source();
+    let binary = state.binary_inputs();
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .add_enabled(unary.is_some(), egui::Button::new("Move"))
+            .on_hover_text("Translate the selected/last body")
+            .clicked()
+        {
+            add(
+                state,
+                "Move",
+                FeatureKind::Translate {
+                    source: unary.unwrap(),
+                    offset: DVec3::new(10.0, 0.0, 0.0),
+                },
+            );
+        }
+        if ui
+            .add_enabled(unary.is_some(), egui::Button::new("Fillet"))
+            .on_hover_text("Fillet all edges of the selected/last body")
+            .clicked()
+        {
+            add(
+                state,
+                "Fillet",
+                FeatureKind::FilletAll {
+                    source: unary.unwrap(),
+                    radius: 2.0,
+                },
+            );
+        }
+        for (label, op) in [
+            ("Union", BooleanOp::Union),
+            ("Subtract", BooleanOp::Subtract),
+            ("Intersect", BooleanOp::Intersect),
+        ] {
+            if ui
+                .add_enabled(binary.is_some(), egui::Button::new(label))
+                .on_hover_text("Combine two visible bodies")
+                .clicked()
+            {
+                let (target, tool) = binary.unwrap();
+                add(state, label, FeatureKind::Boolean { op, target, tool });
+            }
+        }
+    });
 
     changed
 }
@@ -263,4 +369,42 @@ fn boolean_op(ui: &mut Ui, op: &mut BooleanOp) -> bool {
             }
         });
     changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(selected: Option<u64>, visible: &[u64]) -> HistoryState {
+        HistoryState {
+            selected: selected.map(FeatureId),
+            visible: visible.iter().copied().map(FeatureId).collect(),
+            errors: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn unary_prefers_visible_selection_else_last_visible() {
+        // Selection visible -> use it.
+        assert_eq!(state(Some(2), &[1, 2, 3]).unary_source(), Some(FeatureId(2)));
+        // Selection not visible -> fall back to last visible.
+        assert_eq!(state(Some(9), &[1, 2, 3]).unary_source(), Some(FeatureId(3)));
+        // Nothing visible -> none.
+        assert_eq!(state(Some(1), &[]).unary_source(), None);
+    }
+
+    #[test]
+    fn binary_needs_two_distinct_visible_bodies() {
+        assert_eq!(state(None, &[7]).binary_inputs(), None);
+        // Default: first visible is target, a different visible is tool.
+        assert_eq!(
+            state(None, &[1, 2, 3]).binary_inputs(),
+            Some((FeatureId(1), FeatureId(3)))
+        );
+        // Visible selection becomes target; tool is a different visible body.
+        assert_eq!(
+            state(Some(2), &[1, 2, 3]).binary_inputs(),
+            Some((FeatureId(2), FeatureId(3)))
+        );
+    }
 }
