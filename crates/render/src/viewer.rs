@@ -22,6 +22,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::WindowId;
 
 use crate::camera::OrbitCamera;
+use crate::view::ViewContext;
 use crate::Vertex;
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -45,8 +46,9 @@ pub struct MeshData {
 /// needs rebuilding; `mesh` then produces the new geometry. `mesh` is also
 /// called once at startup for the initial display.
 pub trait Controller {
-    /// Draw this frame's egui UI. Return true if the model changed.
-    fn ui(&mut self, ctx: &egui::Context) -> bool;
+    /// Draw this frame's egui UI. `view` projects between the sketch plane and
+    /// the screen for overlay drawing. Return true if the model changed.
+    fn ui(&mut self, ctx: &egui::Context, view: &ViewContext) -> bool;
     /// Produce the mesh to display.
     fn mesh(&mut self) -> MeshData;
 }
@@ -585,9 +587,17 @@ impl<C: Controller> WindowApp<C> {
             return;
         };
 
+        let ppp = state.window.scale_factor() as f32;
+        let size = egui::vec2(
+            state.config.width as f32 / ppp,
+            state.config.height as f32 / ppp,
+        );
+        let aspect = state.config.width as f32 / state.config.height.max(1) as f32;
+        let view = ViewContext::new(self.camera.view_proj(aspect), size);
+
         let raw_input = state.egui_state.take_egui_input(&state.window);
         state.egui_ctx.begin_pass(raw_input);
-        let changed = self.controller.ui(&state.egui_ctx);
+        let changed = self.controller.ui(&state.egui_ctx, &view);
         let full_output = state.egui_ctx.end_pass();
         if changed {
             let mesh = self.controller.mesh();
@@ -691,8 +701,12 @@ pub fn screenshot(
         )),
         ..Default::default()
     };
+    let view = ViewContext::new(
+        camera.view_proj(width as f32 / height as f32),
+        egui::vec2(width as f32 / PPP, height as f32 / PPP),
+    );
     egui_ctx.begin_pass(raw_input);
-    controller.ui(&egui_ctx);
+    controller.ui(&egui_ctx, &view);
     let full_output = egui_ctx.end_pass();
     let jobs = egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
     let screen = ScreenDescriptor {

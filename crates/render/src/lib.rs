@@ -6,12 +6,14 @@
 //! split this into the scene/picking/overlay structure from the outline.
 
 pub mod camera;
+mod view;
 mod viewer;
 
 // Re-export egui so `rmf-ui` and the app share exactly this version.
 pub use egui;
 
 pub use camera::OrbitCamera;
+pub use view::ViewContext;
 pub use viewer::{run, screenshot, Controller, MeshData};
 
 use bytemuck::{Pod, Zeroable};
