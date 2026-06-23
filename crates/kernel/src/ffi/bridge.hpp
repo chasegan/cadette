@@ -29,6 +29,18 @@ std::unique_ptr<Shape> make_box(double dx, double dy, double dz);
 std::unique_ptr<Shape> make_sphere(double radius);
 std::unique_ptr<Shape> make_cylinder(double radius, double height);
 
+// --- Sketch profiles (planar faces) -----------------------------------------
+std::unique_ptr<Shape> make_rectangle_face(double ox, double oy, double oz,
+                                           double xx, double xy, double xz,
+                                           double yx, double yy, double yz,
+                                           double width, double height);
+std::unique_ptr<Shape> make_circle_face(double ox, double oy, double oz,
+                                        double nx, double ny, double nz,
+                                        double radius);
+
+// --- Extrude ----------------------------------------------------------------
+std::unique_ptr<Shape> extrude(const Shape& s, double distance);
+
 // --- Transforms -------------------------------------------------------------
 std::unique_ptr<Shape> translate(const Shape& s, double dx, double dy, double dz);
 

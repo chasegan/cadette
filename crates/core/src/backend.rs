@@ -9,6 +9,7 @@
 use glam::DVec3;
 
 use crate::features::BooleanOp;
+use crate::sketch::{Profile, SketchPlane};
 
 /// A geometry engine capable of producing and combining solid bodies.
 ///
@@ -24,6 +25,12 @@ pub trait GeometryBackend {
     fn make_box(&mut self, size: DVec3) -> Result<Self::Body, Self::Error>;
     fn make_cylinder(&mut self, radius: f64, height: f64) -> Result<Self::Body, Self::Error>;
     fn make_sphere(&mut self, radius: f64) -> Result<Self::Body, Self::Error>;
+
+    /// Build a planar face from a closed profile on a base plane.
+    fn sketch(&mut self, plane: SketchPlane, profile: Profile) -> Result<Self::Body, Self::Error>;
+
+    /// Extrude a planar face (`profile`) along its normal by `distance`.
+    fn extrude(&mut self, profile: &Self::Body, distance: f64) -> Result<Self::Body, Self::Error>;
 
     fn translate(&mut self, body: &Self::Body, offset: DVec3) -> Result<Self::Body, Self::Error>;
 

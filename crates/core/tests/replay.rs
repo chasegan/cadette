@@ -6,7 +6,8 @@
 //! Rust, independent of OCCT.
 
 use rmf_core::{
-    regenerate, BooleanOp, Document, FeatureId, FeatureKind, GeometryBackend, RegenError, DVec3,
+    regenerate, BooleanOp, Document, FeatureId, FeatureKind, GeometryBackend, Profile, RegenError,
+    SketchPlane, DVec3,
 };
 
 /// A backend whose "body" is a symbolic string describing how it was built.
@@ -25,6 +26,12 @@ impl GeometryBackend for Recording {
     }
     fn make_sphere(&mut self, radius: f64) -> Result<String, String> {
         Ok(format!("sphere({radius:.0})"))
+    }
+    fn sketch(&mut self, plane: SketchPlane, profile: Profile) -> Result<String, String> {
+        Ok(format!("sketch({},{})", plane.label(), profile.type_name()))
+    }
+    fn extrude(&mut self, profile: &String, distance: f64) -> Result<String, String> {
+        Ok(format!("extrude({profile},{distance:.0})"))
     }
     fn translate(&mut self, body: &String, offset: DVec3) -> Result<String, String> {
         Ok(format!("xlat({body},{:.0},{:.0},{:.0})", offset.x, offset.y, offset.z))
@@ -79,6 +86,31 @@ fn full_replay_reduces_to_one_visible_body() {
         regen.body(cut).unwrap(),
         "sub(fillet(box(40,40,40),4),cyl(6,60))",
         "history reduces to the expected nested expression"
+    );
+}
+
+#[test]
+fn sketch_extrude_reduces_to_a_prism() {
+    let mut doc = Document::new("prism");
+    let s = doc.add(
+        "Sketch",
+        FeatureKind::Sketch {
+            plane: SketchPlane::Xy,
+            profile: Profile::Rectangle {
+                width: 30.0,
+                height: 20.0,
+            },
+        },
+    );
+    let ext = doc.add("Extrude", FeatureKind::Extrude { source: s, distance: 15.0 });
+    let regen = regenerate(&doc, &mut Recording);
+
+    assert!(regen.is_ok());
+    // The sketch is consumed by the extrude; only the solid is visible.
+    assert_eq!(regen.visible(), &[ext]);
+    assert_eq!(
+        regen.body(ext).unwrap(),
+        "extrude(sketch(XY,Rectangle),15)"
     );
 }
 

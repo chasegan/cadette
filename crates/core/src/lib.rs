@@ -18,6 +18,7 @@ pub mod document;
 pub mod features;
 pub mod history;
 pub mod regen;
+pub mod sketch;
 pub mod units;
 
 pub use backend::GeometryBackend;
@@ -26,4 +27,5 @@ pub use features::{BooleanOp, Feature, FeatureId, FeatureKind};
 pub use glam::DVec3;
 pub use history::{DependencyError, History};
 pub use regen::{regenerate, RegenError, Regeneration};
+pub use sketch::{Profile, SketchPlane};
 pub use units::LengthUnit;

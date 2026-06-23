@@ -36,6 +36,27 @@ pub mod ffi {
         fn make_sphere(radius: f64) -> Result<UniquePtr<Shape>>;
         fn make_cylinder(radius: f64, height: f64) -> Result<UniquePtr<Shape>>;
 
+        // --- Sketch profiles (planar faces) -------------------------------
+        /// A rectangular face centered at `origin`, spanning `width` along the
+        /// unit `x_dir` and `height` along the unit `y_dir`.
+        #[allow(clippy::too_many_arguments)]
+        fn make_rectangle_face(
+            ox: f64, oy: f64, oz: f64,
+            xx: f64, xy: f64, xz: f64,
+            yx: f64, yy: f64, yz: f64,
+            width: f64, height: f64,
+        ) -> Result<UniquePtr<Shape>>;
+        /// A circular face centered at `origin` on the plane with unit `normal`.
+        fn make_circle_face(
+            ox: f64, oy: f64, oz: f64,
+            nx: f64, ny: f64, nz: f64,
+            radius: f64,
+        ) -> Result<UniquePtr<Shape>>;
+
+        // --- Extrude ------------------------------------------------------
+        /// Extrude a planar face along its normal by `distance` into a solid.
+        fn extrude(shape: &Shape, distance: f64) -> Result<UniquePtr<Shape>>;
+
         // --- Transforms ---------------------------------------------------
         fn translate(shape: &Shape, dx: f64, dy: f64, dz: f64) -> Result<UniquePtr<Shape>>;
 

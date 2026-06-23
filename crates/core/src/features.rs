@@ -14,6 +14,8 @@
 use glam::DVec3;
 use serde::{Deserialize, Serialize};
 
+use crate::sketch::{Profile, SketchPlane};
+
 /// Stable identity for a feature, independent of its position in history.
 /// Survives reordering, so references never dangle when steps move.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Serialize, Deserialize)]
@@ -43,7 +45,13 @@ pub enum FeatureKind {
     /// Sphere of `radius`, centered at the origin.
     Sphere { radius: f64 },
 
+    /// A 2D sketch: a closed `profile` on `plane`. Evaluates to a planar face,
+    /// which can be extruded into a solid.
+    Sketch { plane: SketchPlane, profile: Profile },
+
     // --- Operations (reference earlier features) ---
+    /// Extrude a sketch (`source`) perpendicular to its plane by `distance`.
+    Extrude { source: FeatureId, distance: f64 },
     /// Translate `source` by `offset`.
     Translate { source: FeatureId, offset: DVec3 },
     /// Combine `target` and `tool` with a boolean `op`.
@@ -63,9 +71,11 @@ impl FeatureKind {
         match self {
             FeatureKind::Box { .. }
             | FeatureKind::Cylinder { .. }
-            | FeatureKind::Sphere { .. } => Vec::new(),
+            | FeatureKind::Sphere { .. }
+            | FeatureKind::Sketch { .. } => Vec::new(),
             FeatureKind::Translate { source, .. } => vec![*source],
             FeatureKind::FilletAll { source, .. } => vec![*source],
+            FeatureKind::Extrude { source, .. } => vec![*source],
             FeatureKind::Boolean { target, tool, .. } => vec![*target, *tool],
         }
     }
@@ -76,7 +86,9 @@ impl FeatureKind {
             FeatureKind::Box { .. } => "Box",
             FeatureKind::Cylinder { .. } => "Cylinder",
             FeatureKind::Sphere { .. } => "Sphere",
+            FeatureKind::Sketch { .. } => "Sketch",
             FeatureKind::Translate { .. } => "Translate",
+            FeatureKind::Extrude { .. } => "Extrude",
             FeatureKind::Boolean { .. } => "Boolean",
             FeatureKind::FilletAll { .. } => "Fillet",
         }

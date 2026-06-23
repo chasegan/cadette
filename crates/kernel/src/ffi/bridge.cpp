@@ -9,11 +9,21 @@
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
+#include <Geom_Plane.hxx>
+#include <gp_Ax2.hxx>
+#include <gp_Circ.hxx>
+#include <gp_Dir.hxx>
+#include <gp_Pln.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRep_Tool.hxx>
 #include <Poly_Triangulation.hxx>
@@ -73,6 +83,69 @@ std::unique_ptr<Shape> make_cylinder(double radius, double height) {
   return guard("make_cylinder", [&] {
     return std::make_unique<Shape>(
         BRepPrimAPI_MakeCylinder(radius, height).Shape());
+  });
+}
+
+// --- Sketch profiles (planar faces) -----------------------------------------
+
+std::unique_ptr<Shape> make_rectangle_face(double ox, double oy, double oz,
+                                           double xx, double xy, double xz,
+                                           double yx, double yy, double yz,
+                                           double width, double height) {
+  return guard("make_rectangle_face", [&] {
+    const gp_Vec o(ox, oy, oz);
+    const gp_Vec x(xx, xy, xz);
+    const gp_Vec y(yx, yy, yz);
+    const gp_Vec hx = x * (width * 0.5);
+    const gp_Vec hy = y * (height * 0.5);
+
+    // Corners wound counter-clockwise in the plane so the face normal agrees
+    // with x_dir x y_dir.
+    auto corner = [&](const gp_Vec& a, const gp_Vec& b) {
+      const gp_Vec p = o + a + b;
+      return gp_Pnt(p.X(), p.Y(), p.Z());
+    };
+    BRepBuilderAPI_MakePolygon poly(corner(-hx, -hy), corner(hx, -hy),
+                                    corner(hx, hy), corner(-hx, hy),
+                                    /*close=*/Standard_True);
+    BRepBuilderAPI_MakeFace face(poly.Wire());
+    return std::make_unique<Shape>(face.Shape());
+  });
+}
+
+std::unique_ptr<Shape> make_circle_face(double ox, double oy, double oz,
+                                        double nx, double ny, double nz,
+                                        double radius) {
+  return guard("make_circle_face", [&] {
+    gp_Ax2 axis(gp_Pnt(ox, oy, oz), gp_Dir(nx, ny, nz));
+    gp_Circ circle(axis, radius);
+    BRepBuilderAPI_MakeEdge edge(circle);
+    BRepBuilderAPI_MakeWire wire(edge.Edge());
+    BRepBuilderAPI_MakeFace face(wire.Wire());
+    return std::make_unique<Shape>(face.Shape());
+  });
+}
+
+// --- Extrude ----------------------------------------------------------------
+
+std::unique_ptr<Shape> extrude(const Shape& s, double distance) {
+  return guard("extrude", [&] {
+    // Find the planar face and extrude along its normal.
+    TopExp_Explorer ex(s.shape, TopAbs_FACE);
+    if (!ex.More()) {
+      throw std::runtime_error("extrude: shape has no face to extrude");
+    }
+    TopoDS_Face face = TopoDS::Face(ex.Current());
+    Handle(Geom_Surface) surface = BRep_Tool::Surface(face);
+    Handle(Geom_Plane) plane = Handle(Geom_Plane)::DownCast(surface);
+    if (plane.IsNull()) {
+      throw std::runtime_error("extrude: profile face is not planar");
+    }
+    gp_Dir normal = plane->Pln().Axis().Direction();
+    gp_Vec direction(normal);
+    direction *= distance;
+    BRepPrimAPI_MakePrism prism(s.shape, direction);
+    return std::make_unique<Shape>(prism.Shape());
   });
 }
 

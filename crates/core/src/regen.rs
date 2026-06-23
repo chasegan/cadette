@@ -138,6 +138,13 @@ where
             backend.make_cylinder(radius, height).map_err(backend_err)
         }
         FeatureKind::Sphere { radius } => backend.make_sphere(radius).map_err(backend_err),
+        FeatureKind::Sketch { plane, profile } => {
+            backend.sketch(plane, profile).map_err(backend_err)
+        }
+        FeatureKind::Extrude { source, distance } => {
+            let body = input(source)?;
+            backend.extrude(body, distance).map_err(backend_err)
+        }
         FeatureKind::Translate { source, offset } => {
             let body = input(source)?;
             backend.translate(body, offset).map_err(backend_err)

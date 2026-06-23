@@ -38,11 +38,41 @@ impl Solid {
         Ok(Self::wrap(ffi::make_cylinder(radius, height)?))
     }
 
+    // --- Sketch profiles ----------------------------------------------------
+
+    /// A rectangular planar face centered at `origin`, spanning `width` along
+    /// the unit `x_dir` and `height` along the unit `y_dir`.
+    pub fn rectangle_face(
+        origin: [f64; 3],
+        x_dir: [f64; 3],
+        y_dir: [f64; 3],
+        width: f64,
+        height: f64,
+    ) -> Result<Self> {
+        Ok(Self::wrap(ffi::make_rectangle_face(
+            origin[0], origin[1], origin[2], x_dir[0], x_dir[1], x_dir[2], y_dir[0], y_dir[1],
+            y_dir[2], width, height,
+        )?))
+    }
+
+    /// A circular planar face centered at `origin` on the plane with unit
+    /// `normal`.
+    pub fn circle_face(origin: [f64; 3], normal: [f64; 3], radius: f64) -> Result<Self> {
+        Ok(Self::wrap(ffi::make_circle_face(
+            origin[0], origin[1], origin[2], normal[0], normal[1], normal[2], radius,
+        )?))
+    }
+
     // --- Transforms ---------------------------------------------------------
 
     /// A copy of this solid translated by `(dx, dy, dz)`.
     pub fn translate(&self, dx: f64, dy: f64, dz: f64) -> Result<Self> {
         Ok(Self::wrap(ffi::translate(&self.0, dx, dy, dz)?))
+    }
+
+    /// Extrude this planar face along its normal by `distance` into a solid.
+    pub fn extrude(&self, distance: f64) -> Result<Self> {
+        Ok(Self::wrap(ffi::extrude(&self.0, distance)?))
     }
 
     // --- Booleans -----------------------------------------------------------

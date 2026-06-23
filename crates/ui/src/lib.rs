@@ -10,7 +10,7 @@
 //! no kernel.
 
 use egui::{Color32, Context, RichText, Ui};
-use rmf_core::{BooleanOp, Document, FeatureId, FeatureKind, DVec3};
+use rmf_core::{BooleanOp, Document, FeatureId, FeatureKind, Profile, SketchPlane, DVec3};
 
 const ERROR_COLOR: Color32 = Color32::from_rgb(232, 92, 92);
 
@@ -110,6 +110,18 @@ pub fn history_panel(ctx: &Context, doc: &mut Document, state: &mut HistoryState
 /// only when valid inputs exist. New features are selected on creation.
 fn add_feature_toolbar(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> bool {
     let mut changed = false;
+
+    // Pick operation inputs up front (immutable borrows of doc/state) so the
+    // mutating `add` closure can take exclusive borrows afterward.
+    let unary = state.unary_source();
+    let binary = state.binary_inputs();
+    let extrude_source = unary.filter(|id| {
+        matches!(
+            doc.history.get(*id).map(|f| &f.kind),
+            Some(FeatureKind::Sketch { .. })
+        )
+    });
+
     let mut add = |state: &mut HistoryState, name: &str, kind: FeatureKind| {
         let id = doc.add(name, kind);
         state.selected = Some(id);
@@ -128,11 +140,36 @@ fn add_feature_toolbar(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState
         if ui.button("Sphere").clicked() {
             add(state, "Sphere", FeatureKind::Sphere { radius: 10.0 });
         }
+        if ui.button("Sketch").clicked() {
+            add(
+                state,
+                "Sketch",
+                FeatureKind::Sketch {
+                    plane: SketchPlane::Xy,
+                    profile: Profile::Rectangle {
+                        width: 30.0,
+                        height: 30.0,
+                    },
+                },
+            );
+        }
     });
 
-    let unary = state.unary_source();
-    let binary = state.binary_inputs();
     ui.horizontal_wrapped(|ui| {
+        if ui
+            .add_enabled(extrude_source.is_some(), egui::Button::new("Extrude"))
+            .on_hover_text("Extrude the selected/last sketch into a solid")
+            .clicked()
+        {
+            add(
+                state,
+                "Extrude",
+                FeatureKind::Extrude {
+                    source: extrude_source.unwrap(),
+                    distance: 20.0,
+                },
+            );
+        }
         if ui
             .add_enabled(unary.is_some(), egui::Button::new("Move"))
             .on_hover_text("Translate the selected/last body")
@@ -300,6 +337,22 @@ fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
         FeatureKind::Sphere { radius } => {
             changed |= drag(ui, "Radius", radius);
         }
+        FeatureKind::Sketch { plane, profile } => {
+            changed |= plane_combo(ui, plane);
+            changed |= profile_combo(ui, profile);
+            match profile {
+                Profile::Rectangle { width, height } => {
+                    changed |= drag(ui, "Width", width);
+                    changed |= drag(ui, "Height", height);
+                }
+                Profile::Circle { radius } => {
+                    changed |= drag(ui, "Radius", radius);
+                }
+            }
+        }
+        FeatureKind::Extrude { distance, .. } => {
+            changed |= drag_signed(ui, "Distance", distance);
+        }
         FeatureKind::Translate { offset, .. } => {
             changed |= drag(ui, "dX", &mut offset.x);
             changed |= drag(ui, "dY", &mut offset.y);
@@ -332,19 +385,74 @@ fn error_list(ui: &mut Ui, doc: &Document, state: &HistoryState) {
     }
 }
 
-/// A labeled millimeter drag-value. Returns whether the value changed.
+/// A labeled millimeter drag-value, non-negative. Returns whether it changed.
 fn drag(ui: &mut Ui, label: &str, value: &mut f64) -> bool {
+    drag_ranged(ui, label, value, 0.0..=10_000.0)
+}
+
+/// A labeled millimeter drag-value allowing negative values (e.g. extrude
+/// distance, translate offset).
+fn drag_signed(ui: &mut Ui, label: &str, value: &mut f64) -> bool {
+    drag_ranged(ui, label, value, -10_000.0..=10_000.0)
+}
+
+fn drag_ranged(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut f64,
+    range: std::ops::RangeInclusive<f64>,
+) -> bool {
     ui.horizontal(|ui| {
         ui.label(label);
         ui.add(
             egui::DragValue::new(value)
                 .speed(0.2)
-                .range(0.0..=10_000.0)
+                .range(range)
                 .suffix(" mm"),
         )
         .changed()
     })
     .inner
+}
+
+fn plane_combo(ui: &mut Ui, plane: &mut SketchPlane) -> bool {
+    let mut changed = false;
+    egui::ComboBox::from_label("Plane")
+        .selected_text(plane.label())
+        .show_ui(ui, |ui| {
+            for option in [SketchPlane::Xy, SketchPlane::Xz, SketchPlane::Yz] {
+                if ui
+                    .selectable_value(plane, option, option.label())
+                    .changed()
+                {
+                    changed = true;
+                }
+            }
+        });
+    changed
+}
+
+/// Profile-type selector. Switching type resets to a sensible default size.
+fn profile_combo(ui: &mut Ui, profile: &mut Profile) -> bool {
+    let mut changed = false;
+    egui::ComboBox::from_label("Profile")
+        .selected_text(profile.type_name())
+        .show_ui(ui, |ui| {
+            let is_rect = matches!(profile, Profile::Rectangle { .. });
+            if ui.selectable_label(is_rect, "Rectangle").clicked() && !is_rect {
+                *profile = Profile::Rectangle {
+                    width: 30.0,
+                    height: 30.0,
+                };
+                changed = true;
+            }
+            let is_circle = matches!(profile, Profile::Circle { .. });
+            if ui.selectable_label(is_circle, "Circle").clicked() && !is_circle {
+                *profile = Profile::Circle { radius: 15.0 };
+                changed = true;
+            }
+        });
+    changed
 }
 
 fn boolean_op(ui: &mut Ui, op: &mut BooleanOp) -> bool {
