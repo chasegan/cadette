@@ -46,6 +46,20 @@ impl GeometryBackend for KernelBackend {
         }
     }
 
+    fn sketch_loop(
+        &mut self,
+        plane: SketchPlane,
+        points: &[[f64; 2]],
+    ) -> Result<Solid, KernelError> {
+        let flat: Vec<f64> = points.iter().flat_map(|p| [p[0], p[1]]).collect();
+        Solid::polygon_face(
+            plane.origin().to_array(),
+            plane.x_dir().to_array(),
+            plane.y_dir().to_array(),
+            &flat,
+        )
+    }
+
     fn extrude(&mut self, profile: &Solid, distance: f64) -> Result<Solid, KernelError> {
         profile.extrude(distance)
     }

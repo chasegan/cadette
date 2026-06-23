@@ -37,6 +37,10 @@ std::unique_ptr<Shape> make_rectangle_face(double ox, double oy, double oz,
 std::unique_ptr<Shape> make_circle_face(double ox, double oy, double oz,
                                         double nx, double ny, double nz,
                                         double radius);
+std::unique_ptr<Shape> make_polygon_face(double ox, double oy, double oz,
+                                         double xx, double xy, double xz,
+                                         double yx, double yy, double yz,
+                                         rust::Slice<const double> points);
 
 // --- Extrude ----------------------------------------------------------------
 std::unique_ptr<Shape> extrude(const Shape& s, double distance);

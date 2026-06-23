@@ -55,6 +55,12 @@ impl History {
         &self.features
     }
 
+    /// Mutable access to all features in order — for bulk passes such as
+    /// re-solving every constraint sketch before regeneration.
+    pub fn features_mut(&mut self) -> &mut [Feature] {
+        &mut self.features
+    }
+
     pub fn len(&self) -> usize {
         self.features.len()
     }

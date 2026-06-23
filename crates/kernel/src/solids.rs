@@ -63,6 +63,20 @@ impl Solid {
         )?))
     }
 
+    /// A polygonal planar face from a flat `[x0, y0, x1, y1, ...]` loop mapped
+    /// onto the plane `origin + x*x_dir + y*y_dir`.
+    pub fn polygon_face(
+        origin: [f64; 3],
+        x_dir: [f64; 3],
+        y_dir: [f64; 3],
+        points: &[f64],
+    ) -> Result<Self> {
+        Ok(Self::wrap(ffi::make_polygon_face(
+            origin[0], origin[1], origin[2], x_dir[0], x_dir[1], x_dir[2], y_dir[0], y_dir[1],
+            y_dir[2], points,
+        )?))
+    }
+
     // --- Transforms ---------------------------------------------------------
 
     /// A copy of this solid translated by `(dx, dy, dz)`.

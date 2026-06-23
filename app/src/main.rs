@@ -10,13 +10,51 @@
 //! headless verification.
 
 use rmf_core::{
-    regenerate, BooleanOp, Document, FeatureKind, Profile, RegenError, SketchPlane, DVec3,
+    regenerate, BooleanOp, Constraint, Document, FeatureKind, Profile, RegenError, Sketch2d,
+    SketchPlane, DVec3,
 };
 use rmf_kernel::KernelBackend;
 use rmf_render::{Controller, MeshData};
 use rmf_ui::{history_panel, HistoryState};
 
 const DEFLECTION_MM: f64 = 0.1;
+
+/// A centered, axis-aligned rectangle defined by constraints. The corner points
+/// start deliberately rough; the solver snaps them to an exact `width x height`
+/// rectangle. Anchored at its lower-left corner.
+fn constraint_rectangle(width: f64, height: f64) -> Sketch2d {
+    let (hw, hh) = (width / 2.0, height / 2.0);
+    let mut s = Sketch2d::new();
+    let p0 = s.add_point(-hw, -hh); // anchor (exact)
+    let p1 = s.add_point(hw * 0.9, -hh * 0.8);
+    let p2 = s.add_point(hw * 1.1, hh * 0.9);
+    let p3 = s.add_point(-hw * 0.8, hh * 1.1);
+
+    let bottom = s.add_line(p0, p1);
+    let right = s.add_line(p1, p2);
+    let top = s.add_line(p2, p3);
+    let left = s.add_line(p3, p0);
+
+    s.add_constraint(Constraint::Fixed(p0));
+    s.add_constraint(Constraint::Horizontal(bottom));
+    s.add_constraint(Constraint::Vertical(right));
+    s.add_constraint(Constraint::Horizontal(top));
+    s.add_constraint(Constraint::Vertical(left));
+    s.add_constraint(Constraint::Distance(p0, p1, width));
+    s.add_constraint(Constraint::Distance(p1, p2, height));
+    s
+}
+
+/// Solve every constraint sketch in the document in place, so regeneration
+/// reads solved coordinates. (`core` can't solve — that would cycle with the
+/// solver crate — so the app drives it here.)
+fn solve_sketches(doc: &mut Document) {
+    for feature in doc.history.features_mut() {
+        if let FeatureKind::ConstraintSketch { sketch, .. } = &mut feature.kind {
+            rmf_solver::solve_sketch(sketch);
+        }
+    }
+}
 
 /// The default starting part, built end to end from sketches: a sketched
 /// rectangle extruded into a block, edges filleted, then a sketched circle
@@ -25,15 +63,13 @@ const DEFLECTION_MM: f64 = 0.1;
 fn build_document() -> Document {
     let mut doc = Document::new("spike-part");
 
-    // Block: 40 x 40 rectangle on XY, extruded 40 up, edges rounded.
+    // Block: a constraint-driven 40 x 40 rectangle on XY, extruded 40 up,
+    // edges rounded.
     let base = doc.add(
         "Base profile",
-        FeatureKind::Sketch {
+        FeatureKind::ConstraintSketch {
             plane: SketchPlane::Xy,
-            profile: Profile::Rectangle {
-                width: 40.0,
-                height: 40.0,
-            },
+            sketch: constraint_rectangle(40.0, 40.0),
         },
     );
     let block = doc.add("Extrude base", FeatureKind::Extrude { source: base, distance: 40.0 });
@@ -178,6 +214,7 @@ impl Controller for Modeler {
     /// Regenerate the document through OCCT and tessellate every visible body
     /// into one mesh. Records per-feature errors for the panel.
     fn mesh(&mut self) -> MeshData {
+        solve_sketches(&mut self.doc);
         let regen = regenerate(&self.doc, &mut self.backend);
         self.ui.errors = regen
             .errors()
@@ -206,6 +243,7 @@ fn error_message(err: &RegenError<rmf_kernel::KernelError>) -> String {
     match err {
         RegenError::Backend { source, .. } => source.to_string(),
         RegenError::MissingInput { input, .. } => format!("missing input {input:?}"),
+        RegenError::Invalid { reason, .. } => reason.to_string(),
     }
 }
 
@@ -215,8 +253,8 @@ fn main() -> anyhow::Result<()> {
     let mut modeler = Modeler::new();
 
     if std::env::args().any(|a| a == "--screenshot") {
-        // Pre-select the fillet so the screenshot also shows the parameter editor.
-        modeler.ui.selected = modeler.doc.history.features().get(1).map(|f| f.id);
+        // Pre-select the constraint sketch so the screenshot shows its editor.
+        modeler.ui.selected = modeler.doc.history.features().first().map(|f| f.id);
         let path = "out/modeler.png";
         std::fs::create_dir_all("out")?;
         rmf_render::screenshot(modeler, 1280, 820, path)?;
@@ -295,6 +333,41 @@ mod tests {
         };
         let after = span(&m.mesh(), 0);
         assert!((before - 40.0).abs() < 0.5 && (after - 80.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn constraint_sketch_solves_and_extrudes_to_a_prism() {
+        // A rough constraint rectangle must be solved, turned into a polygon
+        // face, and extruded into a correctly-sized prism — the full Phase 2
+        // geometry path.
+        let mut doc = Document::new("c-prism");
+        let base = doc.add(
+            "Sketch",
+            FeatureKind::ConstraintSketch {
+                plane: SketchPlane::Xy,
+                sketch: constraint_rectangle(30.0, 20.0),
+            },
+        );
+        doc.add(
+            "Extrude",
+            FeatureKind::Extrude {
+                source: base,
+                distance: 15.0,
+            },
+        );
+        let mut m = Modeler {
+            doc,
+            backend: KernelBackend::default(),
+            ui: HistoryState::default(),
+            undo: Vec::new(),
+            redo: Vec::new(),
+            editing: false,
+        };
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty());
+        assert!((span(&mesh, 0) - 30.0).abs() < 0.5, "x span {}", span(&mesh, 0));
+        assert!((span(&mesh, 1) - 20.0).abs() < 0.5, "y span {}", span(&mesh, 1));
+        assert!((span(&mesh, 2) - 15.0).abs() < 0.5, "z span {}", span(&mesh, 2));
     }
 
     #[test]

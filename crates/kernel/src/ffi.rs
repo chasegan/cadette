@@ -52,6 +52,15 @@ pub mod ffi {
             nx: f64, ny: f64, nz: f64,
             radius: f64,
         ) -> Result<UniquePtr<Shape>>;
+        /// A polygonal face from a closed loop of 2D points (`points` is a flat
+        /// `[x0, y0, x1, y1, ...]`) mapped onto the plane `origin + x*xdir + y*ydir`.
+        #[allow(clippy::too_many_arguments)]
+        fn make_polygon_face(
+            ox: f64, oy: f64, oz: f64,
+            xx: f64, xy: f64, xz: f64,
+            yx: f64, yy: f64, yz: f64,
+            points: &[f64],
+        ) -> Result<UniquePtr<Shape>>;
 
         // --- Extrude ------------------------------------------------------
         /// Extrude a planar face along its normal by `distance` into a solid.

@@ -14,7 +14,7 @@
 use glam::DVec3;
 use serde::{Deserialize, Serialize};
 
-use crate::sketch::{Profile, SketchPlane};
+use crate::sketch::{Profile, Sketch2d, SketchPlane};
 
 /// Stable identity for a feature, independent of its position in history.
 /// Survives reordering, so references never dangle when steps move.
@@ -49,6 +49,11 @@ pub enum FeatureKind {
     /// which can be extruded into a solid.
     Sketch { plane: SketchPlane, profile: Profile },
 
+    /// A constraint-driven 2D sketch on `plane`. Its solved geometry forms a
+    /// closed loop that evaluates to a planar face (see [`Sketch2d`]). The
+    /// solver runs before regeneration, so the stored coordinates are solved.
+    ConstraintSketch { plane: SketchPlane, sketch: Sketch2d },
+
     // --- Operations (reference earlier features) ---
     /// Extrude a sketch (`source`) perpendicular to its plane by `distance`.
     Extrude { source: FeatureId, distance: f64 },
@@ -72,7 +77,8 @@ impl FeatureKind {
             FeatureKind::Box { .. }
             | FeatureKind::Cylinder { .. }
             | FeatureKind::Sphere { .. }
-            | FeatureKind::Sketch { .. } => Vec::new(),
+            | FeatureKind::Sketch { .. }
+            | FeatureKind::ConstraintSketch { .. } => Vec::new(),
             FeatureKind::Translate { source, .. } => vec![*source],
             FeatureKind::FilletAll { source, .. } => vec![*source],
             FeatureKind::Extrude { source, .. } => vec![*source],
@@ -87,6 +93,7 @@ impl FeatureKind {
             FeatureKind::Cylinder { .. } => "Cylinder",
             FeatureKind::Sphere { .. } => "Sphere",
             FeatureKind::Sketch { .. } => "Sketch",
+            FeatureKind::ConstraintSketch { .. } => "Sketch",
             FeatureKind::Translate { .. } => "Translate",
             FeatureKind::Extrude { .. } => "Extrude",
             FeatureKind::Boolean { .. } => "Boolean",

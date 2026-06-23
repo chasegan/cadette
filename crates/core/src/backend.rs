@@ -29,6 +29,14 @@ pub trait GeometryBackend {
     /// Build a planar face from a closed profile on a base plane.
     fn sketch(&mut self, plane: SketchPlane, profile: Profile) -> Result<Self::Body, Self::Error>;
 
+    /// Build a planar face from an ordered closed loop of 2D points (in plane
+    /// coordinates) — the resolved geometry of a constraint sketch.
+    fn sketch_loop(
+        &mut self,
+        plane: SketchPlane,
+        points: &[[f64; 2]],
+    ) -> Result<Self::Body, Self::Error>;
+
     /// Extrude a planar face (`profile`) along its normal by `distance`.
     fn extrude(&mut self, profile: &Self::Body, distance: f64) -> Result<Self::Body, Self::Error>;
 

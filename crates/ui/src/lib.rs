@@ -10,7 +10,9 @@
 //! no kernel.
 
 use egui::{Color32, Context, RichText, Ui};
-use rmf_core::{BooleanOp, Document, FeatureId, FeatureKind, Profile, SketchPlane, DVec3};
+use rmf_core::{
+    BooleanOp, Constraint, Document, FeatureId, FeatureKind, Profile, SketchPlane, DVec3,
+};
 
 const ERROR_COLOR: Color32 = Color32::from_rgb(232, 92, 92);
 
@@ -381,6 +383,36 @@ fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
                 }
                 Profile::Circle { radius } => {
                     changed |= drag(ui, "Radius", radius);
+                }
+            }
+        }
+        FeatureKind::ConstraintSketch { plane, sketch } => {
+            changed |= plane_combo(ui, plane);
+            ui.label(
+                RichText::new(format!(
+                    "{} points · {} lines · {} constraints",
+                    sketch.points.len(),
+                    sketch.lines.len(),
+                    sketch.constraints.len()
+                ))
+                .small()
+                .weak(),
+            );
+            // Editable dimensions: drag a Distance/Radius value and the sketch
+            // re-solves. (Drawing entities + geometric constraints land in the
+            // next increment.)
+            let mut dim = 0;
+            for constraint in &mut sketch.constraints {
+                match constraint {
+                    Constraint::Distance(_, _, value) => {
+                        dim += 1;
+                        changed |= drag(ui, &format!("Length {dim}"), value);
+                    }
+                    Constraint::Radius(_, value) => {
+                        dim += 1;
+                        changed |= drag(ui, &format!("Radius {dim}"), value);
+                    }
+                    _ => {}
                 }
             }
         }

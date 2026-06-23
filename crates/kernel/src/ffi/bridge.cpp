@@ -126,6 +126,32 @@ std::unique_ptr<Shape> make_circle_face(double ox, double oy, double oz,
   });
 }
 
+std::unique_ptr<Shape> make_polygon_face(double ox, double oy, double oz,
+                                         double xx, double xy, double xz,
+                                         double yx, double yy, double yz,
+                                         rust::Slice<const double> points) {
+  return guard("make_polygon_face", [&] {
+    const std::size_t count = points.size() / 2;
+    if (count < 3) {
+      throw std::runtime_error("make_polygon_face: need at least 3 points");
+    }
+    const gp_Vec o(ox, oy, oz);
+    const gp_Vec x(xx, xy, xz);
+    const gp_Vec y(yx, yy, yz);
+
+    BRepBuilderAPI_MakePolygon poly;
+    for (std::size_t i = 0; i < count; ++i) {
+      const double u = points[2 * i];
+      const double v = points[2 * i + 1];
+      const gp_Vec p = o + x * u + y * v;
+      poly.Add(gp_Pnt(p.X(), p.Y(), p.Z()));
+    }
+    poly.Close();
+    BRepBuilderAPI_MakeFace face(poly.Wire());
+    return std::make_unique<Shape>(face.Shape());
+  });
+}
+
 // --- Extrude ----------------------------------------------------------------
 
 std::unique_ptr<Shape> extrude(const Shape& s, double distance) {

@@ -2010,6 +2010,7 @@ dependencies = [
  "rmf-core",
  "rmf-kernel",
  "rmf-render",
+ "rmf-solver",
  "rmf-ui",
 ]
 

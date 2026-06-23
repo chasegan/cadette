@@ -28,15 +28,21 @@ pub enum RegenError<E> {
     Backend { feature: FeatureId, source: E },
     /// A referenced input wasn't available (failed, suppressed, or rolled back).
     MissingInput { feature: FeatureId, input: FeatureId },
+    /// The feature's own definition is invalid (e.g. a sketch with no closed
+    /// loop to extrude).
+    Invalid {
+        feature: FeatureId,
+        reason: &'static str,
+    },
 }
 
 impl<E> RegenError<E> {
     /// The feature that failed.
     pub fn feature(&self) -> FeatureId {
         match self {
-            RegenError::Backend { feature, .. } | RegenError::MissingInput { feature, .. } => {
-                *feature
-            }
+            RegenError::Backend { feature, .. }
+            | RegenError::MissingInput { feature, .. }
+            | RegenError::Invalid { feature, .. } => *feature,
         }
     }
 }
@@ -132,31 +138,39 @@ where
     };
     let backend_err = |source: B::Error| RegenError::Backend { feature, source };
 
-    match *kind {
-        FeatureKind::Box { size } => backend.make_box(size).map_err(backend_err),
+    // Matched by reference: some variants (constraint sketches) are not Copy.
+    match kind {
+        FeatureKind::Box { size } => backend.make_box(*size).map_err(backend_err),
         FeatureKind::Cylinder { radius, height } => {
-            backend.make_cylinder(radius, height).map_err(backend_err)
+            backend.make_cylinder(*radius, *height).map_err(backend_err)
         }
-        FeatureKind::Sphere { radius } => backend.make_sphere(radius).map_err(backend_err),
+        FeatureKind::Sphere { radius } => backend.make_sphere(*radius).map_err(backend_err),
         FeatureKind::Sketch { plane, profile } => {
-            backend.sketch(plane, profile).map_err(backend_err)
+            backend.sketch(*plane, *profile).map_err(backend_err)
         }
+        FeatureKind::ConstraintSketch { plane, sketch } => match sketch.profile_loop() {
+            Some(points) => backend.sketch_loop(*plane, &points).map_err(backend_err),
+            None => Err(RegenError::Invalid {
+                feature,
+                reason: "sketch has no closed loop to build a profile",
+            }),
+        },
         FeatureKind::Extrude { source, distance } => {
-            let body = input(source)?;
-            backend.extrude(body, distance).map_err(backend_err)
+            let body = input(*source)?;
+            backend.extrude(body, *distance).map_err(backend_err)
         }
         FeatureKind::Translate { source, offset } => {
-            let body = input(source)?;
-            backend.translate(body, offset).map_err(backend_err)
+            let body = input(*source)?;
+            backend.translate(body, *offset).map_err(backend_err)
         }
         FeatureKind::Boolean { op, target, tool } => {
-            let target = input(target)?;
-            let tool = input(tool)?;
-            backend.boolean(op, target, tool).map_err(backend_err)
+            let target_body = input(*target)?;
+            let tool_body = input(*tool)?;
+            backend.boolean(*op, target_body, tool_body).map_err(backend_err)
         }
         FeatureKind::FilletAll { source, radius } => {
-            let body = input(source)?;
-            backend.fillet_all(body, radius).map_err(backend_err)
+            let body = input(*source)?;
+            backend.fillet_all(body, *radius).map_err(backend_err)
         }
     }
 }

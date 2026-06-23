@@ -184,4 +184,38 @@ impl Sketch2d {
     pub fn circle(&self, id: CircleId) -> SketchCircle {
         self.circles[id.0]
     }
+
+    /// Order the line segments into a single closed loop of point coordinates
+    /// `[x, y]` (in plane coordinates), ready to become a face. Returns `None`
+    /// unless the lines form exactly one closed loop (each visited once,
+    /// returning to the start) — the case the MVP extrude path supports.
+    pub fn profile_loop(&self) -> Option<Vec<[f64; 2]>> {
+        let n = self.lines.len();
+        if n < 3 {
+            return None;
+        }
+
+        let start = self.lines[0].a;
+        let mut current = start;
+        let mut visited = vec![false; n];
+        let mut loop_points = Vec::with_capacity(n);
+
+        for _ in 0..n {
+            let p = self.point(current);
+            loop_points.push([p.x, p.y]);
+
+            // Follow an unvisited line incident to the current point.
+            let next = self
+                .lines
+                .iter()
+                .enumerate()
+                .find(|(i, l)| !visited[*i] && (l.a == current || l.b == current));
+            let (line_index, line) = next?;
+            visited[line_index] = true;
+            current = if line.a == current { line.b } else { line.a };
+        }
+
+        // A single closed loop returns to its start after visiting every line.
+        (current == start).then_some(loop_points)
+    }
 }
