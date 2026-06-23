@@ -5,7 +5,7 @@
 //! needs and gives later parametric work (`wall = 3mm`) a place to grow.
 
 /// A length unit the UI can present and parse.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LengthUnit {
     Millimeter,
     Centimeter,

@@ -28,6 +28,7 @@ rmf-ui = { path = "crates/ui" }
 
 anyhow = "1"
 thiserror = "2"
+serde = { version = "1", features = ["derive"] }
 glam = "0.29"
 bytemuck = { version = "1", features = ["derive"] }
 log = "0.4"

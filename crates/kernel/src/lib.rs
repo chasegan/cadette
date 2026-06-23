@@ -7,9 +7,11 @@
 //! - [`ffi`] — the raw `#[cxx::bridge]`. Treat as private plumbing.
 //! - [`solids`] — safe, owned wrappers and the public modeling API.
 
+pub mod backend;
 pub mod ffi;
 pub mod solids;
 
+pub use backend::KernelBackend;
 pub use solids::{Mesh, Solid};
 
 /// Error raised when an OCCT operation fails. Wraps the message OCCT threw

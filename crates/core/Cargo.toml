@@ -8,3 +8,5 @@ description = "Pure-Rust domain logic for Riemanifold: document, history, sketch
 
 [dependencies]
 thiserror = { workspace = true }
+serde = { workspace = true }
+glam = { workspace = true, features = ["serde"] }

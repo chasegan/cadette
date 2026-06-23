@@ -1,0 +1,53 @@
+//! OCCT implementation of the pure-core [`GeometryBackend`] trait.
+//!
+//! This is the seam where `rmf-core`'s data-described features become real
+//! B-rep solids. The replay engine in `rmf-core` calls these methods; we
+//! forward each to the safe [`Solid`] API. Bodies are `Solid` and errors are
+//! [`KernelError`], so a failed operation surfaces as a per-feature regen error
+//! rather than aborting the whole rebuild.
+
+use rmf_core::{BooleanOp, DVec3, GeometryBackend};
+
+use crate::{KernelError, Solid};
+
+/// A [`GeometryBackend`] backed by OpenCASCADE.
+#[derive(Default)]
+pub struct KernelBackend;
+
+impl GeometryBackend for KernelBackend {
+    type Body = Solid;
+    type Error = KernelError;
+
+    fn make_box(&mut self, size: DVec3) -> Result<Solid, KernelError> {
+        Solid::cuboid(size.x, size.y, size.z)
+    }
+
+    fn make_cylinder(&mut self, radius: f64, height: f64) -> Result<Solid, KernelError> {
+        Solid::cylinder(radius, height)
+    }
+
+    fn make_sphere(&mut self, radius: f64) -> Result<Solid, KernelError> {
+        Solid::sphere(radius)
+    }
+
+    fn translate(&mut self, body: &Solid, offset: DVec3) -> Result<Solid, KernelError> {
+        body.translate(offset.x, offset.y, offset.z)
+    }
+
+    fn boolean(
+        &mut self,
+        op: BooleanOp,
+        target: &Solid,
+        tool: &Solid,
+    ) -> Result<Solid, KernelError> {
+        match op {
+            BooleanOp::Union => target.fuse(tool),
+            BooleanOp::Subtract => target.cut(tool),
+            BooleanOp::Intersect => target.common(tool),
+        }
+    }
+
+    fn fillet_all(&mut self, body: &Solid, radius: f64) -> Result<Solid, KernelError> {
+        body.fillet_all_edges(radius)
+    }
+}
