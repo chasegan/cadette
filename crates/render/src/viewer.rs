@@ -605,11 +605,26 @@ impl<C: Controller> WindowApp<C> {
             pixels_per_point: full_output.pixels_per_point,
         };
 
+        let device = &state.scene.device;
+        let queue = &state.scene.queue;
+
+        // Apply egui's texture updates (notably the font atlas) BEFORE acquiring
+        // the surface. egui hands each delta to us exactly once via end_pass();
+        // if we skipped a frame after consuming it, the atlas would be lost for
+        // good and egui-wgpu would drop every primitive ("Missing texture
+        // Managed(0)") — the UI would never paint.
+        for (id, delta) in &full_output.textures_delta.set {
+            state.egui_renderer.update_texture(device, queue, *id, delta);
+        }
+
         let frame = match state.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             _ => {
                 state.surface.configure(&state.scene.device, &state.config);
+                for id in &full_output.textures_delta.free {
+                    state.egui_renderer.free_texture(id);
+                }
                 return;
             }
         };
@@ -617,11 +632,6 @@ impl<C: Controller> WindowApp<C> {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let device = &state.scene.device;
-        let queue = &state.scene.queue;
-        for (id, delta) in &full_output.textures_delta.set {
-            state.egui_renderer.update_texture(device, queue, *id, delta);
-        }
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         let egui_cmds =
