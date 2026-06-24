@@ -76,3 +76,30 @@ fn push_pull_offsets_the_anchored_face() {
         .unwrap();
     assert!((max_z(&shorter) - 7.0).abs() < 0.5, "pulled max z {}", max_z(&shorter));
 }
+
+#[test]
+fn push_pull_disambiguates_coplanar_faces() {
+    // Two separate boxes with coplanar top faces (both at z=10, normal +Z).
+    let a = Solid::cuboid(10.0, 10.0, 10.0).unwrap();
+    let b = Solid::cuboid(10.0, 10.0, 10.0)
+        .unwrap()
+        .translate(20.0, 0.0, 0.0)
+        .unwrap();
+    let both = a.fuse(&b).unwrap();
+
+    // Push only B's top (its centroid is (25,5,10)). A must stay put — the old
+    // plane-only match could grab A instead since both tops share the plane.
+    let pushed = both
+        .push_pull([25.0, 5.0, 10.0], [0.0, 0.0, 1.0], 5.0)
+        .unwrap();
+    let mesh = pushed.tessellate(0.5).unwrap();
+    let region_max_z = |keep: fn(f32) -> bool| {
+        mesh.positions
+            .chunks_exact(3)
+            .filter(|p| keep(p[0]))
+            .map(|p| p[2])
+            .fold(f32::MIN, f32::max)
+    };
+    assert!((region_max_z(|x| x < 15.0) - 10.0).abs() < 0.5, "A moved");
+    assert!((region_max_z(|x| x > 15.0) - 15.0).abs() < 0.5, "B not pushed");
+}

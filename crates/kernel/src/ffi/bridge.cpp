@@ -24,6 +24,10 @@
 #include <gp_Circ.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
+#include <GProp_GProps.hxx>
+#include <BRepGProp.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRep_Tool.hxx>
 #include <Poly_Triangulation.hxx>
@@ -195,9 +199,11 @@ std::unique_ptr<Shape> push_pull(const Shape& s, double px, double py, double pz
       Handle(Geom_Surface) surface = BRep_Tool::Surface(face);
       Handle(Geom_Plane) plane = Handle(Geom_Plane)::DownCast(surface);
       if (plane.IsNull()) continue;
-      const gp_Pln pln = plane->Pln();
-      if (pln.Distance(anchor) > 1e-4) continue;
-      if (std::abs(pln.Axis().Direction().Dot(wanted)) < 0.99) continue;
+      if (std::abs(plane->Pln().Axis().Direction().Dot(wanted)) < 0.99) continue;
+      // The anchor must lie on THIS face, not merely on its (infinite) plane —
+      // otherwise a coplanar neighbour could be picked instead.
+      BRepExtrema_DistShapeShape probe(BRepBuilderAPI_MakeVertex(anchor).Vertex(), face);
+      if (!probe.IsDone() || probe.Value() > 1e-4) continue;
       target = face;
       found = true;
       break;
@@ -407,7 +413,12 @@ PlaneFrame face_plane(const Shape& s, uint32_t index) {
       Handle(Geom_Plane) plane = Handle(Geom_Plane)::DownCast(surface);
       if (plane.IsNull()) break;  // not planar — can't sketch on it
       const gp_Ax3 axis = plane->Pln().Position();
-      const gp_Pnt o = axis.Location();
+      // Origin = face centroid: a point that actually lies on the face (the
+      // plane's reference point may not), so a push/pull anchor placed here
+      // matches this face rather than a coplanar neighbour.
+      GProp_GProps props;
+      BRepGProp::SurfaceProperties(face, props);
+      const gp_Pnt o = props.CentreOfMass();
       const gp_Dir x = axis.XDirection();
       const gp_Dir y = axis.YDirection();
       pf.ok = true;
