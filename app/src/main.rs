@@ -182,10 +182,11 @@ struct Modeler {
     /// plane). Transient — ids are per-regeneration.
     selection: Selection,
     /// Visible bodies from the last regeneration, kept so a picked face's plane
-    /// can be queried. `face_ranges[i]` is the global face id where body `i`'s
-    /// faces start.
+    /// can be queried. `face_ranges[i]` / `edge_ranges[i]` are the global face /
+    /// edge id where body `i` starts.
     bodies: Vec<Solid>,
     face_ranges: Vec<u32>,
+    edge_ranges: Vec<u32>,
     /// Active push/pull drag, if any.
     manipulation: Option<Manipulation>,
 }
@@ -203,6 +204,7 @@ impl Modeler {
             selection: Selection::default(),
             bodies: Vec::new(),
             face_ranges: Vec::new(),
+            edge_ranges: Vec::new(),
             manipulation: None,
         }
     }
@@ -211,6 +213,21 @@ impl Modeler {
     fn locate_face(&self, global: u32) -> Option<(usize, u32)> {
         let i = self.face_ranges.iter().rposition(|&start| start <= global)?;
         Some((i, global - self.face_ranges[i]))
+    }
+
+    /// Body index + local edge index for a global picked edge id.
+    fn locate_edge(&self, global: u32) -> Option<(usize, u32)> {
+        let i = self.edge_ranges.iter().rposition(|&start| start <= global)?;
+        Some((i, global - self.edge_ranges[i]))
+    }
+
+    /// The body feature id behind the current viewport selection, if any.
+    fn selected_body(&self) -> Option<FeatureId> {
+        let body_index = match self.selection.selected? {
+            Pick::Face(g) => self.locate_face(g)?.0,
+            Pick::Edge(g) => self.locate_edge(g)?.0,
+        };
+        self.ui.visible.get(body_index).copied()
     }
 
     /// The plane of a picked face, if it is planar.
@@ -690,10 +707,13 @@ impl Controller for Modeler {
         let bodies = regen.into_visible_bodies();
 
         let mut mesh = MeshData::default();
-        let mut face_offset = 0u32; // keep face ids unique across visible bodies
+        let mut face_offset = 0u32; // keep face/edge ids unique across bodies
+        let mut edge_offset = 0u32;
         self.face_ranges.clear();
+        self.edge_ranges.clear();
         for body in &bodies {
             self.face_ranges.push(face_offset);
+            self.edge_ranges.push(edge_offset);
             match body.tessellate(DEFLECTION_MM) {
                 Ok(part) => {
                     let base = mesh.vertices.len() as u32;
@@ -707,14 +727,17 @@ impl Controller for Modeler {
                     mesh.indices.extend(part.indices.iter().map(|i| i + base));
                     face_offset += part.face_ids.iter().copied().max().unwrap_or(0) + 1;
 
-                    // Crisp edges.
+                    // Crisp edges (edge ids offset to stay unique per body).
                     let edge_base = mesh.edge_vertices.len() as u32;
+                    let edge_ids: Vec<u32> =
+                        part.edge_ids.iter().map(|e| e + edge_offset).collect();
                     mesh.edge_vertices.extend(rmf_render::interleave_edges(
                         &part.edge_positions,
-                        &part.edge_ids,
+                        &edge_ids,
                     ));
                     mesh.edge_indices
                         .extend(part.edge_indices.iter().map(|i| i + edge_base));
+                    edge_offset += part.edge_ids.iter().copied().max().unwrap_or(0) + 1;
                 }
                 Err(e) => self.ui.errors.push((rmf_core::FeatureId(0), e.to_string())),
             }
@@ -736,6 +759,9 @@ impl Controller for Modeler {
             _ => None,
         };
         self.selection.select(pick, face_plane);
+        // Clicking a body in the viewport makes it the operation target: select
+        // its feature in the history (which is what the toolbar acts on).
+        self.ui.selected = self.selected_body();
     }
 
     fn on_hover(&mut self, pick: Option<Pick>) {
@@ -1028,6 +1054,7 @@ mod tests {
             selection: Selection::default(),
             bodies: Vec::new(),
             face_ranges: Vec::new(),
+            edge_ranges: Vec::new(),
             manipulation: None,
         };
         let mesh = m.mesh();
@@ -1097,6 +1124,27 @@ mod tests {
         assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
         let (_min, max) = bounds(&mesh);
         assert!((max[2] - 15.0).abs() < 0.5, "max z {}", max[2]);
+    }
+
+    #[test]
+    fn clicking_a_body_targets_it_for_operations() {
+        // Two separate boxes; clicking one should make it the toolbar target.
+        let mut doc = Document::new("two");
+        let a = doc.add("Box A", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let b = doc.add("Box B", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let mut m = Modeler::new();
+        m.doc = doc;
+        let _ = m.mesh(); // populate visible + ranges
+        assert_eq!(m.ui.visible, vec![a, b]);
+
+        // Face id 0 belongs to the first visible body (box A).
+        m.on_pick(Some(Pick::Face(0)));
+        assert_eq!(m.ui.selected, Some(a));
+        assert_eq!(m.selected_body(), Some(a));
+
+        // Clicking empty space clears the target.
+        m.on_pick(None);
+        assert_eq!(m.ui.selected, None);
     }
 
     #[test]
@@ -1177,6 +1225,7 @@ mod tests {
             selection: Selection::default(),
             bodies: Vec::new(),
             face_ranges: Vec::new(),
+            edge_ranges: Vec::new(),
             manipulation: None,
         };
         let mesh = m.mesh();
