@@ -747,13 +747,19 @@ impl Controller for Modeler {
         self.sketch_session.is_none()
     }
 
-    fn start_manipulation(&mut self, pick: Pick, eye: [f64; 3]) -> Option<([f64; 3], [f64; 3])> {
+    fn start_manipulation(
+        &mut self,
+        pick: Pick,
+        point: [f64; 3],
+        eye: [f64; 3],
+    ) -> Option<([f64; 3], [f64; 3])> {
         let Pick::Face(global) = pick else {
             return None; // only planar faces push/pull (for now)
         };
-        let plane = self.face_plane(global)?;
-        let point = plane.origin();
-        let mut normal = plane.normal().normalize_or_zero();
+        // Anchor at the clicked point (guaranteed on the face, even with holes);
+        // take the normal from the face plane.
+        let point = DVec3::new(point[0], point[1], point[2]);
+        let mut normal = self.face_plane(global)?.normal().normalize_or_zero();
         // Orient the normal outward (toward the camera) so dragging away from
         // the solid is a positive push.
         let eye = DVec3::new(eye[0], eye[1], eye[2]);

@@ -201,9 +201,11 @@ std::unique_ptr<Shape> push_pull(const Shape& s, double px, double py, double pz
       if (plane.IsNull()) continue;
       if (std::abs(plane->Pln().Axis().Direction().Dot(wanted)) < 0.99) continue;
       // The anchor must lie on THIS face, not merely on its (infinite) plane —
-      // otherwise a coplanar neighbour could be picked instead.
+      // otherwise a coplanar neighbour could be picked instead. The tolerance
+      // absorbs the small error in a depth-reconstructed clicked point while
+      // still being far tighter than any real gap to a separate face.
       BRepExtrema_DistShapeShape probe(BRepBuilderAPI_MakeVertex(anchor).Vertex(), face);
-      if (!probe.IsDone() || probe.Value() > 1e-4) continue;
+      if (!probe.IsDone() || probe.Value() > 0.05) continue;
       target = face;
       found = true;
       break;

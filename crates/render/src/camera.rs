@@ -48,7 +48,12 @@ impl OrbitCamera {
     /// Combined view-projection matrix for the given viewport aspect ratio.
     pub fn view_proj(&self, aspect: f32) -> Mat4 {
         let view = Mat4::look_at_rh(self.eye(), self.target, Vec3::Z);
-        let proj = Mat4::perspective_rh(self.fov_y, aspect.max(1e-3), self.znear, self.zfar);
+        // Depth range adapts to the orbit distance (rather than the wide
+        // framing range) to keep good depth-buffer precision — important for
+        // z-fighting and for reconstructing world points from depth.
+        let znear = (self.distance * 0.05).max(1e-3);
+        let zfar = self.distance * 10.0;
+        let proj = Mat4::perspective_rh(self.fov_y, aspect.max(1e-3), znear, zfar);
         proj * view
     }
 

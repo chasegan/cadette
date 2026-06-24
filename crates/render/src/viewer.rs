@@ -68,11 +68,16 @@ pub trait Controller {
         false
     }
 
-    /// Begin a push/pull on `pick` if it's manipulable. The controller captures
-    /// the anchor (orienting the normal toward `eye`) and returns the drag axis
-    /// `(point, outward_normal)`; `None` means not manipulable, so the viewport
-    /// orbits instead.
-    fn start_manipulation(&mut self, _pick: Pick, _eye: [f64; 3]) -> Option<([f64; 3], [f64; 3])> {
+    /// Begin a push/pull on `pick` if it's manipulable. `point` is the clicked
+    /// world point (on the face); the controller captures the anchor (orienting
+    /// the normal toward `eye`) and returns the drag axis `(point, outward
+    /// normal)`. `None` means not manipulable, so the viewport orbits instead.
+    fn start_manipulation(
+        &mut self,
+        _pick: Pick,
+        _point: [f64; 3],
+        _eye: [f64; 3],
+    ) -> Option<([f64; 3], [f64; 3])> {
         None
     }
     /// Update the active push/pull to `distance` along the axis. Returns whether
@@ -559,6 +564,160 @@ impl Scene {
         self.pick_face(px, py, camera, w, h).map(Pick::Face)
     }
 
+    /// Like [`Self::pick_at`], plus the world-space point under the cursor (from
+    /// the depth buffer) when a face is hit — used as a push/pull anchor that's
+    /// guaranteed to lie on the face (avoids holes/odd shapes).
+    fn pick_with_point(
+        &self,
+        px: u32,
+        py: u32,
+        camera: &OrbitCamera,
+        w: u32,
+        h: u32,
+    ) -> (Option<Pick>, Option<Vec3>) {
+        if let Some(edge) = self.pick_edge(px as f32, py as f32, camera, w, h) {
+            return (Some(Pick::Edge(edge)), None);
+        }
+        match self.pick_face(px, py, camera, w, h) {
+            Some(id) => (Some(Pick::Face(id)), self.world_under_cursor(px, py, camera, w, h)),
+            None => (None, None),
+        }
+    }
+
+    /// The world-space point under pixel `(px, py)`, reconstructed from a depth
+    /// render. `None` if nothing is there.
+    fn world_under_cursor(
+        &self,
+        px: u32,
+        py: u32,
+        camera: &OrbitCamera,
+        width: u32,
+        height: u32,
+    ) -> Option<Vec3> {
+        if self.index_count == 0 || px >= width || py >= height {
+            return None;
+        }
+        let aspect = width as f32 / height.max(1) as f32;
+        let globals = Globals::for_view(camera, aspect, Highlights::default());
+        self.queue
+            .write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
+
+        let make = |format: wgpu::TextureFormat, usage: wgpu::TextureUsages| {
+            self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("rmf-depth-pick"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let color = make(PICK_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        let depth = make(
+            DEPTH_FORMAT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("rmf-depth-pick-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.pick_pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..self.index_count, 0, 0..1);
+        }
+
+        // Depth textures only allow full copies, so copy the whole texture and
+        // index the pixel at `(px, py)`.
+        let padded = (width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rmf-depth-readback"),
+            size: (padded * height) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &depth,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::DepthOnly,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(Some(encoder.finish()));
+
+        let slice = readback.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |r| r.expect("map depth readback"));
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .ok();
+        let data = slice.get_mapped_range();
+        let off = (py * padded + px * 4) as usize;
+        let z = f32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
+        drop(data);
+        readback.unmap();
+
+        if z >= 1.0 - 1e-6 {
+            return None; // background
+        }
+        // Unproject the pixel CENTRE (+0.5) so the NDC matches the depth sample.
+        let nx = (px as f32 + 0.5) / width as f32 * 2.0 - 1.0;
+        let ny = 1.0 - (py as f32 + 0.5) / height as f32 * 2.0;
+        let inv = camera.view_proj(aspect).inverse();
+        let p = inv * glam::Vec4::new(nx, ny, z, 1.0);
+        Some(p.truncate() / p.w)
+    }
+
     /// Nearest edge to `(px, py)` in screen space, within [`EDGE_PICK_PX`].
     fn pick_edge(&self, px: f32, py: f32, camera: &OrbitCamera, w: u32, h: u32) -> Option<u32> {
         let view_proj = camera.view_proj(w as f32 / h.max(1) as f32);
@@ -968,18 +1127,20 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                         if down && !egui_used {
                             // The "smart left button": a drag that starts on a
                             // manipulable face push/pulls it; anywhere else orbits.
-                            let pick = if self.controller.wants_picking() {
-                                self.pick_under_cursor()
+                            let (pick, world) = if self.controller.wants_picking() {
+                                self.pick_with_point_under_cursor()
                             } else {
-                                None
+                                (None, None)
                             };
                             let eye = self.camera.eye();
-                            let axis = pick.and_then(|p| {
-                                self.controller.start_manipulation(
+                            let axis = match (pick, world) {
+                                (Some(p), Some(pt)) => self.controller.start_manipulation(
                                     p,
+                                    [pt.x as f64, pt.y as f64, pt.z as f64],
                                     [eye.x as f64, eye.y as f64, eye.z as f64],
-                                )
-                            });
+                                ),
+                                _ => None,
+                            };
                             match axis {
                                 Some((point, normal)) => {
                                     self.manip_axis = Some((
@@ -1135,18 +1296,20 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
 }
 
 impl<C: Controller> WindowApp<C> {
-    /// The entity under the cursor right now (no side effects).
-    fn pick_under_cursor(&self) -> Option<Pick> {
-        let state = self.state.as_ref()?;
+    /// The entity (and, for faces, the world point) under the cursor now.
+    fn pick_with_point_under_cursor(&self) -> (Option<Pick>, Option<Vec3>) {
+        let Some(state) = self.state.as_ref() else {
+            return (None, None);
+        };
         let (w, h) = (state.config.width, state.config.height);
         let px = (self.mouse.cursor.x as i64).clamp(0, w as i64 - 1) as u32;
         let py = (self.mouse.cursor.y as i64).clamp(0, h as i64 - 1) as u32;
-        state.scene.pick_at(px, py, &self.camera, w, h)
+        state.scene.pick_with_point(px, py, &self.camera, w, h)
     }
 
     /// Resolve the entity under the cursor and hand it to the controller.
     fn pick_at_cursor(&mut self) {
-        let pick = self.pick_under_cursor();
+        let (pick, _) = self.pick_with_point_under_cursor();
         self.controller.on_pick(pick);
         if let Some(state) = self.state.as_ref() {
             state.window.request_redraw();
@@ -1467,5 +1630,30 @@ mod tests {
         let camera = OrbitCamera::framing(Vec3::ZERO, 15.0);
 
         assert_eq!(scene.pick_at(32, 32, &camera, 64, 64), Some(Pick::Edge(0)));
+    }
+
+    /// The depth-reconstructed world point under the cursor lands on the surface.
+    #[test]
+    fn world_under_cursor_recovers_the_surface_point() {
+        let instance = wgpu::Instance::default();
+        let (_adapter, device, queue) = pollster::block_on(request_device(&instance, None));
+
+        let v = |x: f32, y: f32| Vertex {
+            position: [x, y, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            face_id: 0,
+        };
+        let mesh = MeshData {
+            vertices: vec![v(-10.0, -10.0), v(10.0, -10.0), v(10.0, 10.0), v(-10.0, 10.0)],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            ..Default::default()
+        };
+        let scene = Scene::new(device, queue, wgpu::TextureFormat::Rgba8Unorm, &mesh);
+        let camera = OrbitCamera::framing(Vec3::ZERO, 15.0);
+
+        // The center ray hits the quad at the origin (the camera target).
+        let p = scene.world_under_cursor(32, 32, &camera, 64, 64).unwrap();
+        assert!(p.length() < 1.0, "expected near origin, got {p:?}");
+        assert!(p.z.abs() < 0.05, "should be on the z=0 plane, got z={}", p.z);
     }
 }
