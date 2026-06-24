@@ -113,12 +113,13 @@ pub struct Gizmo {
     pub origin: [f64; 3],
 }
 
-/// A draggable gizmo handle. (Slice 1: axis-translate arrows only; planar
-/// handles and rotation rings come later.)
+/// A draggable gizmo handle. (Rotation rings come in a later slice.)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GizmoHandle {
-    /// Translate along a world axis.
+    /// Translate along a world axis (an arrow).
     TranslateAxis(Axis3),
+    /// Translate within a world plane (a corner square).
+    TranslatePlane(Plane3),
 }
 
 /// One of the three world axes.
@@ -141,15 +142,6 @@ impl Axis3 {
         }
     }
 
-    /// The two unit vectors perpendicular to this axis (for arrowheads).
-    fn perps(self) -> (Vec3, Vec3) {
-        match self {
-            Axis3::X => (Vec3::Y, Vec3::Z),
-            Axis3::Y => (Vec3::X, Vec3::Z),
-            Axis3::Z => (Vec3::X, Vec3::Y),
-        }
-    }
-
     /// Base color (X red, Y green, Z blue).
     fn color(self) -> [f32; 3] {
         match self {
@@ -157,6 +149,47 @@ impl Axis3 {
             Axis3::Y => [0.35, 0.78, 0.30],
             Axis3::Z => [0.30, 0.45, 0.95],
         }
+    }
+}
+
+/// One of the three world planes (for plane-constrained translation).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Plane3 {
+    Xy,
+    Yz,
+    Zx,
+}
+
+impl Plane3 {
+    const ALL: [Plane3; 3] = [Plane3::Xy, Plane3::Yz, Plane3::Zx];
+
+    /// The two in-plane axes.
+    fn axes(self) -> (Axis3, Axis3) {
+        match self {
+            Plane3::Xy => (Axis3::X, Axis3::Y),
+            Plane3::Yz => (Axis3::Y, Axis3::Z),
+            Plane3::Zx => (Axis3::Z, Axis3::X),
+        }
+    }
+
+    /// The axis normal to the plane.
+    fn normal(self) -> Axis3 {
+        match self {
+            Plane3::Xy => Axis3::Z,
+            Plane3::Yz => Axis3::X,
+            Plane3::Zx => Axis3::Y,
+        }
+    }
+
+    /// Handle color — the normal axis's color, lightened so a plane reads as a
+    /// plane rather than an axis.
+    fn color(self) -> [f32; 3] {
+        let c = self.normal().color();
+        [
+            c[0] + (1.0 - c[0]) * 0.35,
+            c[1] + (1.0 - c[1]) * 0.35,
+            c[2] + (1.0 - c[2]) * 0.35,
+        ]
     }
 }
 
@@ -489,7 +522,10 @@ impl Scene {
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::LineList,
+                // Filled arrows/handles; both windings visible (billboards) so no
+                // back-face culling.
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
@@ -1038,8 +1074,12 @@ fn manip_distance(
 
 /// How close (pixels) the cursor must be to an arrow to grab it.
 const GIZMO_PICK_PX: f32 = 10.0;
-/// Hovered/active arrow highlight color (gold).
+/// Hovered/active handle highlight color (gold).
 const GIZMO_HILITE: [f32; 3] = [1.0, 0.80, 0.15];
+/// Inner edge of a planar handle, as a fraction of the axis length.
+const GIZMO_PLANE_OFFSET: f32 = 0.38;
+/// Side length of a planar handle, as a fraction of the axis length.
+const GIZMO_PLANE_SIZE: f32 = 0.18;
 
 /// World length of the gizmo arrows — proportional to the orbit distance so the
 /// gizmo stays a roughly constant size on screen.
@@ -1057,39 +1097,111 @@ fn project_point(p: Vec3, camera: &OrbitCamera, w: u32, h: u32) -> Option<(f32, 
     Some(((ndc.x * 0.5 + 0.5) * w as f32, (0.5 - ndc.y * 0.5) * h as f32))
 }
 
-/// The gizmo axis whose arrow is under `cursor`, within [`GIZMO_PICK_PX`].
+/// The four world-space corners of a planar handle square.
+fn plane_corners(origin: Vec3, plane: Plane3, len: f32) -> [Vec3; 4] {
+    let (a1, a2) = plane.axes();
+    let (u, v) = (a1.dir(), a2.dir());
+    let off = len * GIZMO_PLANE_OFFSET;
+    let s = len * GIZMO_PLANE_SIZE;
+    [
+        origin + u * off + v * off,
+        origin + u * (off + s) + v * off,
+        origin + u * (off + s) + v * (off + s),
+        origin + u * off + v * (off + s),
+    ]
+}
+
+/// Intersection of ray `(ro, rd)` with the plane through `p` with normal `n`.
+fn ray_plane_intersect(ro: Vec3, rd: Vec3, p: Vec3, n: Vec3) -> Option<Vec3> {
+    let denom = rd.dot(n);
+    if denom.abs() < 1e-6 {
+        return None; // ray parallel to the plane
+    }
+    let t = (p - ro).dot(n) / denom;
+    (t >= 0.0).then(|| ro + rd * t)
+}
+
+/// Is screen point `p` inside the triangle `(a, b, c)`?
+fn point_in_tri(p: (f32, f32), a: (f32, f32), b: (f32, f32), c: (f32, f32)) -> bool {
+    let cross = |o: (f32, f32), u: (f32, f32), v: (f32, f32)| {
+        (u.0 - o.0) * (v.1 - o.1) - (u.1 - o.1) * (v.0 - o.0)
+    };
+    let d1 = cross(p, a, b);
+    let d2 = cross(p, b, c);
+    let d3 = cross(p, c, a);
+    let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+    let pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+    !(neg && pos)
+}
+
+/// The gizmo handle under `cursor`: a planar handle (filled square) takes
+/// priority over an axis arrow it might overlap.
 fn gizmo_hit_test(
     origin: Vec3,
     camera: &OrbitCamera,
     cursor: PhysicalPosition<f64>,
     w: u32,
     h: u32,
-) -> Option<Axis3> {
+) -> Option<GizmoHandle> {
     let len = gizmo_axis_length(camera);
+    let c = (cursor.x as f32, cursor.y as f32);
+
+    // Planar handles first (a filled region in each axis corner).
+    for plane in Plane3::ALL {
+        let pts: Option<Vec<(f32, f32)>> = plane_corners(origin, plane, len)
+            .iter()
+            .map(|p| project_point(*p, camera, w, h))
+            .collect();
+        if let Some(s) = pts {
+            if point_in_tri(c, s[0], s[1], s[2]) || point_in_tri(c, s[0], s[2], s[3]) {
+                return Some(GizmoHandle::TranslatePlane(plane));
+            }
+        }
+    }
+
+    // Then axis arrows (nearest shaft within the pixel threshold).
     let po = project_point(origin, camera, w, h)?;
-    let (cx, cy) = (cursor.x as f32, cursor.y as f32);
     let mut best = (GIZMO_PICK_PX, None);
     for axis in Axis3::ALL {
         if let Some(tip) = project_point(origin + axis.dir() * len, camera, w, h) {
-            let d = point_segment_distance(cx, cy, po, tip);
+            let d = point_segment_distance(c.0, c.1, po, tip);
             if d < best.0 {
                 best = (d, Some(axis));
             }
         }
     }
-    best.1
+    best.1.map(GizmoHandle::TranslateAxis)
 }
 
-/// Build the gizmo line geometry (3 colored arrows) at `origin`. `active` is the
-/// axis to highlight (hovered or being dragged), if any.
-fn gizmo_geometry(origin: Vec3, camera: &OrbitCamera, active: Option<Axis3>) -> Vec<GizmoVertex> {
+/// Build the gizmo triangle geometry at `origin`: three camera-facing axis
+/// arrows plus three planar-translate squares. `active` is highlighted gold.
+fn gizmo_geometry(
+    origin: Vec3,
+    camera: &OrbitCamera,
+    active: Option<GizmoHandle>,
+) -> Vec<GizmoVertex> {
+    let eye = camera.eye();
     let len = gizmo_axis_length(camera);
-    let head = len * 0.18; // arrowhead length
-    let radius = len * 0.06; // arrowhead base radius
+    let shaft_w = len * 0.016; // half-width of the shaft ribbon
+    let head = len * 0.20; // arrowhead length
+    let head_r = len * 0.07; // arrowhead half-width
     let mut verts = Vec::new();
 
+    let tri = |verts: &mut Vec<GizmoVertex>, a: Vec3, b: Vec3, c: Vec3, color: [f32; 3]| {
+        verts.push(GizmoVertex { position: a.to_array(), color });
+        verts.push(GizmoVertex { position: b.to_array(), color });
+        verts.push(GizmoVertex { position: c.to_array(), color });
+    };
+    // A camera-facing ribbon (two triangles) from `a` to `b`.
+    let ribbon = |verts: &mut Vec<GizmoVertex>, a: Vec3, b: Vec3, hw: f32, color: [f32; 3]| {
+        let view = (eye - (a + b) * 0.5).normalize_or_zero();
+        let perp = (b - a).cross(view).normalize_or_zero() * hw;
+        tri(verts, a - perp, a + perp, b + perp, color);
+        tri(verts, a - perp, b + perp, b - perp, color);
+    };
+
     for axis in Axis3::ALL {
-        let color = if active == Some(axis) {
+        let color = if active == Some(GizmoHandle::TranslateAxis(axis)) {
             GIZMO_HILITE
         } else {
             axis.color()
@@ -1097,25 +1209,22 @@ fn gizmo_geometry(origin: Vec3, camera: &OrbitCamera, active: Option<Axis3>) -> 
         let dir = axis.dir();
         let tip = origin + dir * len;
         let base = origin + dir * (len - head);
-        let (u, v) = axis.perps();
-        let line = |verts: &mut Vec<GizmoVertex>, a: Vec3, b: Vec3| {
-            verts.push(GizmoVertex { position: a.to_array(), color });
-            verts.push(GizmoVertex { position: b.to_array(), color });
-        };
+        // Shaft ribbon, then a camera-facing arrowhead triangle.
+        ribbon(&mut verts, origin, base, shaft_w, color);
+        let view = (eye - tip).normalize_or_zero();
+        let perp = dir.cross(view).normalize_or_zero() * head_r;
+        tri(&mut verts, tip, base + perp, base - perp, color);
+    }
 
-        // Shaft from the origin to the arrowhead base.
-        line(&mut verts, origin, base);
-        // Arrowhead: four lines from the tip to a square base ring, plus the ring.
-        let ring = [
-            base + u * radius,
-            base + v * radius,
-            base - u * radius,
-            base - v * radius,
-        ];
-        for i in 0..4 {
-            line(&mut verts, tip, ring[i]);
-            line(&mut verts, ring[i], ring[(i + 1) % 4]);
-        }
+    for plane in Plane3::ALL {
+        let color = if active == Some(GizmoHandle::TranslatePlane(plane)) {
+            GIZMO_HILITE
+        } else {
+            plane.color()
+        };
+        let q = plane_corners(origin, plane, len);
+        tri(&mut verts, q[0], q[1], q[2], color);
+        tri(&mut verts, q[0], q[2], q[3], color);
     }
     verts
 }
@@ -1328,15 +1437,35 @@ struct MouseState {
     hover_dirty: bool,
 }
 
-/// An in-progress gizmo arrow drag: the axis line `(origin, dir)` captured at
-/// grab time (kept fixed so the body translating under it doesn't move the
-/// reference), and the drag distance along it at the grab point.
+/// An in-progress gizmo drag. The reference geometry (axis line / plane) is
+/// captured at grab time and kept fixed, so the body translating under the
+/// gizmo doesn't shift the drag reference.
 #[derive(Clone, Copy)]
-struct GizmoDrag {
-    axis: Axis3,
-    origin: Vec3,
-    dir: Vec3,
-    start: f32,
+enum GizmoDrag {
+    /// Translate along an axis: line `(origin, dir)` + drag distance at grab.
+    Axis {
+        axis: Axis3,
+        origin: Vec3,
+        dir: Vec3,
+        start: f32,
+    },
+    /// Translate in a plane: plane `(point, normal)` + the grab intersection.
+    Plane {
+        plane: Plane3,
+        point: Vec3,
+        normal: Vec3,
+        grab: Vec3,
+    },
+}
+
+impl GizmoDrag {
+    /// The handle this drag corresponds to (for highlighting).
+    fn handle(&self) -> GizmoHandle {
+        match self {
+            GizmoDrag::Axis { axis, .. } => GizmoHandle::TranslateAxis(*axis),
+            GizmoDrag::Plane { plane, .. } => GizmoHandle::TranslatePlane(*plane),
+        }
+    }
 }
 
 struct WindowApp<C: Controller> {
@@ -1474,7 +1603,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                                 .as_ref()
                                 .map(|s| (s.config.width, s.config.height))
                                 .unwrap_or((1, 1));
-                            // A gizmo arrow grab takes priority over everything.
+                            // A gizmo handle grab takes priority over everything.
                             let gizmo_hit = self.controller.gizmo().and_then(|g| {
                                 let origin = Vec3::new(
                                     g.origin[0] as f32,
@@ -1482,15 +1611,33 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                                     g.origin[2] as f32,
                                 );
                                 gizmo_hit_test(origin, &self.camera, self.mouse.cursor, w, h)
-                                    .map(|axis| (origin, axis))
+                                    .map(|handle| (origin, handle))
                             });
-                            if let Some((origin, axis)) = gizmo_hit {
-                                let dir = axis.dir();
-                                let start =
-                                    manip_distance(&self.camera, self.mouse.cursor, origin, dir, w, h);
-                                self.controller
-                                    .start_transform(GizmoHandle::TranslateAxis(axis));
-                                self.gizmo_drag = Some(GizmoDrag { axis, origin, dir, start });
+                            if let Some((origin, handle)) = gizmo_hit {
+                                let drag = match handle {
+                                    GizmoHandle::TranslateAxis(axis) => {
+                                        let dir = axis.dir();
+                                        let start = manip_distance(
+                                            &self.camera,
+                                            self.mouse.cursor,
+                                            origin,
+                                            dir,
+                                            w,
+                                            h,
+                                        );
+                                        GizmoDrag::Axis { axis, origin, dir, start }
+                                    }
+                                    GizmoHandle::TranslatePlane(plane) => {
+                                        let normal = plane.normal().dir();
+                                        let (ro, rd) =
+                                            cursor_ray(&self.camera, self.mouse.cursor, w, h);
+                                        let grab = ray_plane_intersect(ro, rd, origin, normal)
+                                            .unwrap_or(origin);
+                                        GizmoDrag::Plane { plane, point: origin, normal, grab }
+                                    }
+                                };
+                                self.controller.start_transform(handle);
+                                self.gizmo_drag = Some(drag);
                                 self.manip_axis = None;
                                 self.mouse.orbiting = false;
                             } else {
@@ -1594,17 +1741,31 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                 }
                 if !egui_used {
                     if let Some(g) = self.gizmo_drag {
-                        // Gizmo translate: offset = drag along the grabbed axis.
+                        // Gizmo translate: offset = drag along the axis (closest
+                        // approach) or within the plane (ray-plane intersection).
                         if self.mouse.dragged {
-                            let cur = manip_distance(
-                                &self.camera,
-                                self.mouse.cursor,
-                                g.origin,
-                                g.dir,
-                                state.config.width,
-                                state.config.height,
-                            );
-                            let off = g.dir * (cur - g.start);
+                            let (w, h) = (state.config.width, state.config.height);
+                            let off = match g {
+                                GizmoDrag::Axis { origin, dir, start, .. } => {
+                                    let cur = manip_distance(
+                                        &self.camera,
+                                        self.mouse.cursor,
+                                        origin,
+                                        dir,
+                                        w,
+                                        h,
+                                    );
+                                    dir * (cur - start)
+                                }
+                                GizmoDrag::Plane { point, normal, grab, .. } => {
+                                    let (ro, rd) =
+                                        cursor_ray(&self.camera, self.mouse.cursor, w, h);
+                                    match ray_plane_intersect(ro, rd, point, normal) {
+                                        Some(p) => p - grab,
+                                        None => Vec3::ZERO,
+                                    }
+                                }
+                            };
                             if self
                                 .controller
                                 .update_transform([off.x as f64, off.y as f64, off.z as f64])
@@ -1784,7 +1945,7 @@ impl<C: Controller> WindowApp<C> {
             let origin = Vec3::new(g.origin[0] as f32, g.origin[1] as f32, g.origin[2] as f32);
             let (w, h) = (state.config.width, state.config.height);
             let active = if let Some(drag) = self.gizmo_drag {
-                Some(drag.axis)
+                Some(drag.handle())
             } else if state.egui_ctx.is_pointer_over_egui() {
                 None
             } else {
@@ -2101,11 +2262,28 @@ mod tests {
         let origin = Vec3::ZERO;
         let len = gizmo_axis_length(&camera);
 
-        // A cursor sitting on the X shaft (70% out, clear of the shared origin).
+        // A cursor sitting on each shaft (90% out, past the plane handles and
+        // clear of the shared origin).
         for axis in Axis3::ALL {
-            let on = project_point(origin + axis.dir() * len * 0.7, &camera, w, h).unwrap();
+            let on = project_point(origin + axis.dir() * len * 0.9, &camera, w, h).unwrap();
             let cursor = PhysicalPosition::new(on.0 as f64, on.1 as f64);
-            assert_eq!(gizmo_hit_test(origin, &camera, cursor, w, h), Some(axis));
+            assert_eq!(
+                gizmo_hit_test(origin, &camera, cursor, w, h),
+                Some(GizmoHandle::TranslateAxis(axis)),
+                "axis {axis:?}"
+            );
+        }
+
+        // A cursor in the middle of each planar handle grabs that plane.
+        for plane in Plane3::ALL {
+            let q = plane_corners(origin, plane, len);
+            let center = (q[0] + q[1] + q[2] + q[3]) * 0.25;
+            let on = project_point(center, &camera, w, h).unwrap();
+            let cursor = PhysicalPosition::new(on.0 as f64, on.1 as f64);
+            assert_eq!(
+                gizmo_hit_test(origin, &camera, cursor, w, h),
+                Some(GizmoHandle::TranslatePlane(plane))
+            );
         }
 
         // Top-left corner is far from the centered gizmo → no grab.

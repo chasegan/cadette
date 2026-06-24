@@ -985,8 +985,9 @@ impl Controller for Modeler {
         }
     }
 
-    fn start_transform(&mut self, handle: GizmoHandle) {
-        let GizmoHandle::TranslateAxis(_) = handle;
+    fn start_transform(&mut self, _handle: GizmoHandle) {
+        // Axis and plane handles both translate the selected body; the render
+        // side supplies the world-space offset to update_transform.
         if let Some(source) = self.selected_body() {
             self.transform = Some(TransformDrag {
                 source,

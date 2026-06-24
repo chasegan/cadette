@@ -15,7 +15,7 @@ pub use egui;
 pub use camera::OrbitCamera;
 pub use view::ViewContext;
 pub use viewer::{
-    run, screenshot, Axis3, Controller, Gizmo, GizmoHandle, Highlights, MeshData, Pick,
+    run, screenshot, Axis3, Controller, Gizmo, GizmoHandle, Highlights, MeshData, Pick, Plane3,
 };
 
 use bytemuck::{Pod, Zeroable};
