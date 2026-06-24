@@ -168,9 +168,10 @@ struct Modeler {
     editing: bool,
     /// Active interactive sketch, if drawing.
     sketch_session: Option<SketchSession>,
-    /// The face id highlighted from a viewport pick (transient — cleared on
-    /// regeneration, since face ids are per-regen).
+    /// The face id clicked (strong highlight) and the one under the cursor
+    /// (subtle hover). Both transient — face ids are per-regeneration.
     selected_face: Option<u32>,
+    hovered_face: Option<u32>,
 }
 
 impl Modeler {
@@ -184,6 +185,7 @@ impl Modeler {
             editing: false,
             sketch_session: None,
             selected_face: None,
+            hovered_face: None,
         }
     }
 
@@ -662,12 +664,19 @@ impl Controller for Modeler {
         mesh
     }
 
-    fn highlight(&self) -> Option<u32> {
-        self.selected_face
+    fn highlights(&self) -> rmf_render::Highlights {
+        rmf_render::Highlights {
+            selected_face: self.selected_face,
+            hovered_face: self.hovered_face,
+        }
     }
 
     fn on_face_pick(&mut self, face: Option<u32>) {
         self.selected_face = face;
+    }
+
+    fn on_face_hover(&mut self, face: Option<u32>) {
+        self.hovered_face = face;
     }
 
     fn wants_picking(&self) -> bool {
@@ -751,7 +760,8 @@ fn main() -> anyhow::Result<()> {
 
     // Verification aid: highlight a face by id to confirm the shader tint path.
     if std::env::args().any(|a| a == "--highlight-demo") {
-        modeler.selected_face = Some(0);
+        modeler.selected_face = Some(0); // strong (clicked)
+        modeler.hovered_face = Some(1); // subtle (hover)
         let path = "out/highlight-demo.png";
         std::fs::create_dir_all("out")?;
         rmf_render::screenshot(modeler, 1280, 820, path)?;
@@ -871,6 +881,7 @@ mod tests {
             editing: false,
             sketch_session: None,
             selected_face: None,
+            hovered_face: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());
@@ -955,6 +966,7 @@ mod tests {
             editing: false,
             sketch_session: None,
             selected_face: None,
+            hovered_face: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());

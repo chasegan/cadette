@@ -14,7 +14,7 @@ pub use egui;
 
 pub use camera::OrbitCamera;
 pub use view::ViewContext;
-pub use viewer::{run, screenshot, Controller, MeshData};
+pub use viewer::{run, screenshot, Controller, Highlights, MeshData};
 
 use bytemuck::{Pod, Zeroable};
 

@@ -54,14 +54,16 @@ pub trait Controller {
     fn ui(&mut self, ctx: &egui::Context, view: &ViewContext) -> bool;
     /// Produce the mesh to display.
     fn mesh(&mut self) -> MeshData;
-    /// The face id to highlight this frame, if any.
-    fn highlight(&self) -> Option<u32> {
-        None
+    /// The faces to emphasize this frame (selected + hovered).
+    fn highlights(&self) -> Highlights {
+        Highlights::default()
     }
     /// A viewport click resolved to this face (or `None` for empty space).
     fn on_face_pick(&mut self, _face: Option<u32>) {}
-    /// Whether the viewport should resolve clicks to face picks right now.
-    /// (Disabled e.g. while drawing a sketch, where clicks mean something else.)
+    /// The face currently under the cursor (or `None`), updated as it moves.
+    fn on_face_hover(&mut self, _face: Option<u32>) {}
+    /// Whether the viewport should resolve picks right now. (Disabled e.g.
+    /// while drawing a sketch, where clicks mean something else.)
     fn wants_picking(&self) -> bool {
         false
     }
@@ -82,18 +84,26 @@ struct Globals {
 }
 
 impl Globals {
-    fn for_view(camera: &OrbitCamera, aspect: f32, selected: Option<u32>) -> Self {
+    fn for_view(camera: &OrbitCamera, aspect: f32, highlights: Highlights) -> Self {
         let eye = camera.eye();
+        let sel = highlights.selected_face.map_or([0, 0], |id| [id, 1]);
+        let hov = highlights.hovered_face.map_or([0, 0], |id| [id, 1]);
         Globals {
             view_proj: camera.view_proj(aspect).to_cols_array_2d(),
             camera_pos: [eye.x, eye.y, eye.z, 1.0],
             light_dir: [0.4, 0.5, 1.0, 0.0],
-            selected: match selected {
-                Some(id) => [id, 1, 0, 0],
-                None => [0, 0, 0, 0],
-            },
+            // [selected_id, has_selected, hovered_id, has_hovered]
+            selected: [sel[0], sel[1], hov[0], hov[1]],
         }
     }
+}
+
+/// Faces to emphasize this frame: a clicked selection (strong) and a hover
+/// pre-highlight (subtle).
+#[derive(Clone, Copy, Default)]
+pub struct Highlights {
+    pub selected_face: Option<u32>,
+    pub hovered_face: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -340,10 +350,10 @@ impl Scene {
         camera: &OrbitCamera,
         width: u32,
         height: u32,
-        selected: Option<u32>,
+        highlights: Highlights,
     ) {
         let aspect = width as f32 / height.max(1) as f32;
-        let globals = Globals::for_view(camera, aspect, selected);
+        let globals = Globals::for_view(camera, aspect, highlights);
         self.queue
             .write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
 
@@ -402,7 +412,7 @@ impl Scene {
         }
 
         let aspect = width as f32 / height.max(1) as f32;
-        let globals = Globals::for_view(camera, aspect, None);
+        let globals = Globals::for_view(camera, aspect, Highlights::default());
         self.queue
             .write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
 
@@ -690,6 +700,9 @@ struct MouseState {
     /// enough to count as a drag rather than a click.
     left_press: Option<PhysicalPosition<f64>>,
     dragged: bool,
+    /// Set when something changed that could move the hovered face (cursor or
+    /// camera); consumed by the per-frame hover pick.
+    hover_dirty: bool,
 }
 
 struct WindowApp<C: Controller> {
@@ -815,6 +828,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                         } else if !down {
                             self.mouse.orbiting = false;
                             self.mouse.last = None;
+                            self.mouse.hover_dirty = true; // re-evaluate after a drag
                             // A left click that didn't drag, in the viewport, is
                             // a selection pick (if the controller wants one).
                             if self.mouse.left_press.take().is_some()
@@ -823,6 +837,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                             {
                                 self.pick_at_cursor();
                             }
+                            self.mouse.dragged = false; // ready to hover again
                         }
                     }
                     MouseButton::Right | MouseButton::Middle => {
@@ -839,6 +854,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
 
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse.cursor = position;
+                self.mouse.hover_dirty = true; // cursor (and maybe camera) moved
                 // Promote to a drag once the pointer leaves a small dead zone.
                 if let Some(press) = self.mouse.left_press {
                     let d = (position.x - press.x).hypot(position.y - press.y);
@@ -872,6 +888,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                     MouseScrollDelta::PixelDelta(p) => (p.y as f32) * 0.02,
                 };
                 self.camera.dolly(amount);
+                self.mouse.hover_dirty = true; // zoom changes what's under cursor
                 state.window.request_redraw();
             }
 
@@ -943,6 +960,24 @@ impl<C: Controller> WindowApp<C> {
             .egui_state
             .handle_platform_output(&state.window, full_output.platform_output);
 
+        // Hover pre-highlight: pick the face under the cursor at most once per
+        // frame, and only when the cursor/camera actually moved.
+        if self.mouse.hover_dirty {
+            self.mouse.hover_dirty = false;
+            let hovered = if self.controller.wants_picking()
+                && !self.mouse.dragged
+                && !state.egui_ctx.is_pointer_over_egui()
+            {
+                let (w, h) = (state.config.width, state.config.height);
+                let px = (self.mouse.cursor.x as i64).clamp(0, w as i64 - 1) as u32;
+                let py = (self.mouse.cursor.y as i64).clamp(0, h as i64 - 1) as u32;
+                state.scene.pick_face(px, py, &self.camera, w, h)
+            } else {
+                None
+            };
+            self.controller.on_face_hover(hovered);
+        }
+
         let jobs = state
             .egui_ctx
             .tessellate(full_output.shapes, full_output.pixels_per_point);
@@ -992,7 +1027,7 @@ impl<C: Controller> WindowApp<C> {
             &self.camera,
             state.config.width,
             state.config.height,
-            self.controller.highlight(),
+            self.controller.highlights(),
         );
         encode_egui(&mut encoder, &state.egui_renderer, &view, &jobs, &screen);
 
@@ -1074,8 +1109,8 @@ pub fn screenshot(
     let mut encoder =
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     let egui_cmds = egui_renderer.update_buffers(&device, &queue, &mut encoder, &jobs, &screen);
-    let highlight = controller.highlight();
-    scene.encode(&mut encoder, &color_view, &depth_view, &camera, width, height, highlight);
+    let highlights = controller.highlights();
+    scene.encode(&mut encoder, &color_view, &depth_view, &camera, width, height, highlights);
     encode_egui(&mut encoder, &egui_renderer, &color_view, &jobs, &screen);
     queue.submit(egui_cmds.into_iter().chain(std::iter::once(encoder.finish())));
     for id in &full_output.textures_delta.free {

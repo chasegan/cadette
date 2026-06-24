@@ -48,7 +48,9 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
 
     var base = vec3<f32>(0.62, 0.66, 0.72);
     if (globals.selected.y == 1u && in.face_id == globals.selected.x) {
-        base = vec3<f32>(1.0, 0.62, 0.25); // selection highlight
+        base = vec3<f32>(1.0, 0.62, 0.25); // clicked selection (strong)
+    } else if (globals.selected.w == 1u && in.face_id == globals.selected.z) {
+        base = vec3<f32>(0.78, 0.85, 1.0); // hover pre-highlight (subtle)
     }
     let shade = ambient + key * 0.7 + head;
     return vec4<f32>(base * shade, 1.0);
