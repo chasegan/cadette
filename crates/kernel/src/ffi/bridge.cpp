@@ -41,6 +41,7 @@
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
+#include <TopTools_MapOfShape.hxx>
 #include <Standard_Failure.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Trsf.hxx>
@@ -276,35 +277,45 @@ std::unique_ptr<Shape> fillet_all_edges(const Shape& s, double radius) {
   });
 }
 
-std::unique_ptr<Shape> fillet_edge(const Shape& s, double px, double py,
-                                   double pz, double radius) {
-  return guard("fillet_edge", [&] {
-    const gp_Pnt anchor(px, py, pz);
-    const TopoDS_Vertex probe_vertex =
-        BRepBuilderAPI_MakeVertex(anchor).Vertex();
+std::unique_ptr<Shape> fillet_edges(const Shape& s, rust::Slice<const double> coords,
+                                    double radius) {
+  return guard("fillet_edges", [&] {
+    if (coords.size() % 3 != 0) {
+      throw std::runtime_error("fillet_edges: coords must be xyz triples");
+    }
 
-    // Find the edge nearest the anchor point (the durable edge reference).
     TopTools_IndexedMapOfShape edges;
     TopExp::MapShapes(s.shape, TopAbs_EDGE, edges);
-    TopoDS_Edge target;
-    double best = 1e30;
-    for (int i = 1; i <= edges.Extent(); ++i) {
-      const TopoDS_Edge edge = TopoDS::Edge(edges(i));
-      BRepExtrema_DistShapeShape probe(probe_vertex, edge);
-      if (!probe.IsDone()) continue;
-      if (probe.Value() < best) {
-        best = probe.Value();
-        target = edge;
-      }
-    }
-    // The anchor lies on the picked edge, so a close match is expected; a large
-    // gap means the edge moved or vanished after an upstream edit.
-    if (target.IsNull() || best > 1.0) {
-      throw std::runtime_error("fillet_edge: no matching edge");
-    }
 
     BRepFilletAPI_MakeFillet mk(s.shape);
-    mk.Add(radius, target);
+    // A given edge must be added only once, even if two anchors resolve to it.
+    TopTools_MapOfShape added;
+    for (size_t base = 0; base < coords.size(); base += 3) {
+      const gp_Pnt anchor(coords[base], coords[base + 1], coords[base + 2]);
+      const TopoDS_Vertex probe_vertex =
+          BRepBuilderAPI_MakeVertex(anchor).Vertex();
+
+      // Find the edge nearest this anchor point (the durable edge reference).
+      TopoDS_Edge target;
+      double best = 1e30;
+      for (int i = 1; i <= edges.Extent(); ++i) {
+        const TopoDS_Edge edge = TopoDS::Edge(edges(i));
+        BRepExtrema_DistShapeShape probe(probe_vertex, edge);
+        if (!probe.IsDone()) continue;
+        if (probe.Value() < best) {
+          best = probe.Value();
+          target = edge;
+        }
+      }
+      // The anchor lies on the picked edge, so a close match is expected; a
+      // large gap means the edge moved or vanished after an upstream edit.
+      if (target.IsNull() || best > 1.0) {
+        throw std::runtime_error("fillet_edges: no matching edge");
+      }
+      if (added.Add(target)) {
+        mk.Add(radius, target);
+      }
+    }
     return std::make_unique<Shape>(mk.Shape());
   });
 }

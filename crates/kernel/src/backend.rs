@@ -85,13 +85,14 @@ impl GeometryBackend for KernelBackend {
         body.fillet_all_edges(radius)
     }
 
-    fn fillet_edge(
+    fn fillet_edges(
         &mut self,
         body: &Solid,
-        anchor: EdgeAnchor,
+        anchors: &[EdgeAnchor],
         radius: f64,
     ) -> Result<Solid, KernelError> {
-        body.fillet_edge(anchor.point.to_array(), radius)
+        let points: Vec<[f64; 3]> = anchors.iter().map(|a| a.point.to_array()).collect();
+        body.fillet_edges(&points, radius)
     }
 
     fn push_pull(

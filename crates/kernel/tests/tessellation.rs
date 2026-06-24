@@ -124,3 +124,34 @@ fn fillet_edge_rounds_only_the_nearest_edge() {
         .any(|p| p[0].abs() < 0.2 && (p[2] - 10.0).abs() < 0.2);
     assert!(!near_old_edge, "the sharp edge should have been rounded away");
 }
+
+#[test]
+fn fillet_edges_rounds_several_at_once() {
+    // Round all four vertical edges of a 10mm cube in one operation. Anchors at
+    // each vertical edge's midpoint (z=5).
+    let cube = Solid::cuboid(10.0, 10.0, 10.0).unwrap();
+    let rounded = cube
+        .fillet_edges(
+            &[
+                [0.0, 0.0, 5.0],
+                [10.0, 0.0, 5.0],
+                [10.0, 10.0, 5.0],
+                [0.0, 10.0, 5.0],
+            ],
+            2.0,
+        )
+        .unwrap();
+
+    // 6 original faces + 4 rounded fillet faces = 10.
+    let mesh = rounded.tessellate(0.3).unwrap();
+    let faces: BTreeSet<u32> = mesh.face_ids.iter().copied().collect();
+    assert_eq!(faces.len(), 10, "four fillets add four faces, got {faces:?}");
+
+    // Duplicate anchors landing on the same edge must not double-add it.
+    let twice = cube
+        .fillet_edges(&[[0.0, 0.0, 5.0], [0.0, 0.0, 5.0]], 2.0)
+        .unwrap();
+    let f = twice.tessellate(0.3).unwrap();
+    let n: BTreeSet<u32> = f.face_ids.iter().copied().collect();
+    assert_eq!(n.len(), 7, "a deduped single fillet adds one face, got {n:?}");
+}

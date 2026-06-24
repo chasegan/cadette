@@ -86,10 +86,11 @@ pub enum FeatureKind {
     },
     /// Fillet every edge of `source` with a constant `radius`.
     FilletAll { source: FeatureId, radius: f64 },
-    /// Fillet a single edge of `source` (identified by `edge`) with `radius`.
+    /// Fillet one or more edges of `source` (identified by `edges`) with a
+    /// constant `radius`. A single-edge fillet is just a one-element list.
     Fillet {
         source: FeatureId,
-        edge: EdgeAnchor,
+        edges: Vec<EdgeAnchor>,
         radius: f64,
     },
 

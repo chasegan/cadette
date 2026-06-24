@@ -61,7 +61,8 @@ pub trait Controller {
     /// A viewport click resolved to this entity (or `None` for empty space).
     /// `point` is the clicked world point on it (a face's surface or a point on
     /// an edge), used to build durable anchors; `None` if unavailable.
-    fn on_pick(&mut self, _pick: Option<Pick>, _point: Option<[f64; 3]>) {}
+    /// `additive` is true when ⇧/⌘ is held — add/remove from a multi-selection.
+    fn on_pick(&mut self, _pick: Option<Pick>, _point: Option<[f64; 3]>, _additive: bool) {}
     /// The entity currently under the cursor (or `None`), updated as it moves.
     fn on_hover(&mut self, _pick: Option<Pick>) {}
     /// Whether the viewport should resolve picks right now. (Disabled e.g.
@@ -99,6 +100,10 @@ pub use rmf_core::Pick;
 /// How close (pixels) the cursor must be to an edge to pick it over a face.
 const EDGE_PICK_PX: f32 = 6.0;
 
+/// Max selected edges the shader can highlight at once (4 ids per `vec4`).
+const SEL_EDGE_CAP: usize = 64;
+const SEL_EDGE_VEC4: usize = SEL_EDGE_CAP / 4;
+
 /// GPU uniform block, mirrored by `Globals` in the shaders.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -106,41 +111,71 @@ struct Globals {
     view_proj: [[f32; 4]; 4],
     camera_pos: [f32; 4],
     light_dir: [f32; 4],
-    /// `[selected_face, has_sel, hovered_face, has_hov]`.
+    /// `[selected_face, has_sel, hovered_face, has_hov]` (face select is single).
     faces: [u32; 4],
-    /// `[selected_edge, has_sel, hovered_edge, has_hov]`.
+    /// `[selected_edge_count, 0, hovered_edge, has_hov]`.
     edges: [u32; 4],
-}
-
-/// Split a pick into ([face_id, has_face], [edge_id, has_edge]).
-fn pick_slots(pick: Option<Pick>) -> ([u32; 2], [u32; 2]) {
-    match pick {
-        Some(Pick::Face(id)) => ([id, 1], [0, 0]),
-        Some(Pick::Edge(id)) => ([0, 0], [id, 1]),
-        None => ([0, 0], [0, 0]),
-    }
+    /// The selected edge ids, packed 4 per `vec4`, `edges[0]` of them valid.
+    sel_edges: [[u32; 4]; SEL_EDGE_VEC4],
 }
 
 impl Globals {
-    fn for_view(camera: &OrbitCamera, aspect: f32, highlights: Highlights) -> Self {
+    fn for_view(camera: &OrbitCamera, aspect: f32, highlights: &Highlights) -> Self {
         let eye = camera.eye();
-        let (sel_face, sel_edge) = pick_slots(highlights.selected);
-        let (hov_face, hov_edge) = pick_slots(highlights.hovered);
+
+        // Selection: one face highlight (sketch-on-face is single) + an edge set.
+        let mut faces = [0u32; 4];
+        let mut edges = [0u32; 4];
+        let mut sel_edges = [[0u32; 4]; SEL_EDGE_VEC4];
+        let mut n_edges = 0usize;
+        for pick in &highlights.selected {
+            match pick {
+                Pick::Face(id) => {
+                    if faces[1] == 0 {
+                        faces[0] = *id;
+                        faces[1] = 1;
+                    }
+                }
+                Pick::Edge(id) => {
+                    if n_edges < SEL_EDGE_CAP {
+                        sel_edges[n_edges / 4][n_edges % 4] = *id;
+                        n_edges += 1;
+                    }
+                }
+            }
+        }
+        edges[0] = n_edges as u32;
+
+        // Hover is always a single entity.
+        match highlights.hovered {
+            Some(Pick::Face(id)) => {
+                faces[2] = id;
+                faces[3] = 1;
+            }
+            Some(Pick::Edge(id)) => {
+                edges[2] = id;
+                edges[3] = 1;
+            }
+            None => {}
+        }
+
         Globals {
             view_proj: camera.view_proj(aspect).to_cols_array_2d(),
             camera_pos: [eye.x, eye.y, eye.z, 1.0],
             light_dir: [0.4, 0.5, 1.0, 0.0],
-            faces: [sel_face[0], sel_face[1], hov_face[0], hov_face[1]],
-            edges: [sel_edge[0], sel_edge[1], hov_edge[0], hov_edge[1]],
+            faces,
+            edges,
+            sel_edges,
         }
     }
 }
 
-/// Entities to emphasize this frame: a clicked selection (strong) and a hover
-/// pre-highlight (subtle). Each may be a face or an edge.
-#[derive(Clone, Copy, Default)]
+/// Entities to emphasize this frame: a clicked selection set (strong) and a
+/// single hover pre-highlight (subtle). Faces highlight one at a time; edges
+/// highlight as a set (for multi-edge fillet).
+#[derive(Clone, Default)]
 pub struct Highlights {
-    pub selected: Option<Pick>,
+    pub selected: Vec<Pick>,
     pub hovered: Option<Pick>,
 }
 
@@ -393,7 +428,7 @@ impl Scene {
         camera: &OrbitCamera,
         width: u32,
         height: u32,
-        highlights: Highlights,
+        highlights: &Highlights,
     ) {
         let aspect = width as f32 / height.max(1) as f32;
         let globals = Globals::for_view(camera, aspect, highlights);
@@ -455,7 +490,7 @@ impl Scene {
         }
 
         let aspect = width as f32 / height.max(1) as f32;
-        let globals = Globals::for_view(camera, aspect, Highlights::default());
+        let globals = Globals::for_view(camera, aspect, &Highlights::default());
         self.queue
             .write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
 
@@ -600,7 +635,7 @@ impl Scene {
             return None;
         }
         let aspect = width as f32 / height.max(1) as f32;
-        let globals = Globals::for_view(camera, aspect, Highlights::default());
+        let globals = Globals::for_view(camera, aspect, &Highlights::default());
         self.queue
             .write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
 
@@ -1059,6 +1094,8 @@ struct WindowApp<C: Controller> {
     manip_axis: Option<(Vec3, Vec3)>,
     /// Geometry changed outside `ui` (a manipulation drag) — re-mesh next frame.
     mesh_dirty: bool,
+    /// Latest keyboard modifier state, for ⇧/⌘-click additive selection.
+    modifiers: winit::keyboard::ModifiersState,
     state: Option<WindowState>,
 }
 
@@ -1081,6 +1118,7 @@ impl<C: Controller> WindowApp<C> {
             mouse: MouseState::default(),
             manip_axis: None,
             mesh_dirty: false,
+            modifiers: winit::keyboard::ModifiersState::empty(),
             state: None,
         }
     }
@@ -1312,6 +1350,11 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                 state.window.request_redraw();
             }
 
+            // Track ⇧/⌘ for additive (multi-) selection on the next click.
+            WindowEvent::ModifiersChanged(m) => {
+                self.modifiers = m.state();
+            }
+
             // Trackpad pinch: zoom.
             WindowEvent::PinchGesture { delta, .. } if !egui_used => {
                 self.camera.dolly(delta as f32 * 6.0);
@@ -1359,8 +1402,13 @@ impl<C: Controller> WindowApp<C> {
     /// Resolve the entity under the cursor and hand it to the controller.
     fn pick_at_cursor(&mut self) {
         let (pick, point) = self.pick_with_point_under_cursor();
-        self.controller
-            .on_pick(pick, point.map(|p| [p.x as f64, p.y as f64, p.z as f64]));
+        // ⇧ or ⌘ (super) held → add/remove from the current selection.
+        let additive = self.modifiers.shift_key() || self.modifiers.super_key();
+        self.controller.on_pick(
+            pick,
+            point.map(|p| [p.x as f64, p.y as f64, p.z as f64]),
+            additive,
+        );
         if let Some(state) = self.state.as_ref() {
             state.window.request_redraw();
         }
@@ -1465,7 +1513,7 @@ impl<C: Controller> WindowApp<C> {
             &self.camera,
             state.config.width,
             state.config.height,
-            self.controller.highlights(),
+            &self.controller.highlights(),
         );
         encode_egui(&mut encoder, &state.egui_renderer, &view, &jobs, &screen);
 
@@ -1548,7 +1596,7 @@ pub fn screenshot(
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     let egui_cmds = egui_renderer.update_buffers(&device, &queue, &mut encoder, &jobs, &screen);
     let highlights = controller.highlights();
-    scene.encode(&mut encoder, &color_view, &depth_view, &camera, width, height, highlights);
+    scene.encode(&mut encoder, &color_view, &depth_view, &camera, width, height, &highlights);
     encode_egui(&mut encoder, &egui_renderer, &color_view, &jobs, &screen);
     queue.submit(egui_cmds.into_iter().chain(std::iter::once(encoder.finish())));
     for id in &full_output.textures_delta.free {

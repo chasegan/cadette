@@ -183,11 +183,11 @@ where
         }
         FeatureKind::Fillet {
             source,
-            edge,
+            edges,
             radius,
         } => {
             let body = input(*source)?;
-            backend.fillet_edge(body, *edge, *radius).map_err(backend_err)
+            backend.fillet_edges(body, edges, *radius).map_err(backend_err)
         }
         FeatureKind::PushPull {
             source,

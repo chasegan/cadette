@@ -114,10 +114,10 @@ pub mod ffi {
         /// Fillet every edge of `shape` with a constant `radius`.
         fn fillet_all_edges(shape: &Shape, radius: f64) -> Result<UniquePtr<Shape>>;
 
-        /// Fillet the single edge nearest point `(px,py,pz)` with `radius`.
-        fn fillet_edge(
+        /// Fillet the edges nearest each xyz triple in `coords` with `radius`.
+        fn fillet_edges(
             shape: &Shape,
-            px: f64, py: f64, pz: f64,
+            coords: &[f64],
             radius: f64,
         ) -> Result<UniquePtr<Shape>>;
 

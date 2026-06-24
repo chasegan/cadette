@@ -60,8 +60,9 @@ std::unique_ptr<Shape> common(const Shape& a, const Shape& b);
 
 // --- Edge treatments --------------------------------------------------------
 std::unique_ptr<Shape> fillet_all_edges(const Shape& s, double radius);
-std::unique_ptr<Shape> fillet_edge(const Shape& s, double px, double py,
-                                   double pz, double radius);
+std::unique_ptr<Shape> fillet_edges(const Shape& s,
+                                    rust::Slice<const double> coords,
+                                    double radius);
 
 // --- Display / export -------------------------------------------------------
 Mesh tessellate(const Shape& s, double deflection);

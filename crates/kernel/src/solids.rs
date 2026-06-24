@@ -122,11 +122,15 @@ impl Solid {
         Ok(Self::wrap(ffi::fillet_all_edges(&self.0, radius)?))
     }
 
+    /// Fillet the edges nearest each `point` with `radius`, in one operation.
+    pub fn fillet_edges(&self, points: &[[f64; 3]], radius: f64) -> Result<Self> {
+        let coords: Vec<f64> = points.iter().flat_map(|p| p.iter().copied()).collect();
+        Ok(Self::wrap(ffi::fillet_edges(&self.0, &coords, radius)?))
+    }
+
     /// Fillet the single edge nearest `point` with `radius`.
     pub fn fillet_edge(&self, point: [f64; 3], radius: f64) -> Result<Self> {
-        Ok(Self::wrap(ffi::fillet_edge(
-            &self.0, point[0], point[1], point[2], radius,
-        )?))
+        self.fillet_edges(&[point], radius)
     }
 
     // --- Display / export ---------------------------------------------------

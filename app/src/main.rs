@@ -9,6 +9,8 @@
 //! `--screenshot` renders one composited frame (panel + model) to a PNG for
 //! headless verification.
 
+use std::collections::HashMap;
+
 use rmf_core::{
     regenerate, BooleanOp, Constraint, Document, EdgeAnchor, FaceAnchor, FeatureId, FeatureKind, LineId,
     PointId, Profile, RegenError, Sketch2d, SketchPlane, DVec3,
@@ -187,9 +189,10 @@ struct Modeler {
     bodies: Vec<Solid>,
     face_ranges: Vec<u32>,
     edge_ranges: Vec<u32>,
-    /// World-space point on the currently selected edge (from the pick), used as
-    /// a durable anchor for filleting that edge. `None` unless an edge is picked.
-    edge_anchor: Option<DVec3>,
+    /// World-space anchor point for each selected edge (keyed by its global pick
+    /// id), captured at click time so each edge in a multi-selection keeps its
+    /// own durable fillet anchor.
+    edge_anchors: HashMap<u32, DVec3>,
     /// Active push/pull drag, if any.
     manipulation: Option<Manipulation>,
 }
@@ -208,7 +211,7 @@ impl Modeler {
             bodies: Vec::new(),
             face_ranges: Vec::new(),
             edge_ranges: Vec::new(),
-            edge_anchor: None,
+            edge_anchors: HashMap::new(),
             manipulation: None,
         }
     }
@@ -227,7 +230,7 @@ impl Modeler {
 
     /// The body feature id behind the current viewport selection, if any.
     fn selected_body(&self) -> Option<FeatureId> {
-        let body_index = match self.selection.selected? {
+        let body_index = match self.selection.primary()? {
             Pick::Face(g) => self.locate_face(g)?.0,
             Pick::Edge(g) => self.locate_edge(g)?.0,
         };
@@ -249,24 +252,36 @@ impl Modeler {
         }
     }
 
-    /// Fillet the currently selected edge (anchored at its clicked point).
-    /// Returns true if a feature was added.
-    fn fillet_selected_edge(&mut self) -> bool {
-        let (Some(point), Some(source)) = (self.edge_anchor, self.selected_body()) else {
+    /// Fillet the currently selected edges (each anchored at its clicked point),
+    /// as one feature. Returns true if a feature was added.
+    fn fillet_selected_edges(&mut self) -> bool {
+        let Some(source) = self.selected_body() else {
             return false;
         };
+        // Gather an anchor per selected edge, in click order.
+        let edges: Vec<EdgeAnchor> = self
+            .selection
+            .selected()
+            .iter()
+            .filter_map(|pick| match pick {
+                Pick::Edge(g) => self.edge_anchors.get(g).copied(),
+                _ => None,
+            })
+            .map(|point| EdgeAnchor { point })
+            .collect();
+        if edges.is_empty() {
+            return false;
+        }
+
         self.record_undo(self.doc.clone());
-        let id = self.doc.add(
-            "Fillet edge",
-            FeatureKind::Fillet {
-                source,
-                edge: EdgeAnchor { point },
-                radius: 2.0,
-            },
-        );
+        let name = match edges.len() {
+            1 => "Fillet edge".to_string(),
+            n => format!("Fillet {n} edges"),
+        };
+        let id = self.doc.add(name, FeatureKind::Fillet { source, edges, radius: 2.0 });
         self.ui.selected = Some(id);
         self.selection.clear();
-        self.edge_anchor = None;
+        self.edge_anchors.clear();
         true
     }
 
@@ -664,18 +679,26 @@ impl Controller for Modeler {
             if start {
                 self.sketch_on_selected_face();
             }
-        } else if self.sketch_session.is_none() && self.edge_anchor.is_some() {
+        } else if self.sketch_session.is_none() && self.selection.is_edges() {
+            let n = self.selection.selected().len();
+            let (label, action) = if n == 1 {
+                ("1 edge selected".to_string(), "⌒ Fillet this edge".to_string())
+            } else {
+                (format!("{n} edges selected"), format!("⌒ Fillet these {n} edges"))
+            };
             let mut fillet = false;
             #[allow(deprecated)]
             egui::Panel::top("selection_bar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Edge selected");
+                    ui.label(label);
                     ui.separator();
-                    fillet = ui.button("⌒ Fillet this edge").clicked();
+                    fillet = ui.button(action).clicked();
+                    ui.separator();
+                    ui.weak("⇧/⌘-click to add edges");
                 });
             });
             if fillet {
-                changed |= self.fillet_selected_edge();
+                changed |= self.fillet_selected_edges();
             }
         }
 
@@ -786,22 +809,32 @@ impl Controller for Modeler {
 
     fn highlights(&self) -> Highlights {
         Highlights {
-            selected: self.selection.selected,
+            selected: self.selection.selected().to_vec(),
             hovered: self.selection.hovered,
         }
     }
 
-    fn on_pick(&mut self, pick: Option<Pick>, point: Option<[f64; 3]>) {
+    fn on_pick(&mut self, pick: Option<Pick>, point: Option<[f64; 3]>, additive: bool) {
         let face_plane = match pick {
             Some(Pick::Face(global)) => self.face_plane(global),
             _ => None,
         };
-        self.selection.select(pick, face_plane);
-        // Remember the clicked point on a picked edge as a durable fillet anchor.
-        self.edge_anchor = match (pick, point) {
-            (Some(Pick::Edge(_)), Some(p)) => Some(DVec3::new(p[0], p[1], p[2])),
-            _ => None,
-        };
+        self.selection.select(pick, additive, face_plane);
+        // Remember the clicked point on a picked edge as its durable fillet
+        // anchor, then drop anchors for edges no longer in the selection.
+        if let (Some(Pick::Edge(g)), Some(p)) = (pick, point) {
+            self.edge_anchors.insert(g, DVec3::new(p[0], p[1], p[2]));
+        }
+        let live: std::collections::HashSet<u32> = self
+            .selection
+            .selected()
+            .iter()
+            .filter_map(|pick| match pick {
+                Pick::Edge(g) => Some(*g),
+                _ => None,
+            })
+            .collect();
+        self.edge_anchors.retain(|g, _| live.contains(g));
         // Clicking a body in the viewport makes it the operation target: select
         // its feature in the history (which is what the toolbar acts on).
         self.ui.selected = self.selected_body();
@@ -974,8 +1007,8 @@ fn main() -> anyhow::Result<()> {
 
     // Verification aid: highlight a face by id to confirm the shader tint path.
     if std::env::args().any(|a| a == "--highlight-demo") {
-        modeler.selection.selected = Some(Pick::Face(0)); // strong face (clicked)
-        modeler.selection.hovered = Some(Pick::Edge(0)); // hovered edge
+        modeler.selection.select(Some(Pick::Face(0)), false, None); // strong face
+        modeler.selection.hover(Some(Pick::Edge(0))); // hovered edge
         let path = "out/highlight-demo.png";
         std::fs::create_dir_all("out")?;
         rmf_render::screenshot(modeler, 1280, 820, path)?;
@@ -1098,7 +1131,7 @@ mod tests {
             bodies: Vec::new(),
             face_ranges: Vec::new(),
             edge_ranges: Vec::new(),
-            edge_anchor: None,
+            edge_anchors: HashMap::new(),
             manipulation: None,
         };
         let mesh = m.mesh();
@@ -1182,41 +1215,72 @@ mod tests {
         assert_eq!(m.ui.visible, vec![a, b]);
 
         // Face id 0 belongs to the first visible body (box A).
-        m.on_pick(Some(Pick::Face(0)), None);
+        m.on_pick(Some(Pick::Face(0)), None, false);
         assert_eq!(m.ui.selected, Some(a));
         assert_eq!(m.selected_body(), Some(a));
 
         // Clicking an edge records its world point as a fillet anchor.
-        m.on_pick(Some(Pick::Edge(0)), Some([1.0, 2.0, 3.0]));
+        m.on_pick(Some(Pick::Edge(0)), Some([1.0, 2.0, 3.0]), false);
         assert_eq!(m.selected_body(), Some(a));
-        assert_eq!(m.edge_anchor, Some(DVec3::new(1.0, 2.0, 3.0)));
+        assert_eq!(m.edge_anchors.get(&0), Some(&DVec3::new(1.0, 2.0, 3.0)));
 
-        // Clicking empty space clears the target and the anchor.
-        m.on_pick(None, None);
+        // Clicking empty space clears the target and the anchors.
+        m.on_pick(None, None, false);
         assert_eq!(m.ui.selected, None);
-        assert_eq!(m.edge_anchor, None);
+        assert!(m.edge_anchors.is_empty());
     }
 
     #[test]
-    fn filleting_a_selected_edge_adds_a_feature_that_rebuilds() {
-        // A box, then fillet just its top edge at x=0 (anchor on (0,5,10)).
+    fn additive_click_accumulates_edge_anchors() {
+        // One box; ⇧-click two edges, both anchors are retained for a fillet.
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let _ = m.mesh();
+
+        m.on_pick(Some(Pick::Edge(0)), Some([0.0, 5.0, 10.0]), false);
+        m.on_pick(Some(Pick::Edge(2)), Some([10.0, 5.0, 10.0]), true); // additive
+        assert_eq!(m.selection.selected().len(), 2);
+        assert_eq!(m.edge_anchors.len(), 2);
+
+        // Toggling edge 0 back off drops its anchor.
+        m.on_pick(Some(Pick::Edge(0)), Some([0.0, 5.0, 10.0]), true);
+        assert_eq!(m.selection.selected(), &[Pick::Edge(2)]);
+        assert_eq!(m.edge_anchors.len(), 1);
+        assert!(m.edge_anchors.contains_key(&2));
+    }
+
+    #[test]
+    fn filleting_selected_edges_adds_a_feature_that_rebuilds() {
+        // A box; fillet two of its top edges in one feature.
         let mut doc = Document::new("one");
         let b = doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
         let mut m = Modeler::new();
         m.doc = doc;
         let _ = m.mesh();
 
-        // Simulate picking that edge, then invoking the action-bar fillet.
-        m.selection
-            .select(Some(Pick::Edge(0)), None);
-        m.edge_anchor = Some(DVec3::new(0.0, 5.0, 10.0));
+        // Simulate picking two edges, then invoking the action-bar fillet.
+        m.on_pick(Some(Pick::Edge(0)), Some([0.0, 5.0, 10.0]), false);
+        m.on_pick(Some(Pick::Edge(2)), Some([10.0, 5.0, 10.0]), true);
         m.ui.selected = Some(b);
-        assert!(m.fillet_selected_edge());
+        assert!(m.selection.is_edges());
+        assert!(m.fillet_selected_edges());
 
         // The new feature regenerates without error and yields geometry.
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
         assert!(!mesh.vertices.is_empty());
+        // Exactly one Fillet feature was added, carrying two edges.
+        let fillet = m
+            .doc
+            .history
+            .features()
+            .iter()
+            .find_map(|f| match &f.kind {
+                FeatureKind::Fillet { edges, .. } => Some(edges.len()),
+                _ => None,
+            });
+        assert_eq!(fillet, Some(2));
     }
 
     #[test]
@@ -1298,7 +1362,7 @@ mod tests {
             bodies: Vec::new(),
             face_ranges: Vec::new(),
             edge_ranges: Vec::new(),
-            edge_anchor: None,
+            edge_anchors: HashMap::new(),
             manipulation: None,
         };
         let mesh = m.mesh();

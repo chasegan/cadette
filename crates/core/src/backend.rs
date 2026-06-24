@@ -51,11 +51,12 @@ pub trait GeometryBackend {
 
     fn fillet_all(&mut self, body: &Self::Body, radius: f64) -> Result<Self::Body, Self::Error>;
 
-    /// Fillet the single edge of `body` nearest `anchor` with `radius`.
-    fn fillet_edge(
+    /// Fillet the edges of `body` nearest each anchor in `anchors` with
+    /// `radius`, in a single operation.
+    fn fillet_edges(
         &mut self,
         body: &Self::Body,
-        anchor: EdgeAnchor,
+        anchors: &[EdgeAnchor],
         radius: f64,
     ) -> Result<Self::Body, Self::Error>;
 
