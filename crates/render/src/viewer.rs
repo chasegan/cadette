@@ -67,6 +67,21 @@ pub trait Controller {
     fn wants_picking(&self) -> bool {
         false
     }
+
+    /// Begin a push/pull on `pick` if it's manipulable. The controller captures
+    /// the anchor (orienting the normal toward `eye`) and returns the drag axis
+    /// `(point, outward_normal)`; `None` means not manipulable, so the viewport
+    /// orbits instead.
+    fn start_manipulation(&mut self, _pick: Pick, _eye: [f64; 3]) -> Option<([f64; 3], [f64; 3])> {
+        None
+    }
+    /// Update the active push/pull to `distance` along the axis. Returns whether
+    /// geometry changed (so the host re-meshes).
+    fn update_manipulation(&mut self, _distance: f64) -> bool {
+        false
+    }
+    /// Finish the active push/pull: commit it, or cancel and discard.
+    fn finish_manipulation(&mut self, _commit: bool) {}
 }
 
 /// Pixel format of the offscreen face-id pick buffer.
@@ -596,6 +611,47 @@ fn point_segment_distance(px: f32, py: f32, a: (f32, f32), b: (f32, f32)) -> f32
     ((px - cx).powi(2) + (py - cy).powi(2)).sqrt()
 }
 
+/// World-space ray (origin, unit dir) through `cursor` for the given camera.
+fn cursor_ray(
+    camera: &OrbitCamera,
+    cursor: PhysicalPosition<f64>,
+    width: u32,
+    height: u32,
+) -> (Vec3, Vec3) {
+    let (w, h) = (width as f32, height as f32);
+    let nx = cursor.x as f32 / w * 2.0 - 1.0;
+    let ny = 1.0 - cursor.y as f32 / h * 2.0;
+    let inv = camera.view_proj(w / h.max(1.0)).inverse();
+    let unproject = |z: f32| {
+        let p = inv * glam::Vec4::new(nx, ny, z, 1.0);
+        p.truncate() / p.w
+    };
+    let near = unproject(0.0);
+    (near, (unproject(1.0) - near).normalize_or_zero())
+}
+
+/// Signed distance along the manip axis `(point, dir)` to the closest point of
+/// the cursor ray — how far the user has dragged the face.
+fn manip_distance(
+    camera: &OrbitCamera,
+    cursor: PhysicalPosition<f64>,
+    point: Vec3,
+    dir: Vec3,
+    width: u32,
+    height: u32,
+) -> f32 {
+    let (origin, ray) = cursor_ray(camera, cursor, width, height);
+    // Closest approach between line (point + t·dir) and ray (origin + s·ray).
+    let w0 = point - origin;
+    let (b, c) = (dir.dot(ray), ray.dot(ray));
+    let (d, e) = (dir.dot(w0), ray.dot(w0));
+    let denom = dir.dot(dir) * c - b * b;
+    if denom.abs() < 1e-6 {
+        return 0.0; // ray parallel to the axis
+    }
+    (b * e - c * d) / denom
+}
+
 fn make_mesh_buffers(
     device: &wgpu::Device,
     mesh: &MeshData,
@@ -790,6 +846,11 @@ struct WindowApp<C: Controller> {
     controller: C,
     camera: OrbitCamera,
     mouse: MouseState,
+    /// Active push/pull drag axis `(point, unit normal)`, set when a left-drag
+    /// began on a manipulable face.
+    manip_axis: Option<(Vec3, Vec3)>,
+    /// Geometry changed outside `ui` (a manipulation drag) — re-mesh next frame.
+    mesh_dirty: bool,
     state: Option<WindowState>,
 }
 
@@ -810,6 +871,8 @@ impl<C: Controller> WindowApp<C> {
             controller,
             camera: OrbitCamera::framing(Vec3::ZERO, 1.0),
             mouse: MouseState::default(),
+            manip_axis: None,
+            mesh_dirty: false,
             state: None,
         }
     }
@@ -903,22 +966,56 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                 match button {
                     MouseButton::Left => {
                         if down && !egui_used {
-                            self.mouse.orbiting = true;
+                            // The "smart left button": a drag that starts on a
+                            // manipulable face push/pulls it; anywhere else orbits.
+                            let pick = if self.controller.wants_picking() {
+                                self.pick_under_cursor()
+                            } else {
+                                None
+                            };
+                            let eye = self.camera.eye();
+                            let axis = pick.and_then(|p| {
+                                self.controller.start_manipulation(
+                                    p,
+                                    [eye.x as f64, eye.y as f64, eye.z as f64],
+                                )
+                            });
+                            match axis {
+                                Some((point, normal)) => {
+                                    self.manip_axis = Some((
+                                        Vec3::new(point[0] as f32, point[1] as f32, point[2] as f32),
+                                        Vec3::new(normal[0] as f32, normal[1] as f32, normal[2] as f32)
+                                            .normalize_or_zero(),
+                                    ));
+                                    self.mouse.orbiting = false;
+                                }
+                                None => {
+                                    self.manip_axis = None;
+                                    self.mouse.orbiting = true;
+                                }
+                            }
                             self.mouse.left_press = Some(self.mouse.cursor);
                             self.mouse.dragged = false;
                         } else if !down {
                             self.mouse.orbiting = false;
                             self.mouse.last = None;
-                            self.mouse.hover_dirty = true; // re-evaluate after a drag
-                            // A left click that didn't drag, in the viewport, is
-                            // a selection pick (if the controller wants one).
-                            if self.mouse.left_press.take().is_some()
+                            self.mouse.hover_dirty = true;
+                            if self.manip_axis.is_some() && self.mouse.dragged {
+                                self.controller.finish_manipulation(true);
+                                self.mesh_dirty = true;
+                                if let Some(s) = self.state.as_ref() {
+                                    s.window.request_redraw();
+                                }
+                            } else if self.mouse.left_press.is_some()
                                 && !self.mouse.dragged
                                 && self.controller.wants_picking()
                             {
+                                // A click that didn't drag selects.
                                 self.pick_at_cursor();
                             }
-                            self.mouse.dragged = false; // ready to hover again
+                            self.manip_axis = None;
+                            self.mouse.left_press = None;
+                            self.mouse.dragged = false;
                         }
                     }
                     MouseButton::Right => {
@@ -955,22 +1052,40 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                     }
                 }
                 if !egui_used {
-                    if let Some(last) = self.mouse.last {
-                        let dx = (position.x - last.x) as f32;
-                        let dy = (position.y - last.y) as f32;
-                        if self.mouse.orbiting {
-                            self.camera.orbit(dx * 0.01, dy * 0.01);
-                            state.window.request_redraw();
-                        } else if self.mouse.panning {
-                            self.camera.pan(dx, dy);
-                            state.window.request_redraw();
+                    if self.manip_axis.is_some() && self.mouse.dragged {
+                        // Push/pull: distance = drag along the face normal.
+                        let (point, dir) = self.manip_axis.unwrap();
+                        let dist = manip_distance(
+                            &self.camera,
+                            self.mouse.cursor,
+                            point,
+                            dir,
+                            state.config.width,
+                            state.config.height,
+                        );
+                        if self.controller.update_manipulation(dist as f64) {
+                            self.mesh_dirty = true;
                         }
-                    }
-                    self.mouse.last = if self.mouse.orbiting || self.mouse.panning {
-                        Some(position)
+                        state.window.request_redraw();
+                        self.mouse.last = None;
                     } else {
-                        None
-                    };
+                        if let Some(last) = self.mouse.last {
+                            let dx = (position.x - last.x) as f32;
+                            let dy = (position.y - last.y) as f32;
+                            if self.mouse.orbiting {
+                                self.camera.orbit(dx * 0.01, dy * 0.01);
+                                state.window.request_redraw();
+                            } else if self.mouse.panning {
+                                self.camera.pan(dx, dy);
+                                state.window.request_redraw();
+                            }
+                        }
+                        self.mouse.last = if self.mouse.orbiting || self.mouse.panning {
+                            Some(position)
+                        } else {
+                            None
+                        };
+                    }
                 }
             }
 
@@ -1020,22 +1135,24 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
 }
 
 impl<C: Controller> WindowApp<C> {
+    /// The entity under the cursor right now (no side effects).
+    fn pick_under_cursor(&self) -> Option<Pick> {
+        let state = self.state.as_ref()?;
+        let (w, h) = (state.config.width, state.config.height);
+        let px = (self.mouse.cursor.x as i64).clamp(0, w as i64 - 1) as u32;
+        let py = (self.mouse.cursor.y as i64).clamp(0, h as i64 - 1) as u32;
+        state.scene.pick_at(px, py, &self.camera, w, h)
+    }
+
     /// Resolve the entity under the cursor and hand it to the controller.
     fn pick_at_cursor(&mut self) {
-        let pick = match self.state.as_ref() {
-            Some(state) => {
-                let (w, h) = (state.config.width, state.config.height);
-                let px = (self.mouse.cursor.x as i64).clamp(0, w as i64 - 1) as u32;
-                let py = (self.mouse.cursor.y as i64).clamp(0, h as i64 - 1) as u32;
-                state.scene.pick_at(px, py, &self.camera, w, h)
-            }
-            None => return,
-        };
+        let pick = self.pick_under_cursor();
         self.controller.on_pick(pick);
         if let Some(state) = self.state.as_ref() {
             state.window.request_redraw();
         }
     }
+
 
     fn redraw(&mut self) {
         let Some(state) = self.state.as_mut() else {
@@ -1054,9 +1171,10 @@ impl<C: Controller> WindowApp<C> {
         state.egui_ctx.begin_pass(raw_input);
         let changed = self.controller.ui(&state.egui_ctx, &view);
         let full_output = state.egui_ctx.end_pass();
-        if changed {
+        if changed || self.mesh_dirty {
             let mesh = self.controller.mesh();
             state.scene.upload_mesh(&mesh);
+            self.mesh_dirty = false;
         }
         state
             .egui_state

@@ -10,8 +10,8 @@
 //! headless verification.
 
 use rmf_core::{
-    regenerate, BooleanOp, Constraint, Document, FeatureKind, LineId, PointId, Profile, RegenError,
-    Sketch2d, SketchPlane, DVec3,
+    regenerate, BooleanOp, Constraint, Document, FaceAnchor, FeatureId, FeatureKind, LineId,
+    PointId, Profile, RegenError, Sketch2d, SketchPlane, DVec3,
 };
 use rmf_interaction::Selection;
 use rmf_kernel::{KernelBackend, Solid};
@@ -154,6 +154,15 @@ enum SketchAction {
     Cancel,
 }
 
+/// An in-progress push/pull drag: the body being modified, the face anchor, and
+/// the feature once it's been created (on the first non-trivial drag).
+#[derive(Clone, Copy)]
+struct Manipulation {
+    source: FeatureId,
+    anchor: FaceAnchor,
+    feature: Option<FeatureId>,
+}
+
 /// Ties the document, the OCCT backend, and the history panel together as a
 /// [`Controller`] the viewport drives.
 struct Modeler {
@@ -177,6 +186,8 @@ struct Modeler {
     /// faces start.
     bodies: Vec<Solid>,
     face_ranges: Vec<u32>,
+    /// Active push/pull drag, if any.
+    manipulation: Option<Manipulation>,
 }
 
 impl Modeler {
@@ -192,6 +203,7 @@ impl Modeler {
             selection: Selection::default(),
             bodies: Vec::new(),
             face_ranges: Vec::new(),
+            manipulation: None,
         }
     }
 
@@ -734,6 +746,79 @@ impl Controller for Modeler {
         // In sketch mode, viewport clicks draw/select 2D entities instead.
         self.sketch_session.is_none()
     }
+
+    fn start_manipulation(&mut self, pick: Pick, eye: [f64; 3]) -> Option<([f64; 3], [f64; 3])> {
+        let Pick::Face(global) = pick else {
+            return None; // only planar faces push/pull (for now)
+        };
+        let plane = self.face_plane(global)?;
+        let point = plane.origin();
+        let mut normal = plane.normal().normalize_or_zero();
+        // Orient the normal outward (toward the camera) so dragging away from
+        // the solid is a positive push.
+        let eye = DVec3::new(eye[0], eye[1], eye[2]);
+        if normal.dot(eye - point) < 0.0 {
+            normal = -normal;
+        }
+        let (body_index, _) = self.locate_face(global)?;
+        let source = *self.ui.visible.get(body_index)?;
+
+        self.manipulation = Some(Manipulation {
+            source,
+            anchor: FaceAnchor { point, normal },
+            feature: None,
+        });
+        Some((point.to_array(), normal.to_array()))
+    }
+
+    fn update_manipulation(&mut self, distance: f64) -> bool {
+        let Some(mut m) = self.manipulation else {
+            return false;
+        };
+        match m.feature {
+            None => {
+                // First real drag: record one undo entry, then add the feature.
+                self.record_undo(self.doc.clone());
+                let id = self.doc.add(
+                    "Push/Pull",
+                    FeatureKind::PushPull {
+                        source: m.source,
+                        anchor: m.anchor,
+                        distance,
+                    },
+                );
+                m.feature = Some(id);
+            }
+            Some(id) => {
+                if let Some(FeatureKind::PushPull { distance: d, .. }) =
+                    self.doc.history.get_mut(id).map(|f| &mut f.kind)
+                {
+                    *d = distance;
+                }
+            }
+        }
+        self.manipulation = Some(m);
+        self.selection.clear();
+        true
+    }
+
+    fn finish_manipulation(&mut self, commit: bool) {
+        let Some(m) = self.manipulation.take() else {
+            return;
+        };
+        let Some(id) = m.feature else {
+            return; // never dragged far enough to create a feature
+        };
+        let distance = match self.doc.history.get(id).map(|f| &f.kind) {
+            Some(FeatureKind::PushPull { distance, .. }) => *distance,
+            _ => 0.0,
+        };
+        // Discard a cancelled or no-op push/pull (and the undo it recorded).
+        if !commit || distance.abs() < 1e-3 {
+            self.doc.history.remove(id);
+            self.undo.pop();
+        }
+    }
 }
 
 fn error_message(err: &RegenError<rmf_kernel::KernelError>, doc: &Document) -> String {
@@ -937,6 +1022,7 @@ mod tests {
             selection: Selection::default(),
             bodies: Vec::new(),
             face_ranges: Vec::new(),
+            manipulation: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());
@@ -1085,6 +1171,7 @@ mod tests {
             selection: Selection::default(),
             bodies: Vec::new(),
             face_ranges: Vec::new(),
+            manipulation: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());
