@@ -921,7 +921,18 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                             self.mouse.dragged = false; // ready to hover again
                         }
                     }
-                    MouseButton::Right | MouseButton::Middle => {
+                    MouseButton::Right => {
+                        // Right-drag orbits — always available, even over
+                        // geometry (so left-drag can become manipulation).
+                        if down && !egui_used {
+                            self.mouse.orbiting = true;
+                        } else if !down {
+                            self.mouse.orbiting = false;
+                            self.mouse.last = None;
+                            self.mouse.hover_dirty = true;
+                        }
+                    }
+                    MouseButton::Middle => {
                         if !egui_used {
                             self.mouse.panning = down;
                         }
