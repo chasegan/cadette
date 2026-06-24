@@ -428,9 +428,10 @@ fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
             changed |= drag_signed(ui, "Distance", distance);
         }
         FeatureKind::Translate { offset, .. } => {
-            changed |= drag(ui, "dX", &mut offset.x);
-            changed |= drag(ui, "dY", &mut offset.y);
-            changed |= drag(ui, "dZ", &mut offset.z);
+            // Offsets are signed — you can move in either direction on each axis.
+            changed |= drag_signed(ui, "dX", &mut offset.x);
+            changed |= drag_signed(ui, "dY", &mut offset.y);
+            changed |= drag_signed(ui, "dZ", &mut offset.z);
         }
         FeatureKind::FilletAll { radius, .. } | FeatureKind::Fillet { radius, .. } => {
             changed |= drag(ui, "Radius", radius);
