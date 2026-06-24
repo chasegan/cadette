@@ -10,7 +10,7 @@
 //! headless verification.
 
 use rmf_core::{
-    regenerate, BooleanOp, Constraint, Document, FeatureKind, PointId, Profile, RegenError,
+    regenerate, BooleanOp, Constraint, Document, FeatureKind, LineId, PointId, Profile, RegenError,
     Sketch2d, SketchPlane, DVec3,
 };
 use rmf_kernel::KernelBackend;
@@ -113,15 +113,44 @@ fn build_document() -> Document {
 /// Maximum number of undo snapshots retained.
 const UNDO_LIMIT: usize = 200;
 
+/// What clicking in the viewport does during a sketch.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SketchTool {
+    /// Place points, chaining line segments.
+    Line,
+    /// Pick points and lines to constrain.
+    Select,
+}
+
 /// An in-progress interactive sketch. Kept out of the document until finished,
 /// so the half-drawn (open) profile never triggers regeneration errors.
 struct SketchSession {
     plane: SketchPlane,
     sketch: Sketch2d,
+    tool: SketchTool,
     /// First point placed (the loop closes back to it).
     start: Option<PointId>,
     /// Most recent point (the next segment starts here).
     last: Option<PointId>,
+    /// True once the loop has been closed.
+    closed: bool,
+    /// Selected entities (for applying constraints).
+    selected_points: Vec<PointId>,
+    selected_lines: Vec<LineId>,
+    /// Remaining degrees of freedom from the last solve (for UI feedback).
+    dof: usize,
+}
+
+/// A deferred edit to the sketch session, collected during egui drawing and
+/// applied afterward to keep borrows simple.
+enum SketchAction {
+    SetTool(SketchTool),
+    AddPoint([f64; 2]),
+    CloseLoop,
+    PickAt(egui::Pos2),
+    Apply(Constraint),
+    Finish,
+    Cancel,
 }
 
 /// Ties the document, the OCCT backend, and the history panel together as a
@@ -159,9 +188,22 @@ impl Modeler {
         self.sketch_session = Some(SketchSession {
             plane,
             sketch: Sketch2d::new(),
+            tool: SketchTool::Line,
             start: None,
             last: None,
+            closed: false,
+            selected_points: Vec::new(),
+            selected_lines: Vec::new(),
+            dof: 0,
         });
+    }
+
+    /// Re-solve the session sketch and record its remaining DOF.
+    fn resolve_session(&mut self) {
+        if let Some(session) = self.sketch_session.as_mut() {
+            let solution = rmf_solver::solve_sketch(&mut session.sketch);
+            session.dof = solution.degrees_of_freedom;
+        }
     }
 
     /// Commit the current sketch as a `ConstraintSketch` feature if it forms a
@@ -218,136 +260,312 @@ impl Modeler {
         }
     }
 
-    /// Draw the in-progress sketch over the viewport and handle clicks. Returns
-    /// true if a click closed the loop and committed a feature.
-    fn draw_sketch_overlay(&mut self, ctx: &egui::Context, view: &ViewContext) -> bool {
-        let mut close_loop = false;
-        let mut new_point: Option<[f64; 2]> = None;
+    /// The sketch toolbar (top panel): tool toggle, constraint buttons gated by
+    /// the current selection, and status. Reads state; pushes actions.
+    fn sketch_top_bar(&self, ctx: &egui::Context, actions: &mut Vec<SketchAction>) {
+        let Some(session) = self.sketch_session.as_ref() else {
+            return;
+        };
+        let np = session.selected_points.len();
+        let nl = session.selected_lines.len();
 
-        {
-            let Some(session) = self.sketch_session.as_mut() else {
-                return false;
-            };
-            let plane = session.plane;
-            let o = plane.origin().to_array();
-            let xd = plane.x_dir().to_array();
-            let yd = plane.y_dir().to_array();
-            let nd = plane.normal().to_array();
-            let proj = |x: f64, y: f64| view.project_plane_point(o, xd, yd, [x, y]);
+        #[allow(deprecated)]
+        egui::Panel::top("sketch_toolbar").show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("✓ Finish").clicked() {
+                    actions.push(SketchAction::Finish);
+                }
+                if ui.button("✗ Cancel").clicked() {
+                    actions.push(SketchAction::Cancel);
+                }
+                ui.separator();
+                let line = session.tool == SketchTool::Line;
+                if ui.selectable_label(line, "✏ Line").clicked() {
+                    actions.push(SketchAction::SetTool(SketchTool::Line));
+                }
+                if ui.selectable_label(!line, "◉ Select").clicked() {
+                    actions.push(SketchAction::SetTool(SketchTool::Select));
+                }
+                ui.separator();
+                let dof = session.dof;
+                let status = if dof == 0 {
+                    egui::RichText::new("fully constrained").color(egui::Color32::from_rgb(120, 200, 120))
+                } else {
+                    egui::RichText::new(format!("{dof} dof")).weak()
+                };
+                ui.label(status);
+            });
 
-            let accent = egui::Color32::from_rgb(120, 180, 255);
-
-            #[allow(deprecated)]
-            egui::CentralPanel::default()
-                .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
-                    let rect = ui.max_rect();
-                    let response =
-                        ui.interact(rect, ui.id().with("sketch_canvas"), egui::Sense::click());
-                    let painter = ui.painter_at(rect);
-                    let line_stroke = egui::Stroke::new(1.5, accent);
-
-                    // Committed segments.
-                    for line in &session.sketch.lines {
-                        let a = session.sketch.point(line.a);
-                        let b = session.sketch.point(line.b);
-                        if let (Some(pa), Some(pb)) = (proj(a.x, a.y), proj(b.x, b.y)) {
-                            painter.line_segment([pa, pb], line_stroke);
+            ui.horizontal_wrapped(|ui| {
+                let mut button = |ui: &mut egui::Ui, label, on, c: Option<Constraint>| {
+                    if ui.add_enabled(on, egui::Button::new(label)).clicked() {
+                        if let Some(c) = c {
+                            actions.push(SketchAction::Apply(c));
                         }
                     }
-                    // Placed points.
-                    for p in &session.sketch.points {
-                        if let Some(sp) = proj(p.x, p.y) {
-                            painter.circle_filled(sp, 3.0, accent);
-                        }
+                };
+                let lines2 = two_lines(session);
+                let points2 = two_points(session);
+                button(ui, "Horizontal", nl == 1, session.selected_lines.first().map(|l| Constraint::Horizontal(*l)));
+                button(ui, "Vertical", nl == 1, session.selected_lines.first().map(|l| Constraint::Vertical(*l)));
+                button(ui, "Perpendicular", nl == 2, lines2.map(|(a, b)| Constraint::Perpendicular(a, b)));
+                button(ui, "Parallel", nl == 2, lines2.map(|(a, b)| Constraint::Parallel(a, b)));
+                button(ui, "Equal", nl == 2, lines2.map(|(a, b)| Constraint::EqualLength(a, b)));
+                button(ui, "Coincident", np == 2, points2.map(|(a, b)| Constraint::Coincident(a, b)));
+                button(ui, "Fixed", np == 1, session.selected_points.first().map(|p| Constraint::Fixed(*p)));
+                let dist = distance_constraint(session);
+                button(ui, "Distance", dist.is_some(), dist);
+            });
+
+            ui.label(
+                egui::RichText::new(match session.tool {
+                    SketchTool::Line => {
+                        "Line: click the plane to add points; click the first point to close."
                     }
-                    // Rubber-band preview from the last point to the cursor.
+                    SketchTool::Select => "Select: click points/lines, then apply a constraint.",
+                })
+                .small()
+                .weak(),
+            );
+        });
+    }
+
+    /// The sketch canvas overlay: draws entities (selection highlighted) and
+    /// turns clicks into actions.
+    fn sketch_overlay(
+        &self,
+        ctx: &egui::Context,
+        view: &ViewContext,
+        actions: &mut Vec<SketchAction>,
+    ) {
+        let Some(session) = self.sketch_session.as_ref() else {
+            return;
+        };
+        let plane = session.plane;
+        let o = plane.origin().to_array();
+        let xd = plane.x_dir().to_array();
+        let yd = plane.y_dir().to_array();
+        let nd = plane.normal().to_array();
+        let proj = |x: f64, y: f64| view.project_plane_point(o, xd, yd, [x, y]);
+        let accent = egui::Color32::from_rgb(120, 180, 255);
+        let selected = egui::Color32::from_rgb(255, 180, 80);
+
+        #[allow(deprecated)]
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show(ctx, |ui| {
+                let rect = ui.max_rect();
+                let response =
+                    ui.interact(rect, ui.id().with("sketch_canvas"), egui::Sense::click());
+                let painter = ui.painter_at(rect);
+
+                for (i, line) in session.sketch.lines.iter().enumerate() {
+                    let a = session.sketch.point(line.a);
+                    let b = session.sketch.point(line.b);
+                    if let (Some(pa), Some(pb)) = (proj(a.x, a.y), proj(b.x, b.y)) {
+                        let sel = session.selected_lines.contains(&LineId(i));
+                        let color = if sel { selected } else { accent };
+                        painter.line_segment([pa, pb], egui::Stroke::new(if sel { 2.5 } else { 1.5 }, color));
+                    }
+                }
+                for (i, p) in session.sketch.points.iter().enumerate() {
+                    if let Some(sp) = proj(p.x, p.y) {
+                        let sel = session.selected_points.contains(&PointId(i));
+                        painter.circle_filled(sp, if sel { 4.5 } else { 3.0 }, if sel { selected } else { accent });
+                    }
+                }
+
+                if session.tool == SketchTool::Line {
                     if let (Some(last), Some(cursor)) = (session.last, response.hover_pos()) {
                         let lp = session.sketch.point(last);
                         if let Some(a) = proj(lp.x, lp.y) {
-                            painter.line_segment(
-                                [a, cursor],
-                                egui::Stroke::new(1.0, egui::Color32::from_gray(150)),
-                            );
+                            painter.line_segment([a, cursor], egui::Stroke::new(1.0, egui::Color32::from_gray(150)));
                         }
                     }
-                    // Highlight the start point (the closing target).
                     if let Some(start) = session.start {
                         let s = session.sketch.point(start);
                         if let Some(sp) = proj(s.x, s.y) {
                             painter.circle_stroke(sp, 6.0, egui::Stroke::new(1.5, accent));
                         }
                     }
+                }
 
-                    if response.clicked() {
-                        if let Some(pos) = response.interact_pointer_pos() {
-                            let near_start = session
-                                .start
-                                .map(|id| session.sketch.point(id))
-                                .and_then(|p| proj(p.x, p.y))
-                                .is_some_and(|sp| sp.distance(pos) < 10.0);
-                            if near_start && session.sketch.lines.len() >= 2 {
-                                close_loop = true;
-                            } else if let Some(uv) = view.cursor_on_plane(pos, o, xd, yd, nd) {
-                                new_point = Some(uv);
+                if response.clicked() {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        match session.tool {
+                            SketchTool::Line => {
+                                let near_start = !session.closed
+                                    && session
+                                        .start
+                                        .map(|id| session.sketch.point(id))
+                                        .and_then(|p| proj(p.x, p.y))
+                                        .is_some_and(|sp| sp.distance(pos) < 10.0);
+                                if near_start && session.sketch.lines.len() >= 2 {
+                                    actions.push(SketchAction::CloseLoop);
+                                } else if let Some(uv) = view.cursor_on_plane(pos, o, xd, yd, nd) {
+                                    actions.push(SketchAction::AddPoint(uv));
+                                }
                             }
+                            SketchTool::Select => actions.push(SketchAction::PickAt(pos)),
                         }
                     }
-                });
+                }
+            });
+    }
 
-            // Apply edits to the transient sketch (document untouched until close).
-            if close_loop {
-                if let (Some(last), Some(start)) = (session.last, session.start) {
-                    session.sketch.add_line(last, start);
+    /// Apply collected sketch actions. Returns whether the document changed.
+    fn apply_sketch_actions(&mut self, actions: Vec<SketchAction>, view: &ViewContext) -> bool {
+        let mut changed = false;
+        for action in actions {
+            match action {
+                SketchAction::Cancel => {
+                    self.sketch_session = None;
+                    return changed;
                 }
-            } else if let Some([u, v]) = new_point {
-                let p = session.sketch.add_point(u, v);
-                if let Some(last) = session.last {
-                    session.sketch.add_line(last, p);
+                SketchAction::Finish => {
+                    changed |= self.finish_sketch();
+                    return changed;
                 }
-                if session.start.is_none() {
-                    session.start = Some(p);
+                SketchAction::SetTool(tool) => {
+                    if let Some(s) = self.sketch_session.as_mut() {
+                        s.tool = tool;
+                        s.selected_points.clear();
+                        s.selected_lines.clear();
+                    }
                 }
-                session.last = Some(p);
+                SketchAction::AddPoint([u, v]) => {
+                    if let Some(s) = self.sketch_session.as_mut() {
+                        let p = s.sketch.add_point(u, v);
+                        if let Some(last) = s.last {
+                            s.sketch.add_line(last, p);
+                        }
+                        if s.start.is_none() {
+                            s.start = Some(p);
+                        }
+                        s.last = Some(p);
+                    }
+                }
+                SketchAction::CloseLoop => {
+                    if let Some(s) = self.sketch_session.as_mut() {
+                        if let (Some(last), Some(start)) = (s.last, s.start) {
+                            s.sketch.add_line(last, start);
+                        }
+                        s.closed = true;
+                        s.tool = SketchTool::Select;
+                    }
+                    self.resolve_session();
+                }
+                SketchAction::PickAt(pos) => self.pick_entity(pos, view),
+                SketchAction::Apply(constraint) => {
+                    if let Some(s) = self.sketch_session.as_mut() {
+                        s.sketch.add_constraint(constraint);
+                        s.selected_points.clear();
+                        s.selected_lines.clear();
+                    }
+                    self.resolve_session();
+                }
             }
         }
-
-        if close_loop {
-            self.finish_sketch()
-        } else {
-            false
-        }
+        changed
     }
+
+    /// Pick the nearest point (or line) under `pos` and toggle its selection.
+    fn pick_entity(&mut self, pos: egui::Pos2, view: &ViewContext) {
+        let Some(s) = self.sketch_session.as_mut() else {
+            return;
+        };
+        let o = s.plane.origin().to_array();
+        let xd = s.plane.x_dir().to_array();
+        let yd = s.plane.y_dir().to_array();
+        let proj = |x: f64, y: f64| view.project_plane_point(o, xd, yd, [x, y]);
+
+        let mut best_point: (f32, Option<PointId>) = (10.0, None);
+        for (i, p) in s.sketch.points.iter().enumerate() {
+            if let Some(sp) = proj(p.x, p.y) {
+                let d = sp.distance(pos);
+                if d < best_point.0 {
+                    best_point = (d, Some(PointId(i)));
+                }
+            }
+        }
+        if let Some(id) = best_point.1 {
+            toggle(&mut s.selected_points, id);
+            return;
+        }
+
+        let mut best_line: (f32, Option<LineId>) = (8.0, None);
+        for (i, line) in s.sketch.lines.iter().enumerate() {
+            let a = s.sketch.point(line.a);
+            let b = s.sketch.point(line.b);
+            if let (Some(pa), Some(pb)) = (proj(a.x, a.y), proj(b.x, b.y)) {
+                let d = dist_to_segment(pos, pa, pb);
+                if d < best_line.0 {
+                    best_line = (d, Some(LineId(i)));
+                }
+            }
+        }
+        if let Some(id) = best_line.1 {
+            toggle(&mut s.selected_lines, id);
+            return;
+        }
+
+        s.selected_points.clear();
+        s.selected_lines.clear();
+    }
+}
+
+fn two_lines(s: &SketchSession) -> Option<(LineId, LineId)> {
+    (s.selected_lines.len() == 2).then(|| (s.selected_lines[0], s.selected_lines[1]))
+}
+
+fn two_points(s: &SketchSession) -> Option<(PointId, PointId)> {
+    (s.selected_points.len() == 2).then(|| (s.selected_points[0], s.selected_points[1]))
+}
+
+/// A Distance constraint for the current selection (2 points or 1 line), using
+/// the present length, rounded to 0.1 mm, as its initial value.
+fn distance_constraint(s: &SketchSession) -> Option<Constraint> {
+    let (a, b) = if let Some((a, b)) = two_points(s) {
+        (a, b)
+    } else if let Some(&l) = s.selected_lines.first().filter(|_| s.selected_lines.len() == 1) {
+        let line = s.sketch.line(l);
+        (line.a, line.b)
+    } else {
+        return None;
+    };
+    let (pa, pb) = (s.sketch.point(a), s.sketch.point(b));
+    let length = (pa.x - pb.x).hypot(pa.y - pb.y);
+    Some(Constraint::Distance(a, b, (length * 10.0).round() / 10.0))
+}
+
+fn toggle<T: PartialEq>(v: &mut Vec<T>, item: T) {
+    if let Some(i) = v.iter().position(|x| *x == item) {
+        v.remove(i);
+    } else {
+        v.push(item);
+    }
+}
+
+fn dist_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
+    let ab = b - a;
+    let len_sq = ab.length_sq();
+    let t = if len_sq > 0.0 {
+        ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p - (a + ab * t)).length()
 }
 
 impl Controller for Modeler {
     fn ui(&mut self, ctx: &egui::Context, view: &ViewContext) -> bool {
         use egui::Key;
         let mut changed = false;
+        let mut sketch_actions: Vec<SketchAction> = Vec::new();
 
-        // --- Top toolbar: shown only while drawing a sketch ---
-        let mut finish = false;
-        let mut cancel = false;
-        if let Some(session) = self.sketch_session.as_ref() {
-            let points = session.sketch.points.len();
-            #[allow(deprecated)]
-            egui::Panel::top("toolbar").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    finish = ui.button("✓ Finish sketch").clicked();
-                    cancel = ui.button("✗ Cancel").clicked();
-                    ui.separator();
-                    ui.label(format!(
-                        "Sketch · {points} point(s) — click the plane to add a point; \
-                         click the first point to close."
-                    ));
-                });
-            });
-        }
-        if cancel {
-            self.sketch_session = None;
-        }
-        if finish {
-            changed |= self.finish_sketch();
+        // --- Sketch top bar (before the side panel, so it spans full width) ---
+        if self.sketch_session.is_some() {
+            self.sketch_top_bar(ctx, &mut sketch_actions);
         }
 
         // --- History panel + undo/redo ---
@@ -386,10 +604,13 @@ impl Controller for Modeler {
             self.start_sketch(SketchPlane::Xy);
         }
 
-        // --- Interactive sketch overlay ---
+        // --- Sketch canvas overlay (after the side panel) ---
         if self.sketch_session.is_some() {
-            changed |= self.draw_sketch_overlay(ctx, view);
+            self.sketch_overlay(ctx, view, &mut sketch_actions);
         }
+
+        // --- Apply collected sketch edits ---
+        changed |= self.apply_sketch_actions(sketch_actions, view);
 
         changed
     }
@@ -453,6 +674,42 @@ fn main() -> anyhow::Result<()> {
         }
         modeler.finish_sketch(); // commits + selects the sketch
         let path = "out/sketch-demo.png";
+        std::fs::create_dir_all("out")?;
+        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        println!("wrote {path}");
+        return Ok(());
+    }
+
+    // Verification aid: a skewed quad with Horizontal/Vertical constraints
+    // applied should solve to an axis-aligned rectangle.
+    if std::env::args().any(|a| a == "--constrain-demo") {
+        // Keep the default part so the camera frames the scene and the sketch
+        // overlay (drawn at the part's scale) is visible.
+        modeler.start_sketch(SketchPlane::Xy);
+        if let Some(s) = modeler.sketch_session.as_mut() {
+            let p0 = s.sketch.add_point(-18.0, -15.0);
+            let p1 = s.sketch.add_point(16.0, -12.0);
+            let p2 = s.sketch.add_point(20.0, 13.0);
+            let p3 = s.sketch.add_point(-15.0, 17.0);
+            let bottom = s.sketch.add_line(p0, p1);
+            let right = s.sketch.add_line(p1, p2);
+            let top = s.sketch.add_line(p2, p3);
+            let left = s.sketch.add_line(p3, p0);
+            s.closed = true;
+            s.tool = SketchTool::Select;
+            for c in [
+                Constraint::Fixed(p0),
+                Constraint::Horizontal(bottom),
+                Constraint::Vertical(right),
+                Constraint::Horizontal(top),
+                Constraint::Vertical(left),
+            ] {
+                s.sketch.add_constraint(c);
+            }
+            s.selected_lines = vec![bottom, top]; // show selection + enable Equal/Parallel
+        }
+        modeler.resolve_session();
+        let path = "out/constrain-demo.png";
         std::fs::create_dir_all("out")?;
         rmf_render::screenshot(modeler, 1280, 820, path)?;
         println!("wrote {path}");
