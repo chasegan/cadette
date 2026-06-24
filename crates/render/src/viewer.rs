@@ -975,12 +975,22 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
             }
 
             WindowEvent::MouseWheel { delta, .. } if !egui_used => {
-                let amount = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => y,
-                    MouseScrollDelta::PixelDelta(p) => (p.y as f32) * 0.02,
-                };
-                self.camera.dolly(amount);
-                self.mouse.hover_dirty = true; // zoom changes what's under cursor
+                match delta {
+                    // Mouse wheel (discrete lines): zoom.
+                    MouseScrollDelta::LineDelta(_, y) => self.camera.dolly(y),
+                    // Trackpad two-finger scroll (smooth pixels): pan.
+                    MouseScrollDelta::PixelDelta(p) => {
+                        self.camera.pan(p.x as f32, p.y as f32)
+                    }
+                }
+                self.mouse.hover_dirty = true;
+                state.window.request_redraw();
+            }
+
+            // Trackpad pinch: zoom.
+            WindowEvent::PinchGesture { delta, .. } if !egui_used => {
+                self.camera.dolly(delta as f32 * 6.0);
+                self.mouse.hover_dirty = true;
                 state.window.request_redraw();
             }
 
