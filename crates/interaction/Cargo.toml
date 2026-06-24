@@ -7,3 +7,4 @@ rust-version.workspace = true
 description = "The UX brain: tool state machine, selection model, snapping/inference."
 
 [dependencies]
+rmf-core = { workspace = true }

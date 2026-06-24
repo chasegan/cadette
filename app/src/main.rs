@@ -13,6 +13,7 @@ use rmf_core::{
     regenerate, BooleanOp, Constraint, Document, FeatureKind, LineId, PointId, Profile, RegenError,
     Sketch2d, SketchPlane, DVec3,
 };
+use rmf_interaction::Selection;
 use rmf_kernel::{KernelBackend, Solid};
 use rmf_render::egui;
 use rmf_render::{Controller, Highlights, MeshData, Pick, ViewContext};
@@ -168,18 +169,14 @@ struct Modeler {
     editing: bool,
     /// Active interactive sketch, if drawing.
     sketch_session: Option<SketchSession>,
-    /// The entity clicked (strong highlight) and the one under the cursor
-    /// (subtle hover). Transient — ids are per-regeneration.
-    selected: Option<Pick>,
-    hovered: Option<Pick>,
+    /// Viewport selection (clicked + hovered entity, and a selected face's
+    /// plane). Transient — ids are per-regeneration.
+    selection: Selection,
     /// Visible bodies from the last regeneration, kept so a picked face's plane
     /// can be queried. `face_ranges[i]` is the global face id where body `i`'s
     /// faces start.
     bodies: Vec<Solid>,
     face_ranges: Vec<u32>,
-    /// The plane of the currently selected face, if it is planar (enables
-    /// "Sketch on this face").
-    selected_face_plane: Option<SketchPlane>,
 }
 
 impl Modeler {
@@ -192,11 +189,9 @@ impl Modeler {
             redo: Vec::new(),
             editing: false,
             sketch_session: None,
-            selected: None,
-            hovered: None,
+            selection: Selection::default(),
             bodies: Vec::new(),
             face_ranges: Vec::new(),
-            selected_face_plane: None,
         }
     }
 
@@ -215,10 +210,9 @@ impl Modeler {
 
     /// Start a sketch on the currently selected face's plane.
     fn sketch_on_selected_face(&mut self) {
-        if let Some(plane) = self.selected_face_plane {
+        if let Some(plane) = self.selection.face_plane {
             self.start_sketch(plane);
-            self.selected = None;
-            self.selected_face_plane = None;
+            self.selection.clear();
         }
     }
 
@@ -603,7 +597,7 @@ impl Controller for Modeler {
         let mut sketch_actions: Vec<SketchAction> = Vec::new();
 
         // --- Selection action bar: sketch on a selected planar face ---
-        if self.sketch_session.is_none() && self.selected_face_plane.is_some() {
+        if self.sketch_session.is_none() && self.selection.can_sketch_on_face() {
             let mut start = false;
             #[allow(deprecated)]
             egui::Panel::top("selection_bar").show(ctx, |ui| {
@@ -719,21 +713,21 @@ impl Controller for Modeler {
 
     fn highlights(&self) -> Highlights {
         Highlights {
-            selected: self.selected,
-            hovered: self.hovered,
+            selected: self.selection.selected,
+            hovered: self.selection.hovered,
         }
     }
 
     fn on_pick(&mut self, pick: Option<Pick>) {
-        self.selected = pick;
-        self.selected_face_plane = match pick {
+        let face_plane = match pick {
             Some(Pick::Face(global)) => self.face_plane(global),
             _ => None,
         };
+        self.selection.select(pick, face_plane);
     }
 
     fn on_hover(&mut self, pick: Option<Pick>) {
-        self.hovered = pick;
+        self.selection.hover(pick);
     }
 
     fn wants_picking(&self) -> bool {
@@ -820,8 +814,8 @@ fn main() -> anyhow::Result<()> {
 
     // Verification aid: highlight a face by id to confirm the shader tint path.
     if std::env::args().any(|a| a == "--highlight-demo") {
-        modeler.selected = Some(Pick::Face(0)); // strong face (clicked)
-        modeler.hovered = Some(Pick::Edge(0)); // hovered edge
+        modeler.selection.selected = Some(Pick::Face(0)); // strong face (clicked)
+        modeler.selection.hovered = Some(Pick::Edge(0)); // hovered edge
         let path = "out/highlight-demo.png";
         std::fs::create_dir_all("out")?;
         rmf_render::screenshot(modeler, 1280, 820, path)?;
@@ -940,11 +934,9 @@ mod tests {
             redo: Vec::new(),
             editing: false,
             sketch_session: None,
-            selected: None,
-            hovered: None,
+            selection: Selection::default(),
             bodies: Vec::new(),
             face_ranges: Vec::new(),
-            selected_face_plane: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());
@@ -1061,11 +1053,9 @@ mod tests {
             redo: Vec::new(),
             editing: false,
             sketch_session: None,
-            selected: None,
-            hovered: None,
+            selection: Selection::default(),
             bodies: Vec::new(),
             face_ranges: Vec::new(),
-            selected_face_plane: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());

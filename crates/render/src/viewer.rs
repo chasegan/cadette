@@ -72,12 +72,7 @@ pub trait Controller {
 /// Pixel format of the offscreen face-id pick buffer.
 const PICK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
-/// A picked entity in the viewport.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Pick {
-    Face(u32),
-    Edge(u32),
-}
+pub use rmf_core::Pick;
 
 /// How close (pixels) the cursor must be to an edge to pick it over a face.
 const EDGE_PICK_PX: f32 = 6.0;

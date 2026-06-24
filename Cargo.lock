@@ -2008,6 +2008,7 @@ dependencies = [
  "anyhow",
  "env_logger",
  "rmf-core",
+ "rmf-interaction",
  "rmf-kernel",
  "rmf-render",
  "rmf-solver",
@@ -2026,6 +2027,9 @@ dependencies = [
 [[package]]
 name = "rmf-interaction"
 version = "0.1.0"
+dependencies = [
+ "rmf-core",
+]
 
 [[package]]
 name = "rmf-kernel"
@@ -2051,6 +2055,7 @@ dependencies = [
  "image",
  "log",
  "pollster",
+ "rmf-core",
  "wgpu",
  "winit",
 ]

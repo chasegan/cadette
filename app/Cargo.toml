@@ -12,6 +12,7 @@ rmf-core = { workspace = true }
 rmf-kernel = { workspace = true }
 rmf-render = { workspace = true }
 rmf-solver = { workspace = true }
+rmf-interaction = { workspace = true }
 rmf-ui = { workspace = true }
 anyhow = { workspace = true }
 env_logger = { workspace = true }
