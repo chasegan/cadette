@@ -10,7 +10,7 @@
 //! headless verification.
 
 use rmf_core::{
-    regenerate, BooleanOp, Constraint, Document, FaceAnchor, FeatureId, FeatureKind, LineId,
+    regenerate, BooleanOp, Constraint, Document, EdgeAnchor, FaceAnchor, FeatureId, FeatureKind, LineId,
     PointId, Profile, RegenError, Sketch2d, SketchPlane, DVec3,
 };
 use rmf_interaction::Selection;
@@ -187,6 +187,9 @@ struct Modeler {
     bodies: Vec<Solid>,
     face_ranges: Vec<u32>,
     edge_ranges: Vec<u32>,
+    /// World-space point on the currently selected edge (from the pick), used as
+    /// a durable anchor for filleting that edge. `None` unless an edge is picked.
+    edge_anchor: Option<DVec3>,
     /// Active push/pull drag, if any.
     manipulation: Option<Manipulation>,
 }
@@ -205,6 +208,7 @@ impl Modeler {
             bodies: Vec::new(),
             face_ranges: Vec::new(),
             edge_ranges: Vec::new(),
+            edge_anchor: None,
             manipulation: None,
         }
     }
@@ -243,6 +247,27 @@ impl Modeler {
             self.start_sketch(plane);
             self.selection.clear();
         }
+    }
+
+    /// Fillet the currently selected edge (anchored at its clicked point).
+    /// Returns true if a feature was added.
+    fn fillet_selected_edge(&mut self) -> bool {
+        let (Some(point), Some(source)) = (self.edge_anchor, self.selected_body()) else {
+            return false;
+        };
+        self.record_undo(self.doc.clone());
+        let id = self.doc.add(
+            "Fillet edge",
+            FeatureKind::Fillet {
+                source,
+                edge: EdgeAnchor { point },
+                radius: 2.0,
+            },
+        );
+        self.ui.selected = Some(id);
+        self.selection.clear();
+        self.edge_anchor = None;
+        true
     }
 
     /// Begin drawing a new sketch on `plane`.
@@ -625,7 +650,7 @@ impl Controller for Modeler {
         let mut changed = false;
         let mut sketch_actions: Vec<SketchAction> = Vec::new();
 
-        // --- Selection action bar: sketch on a selected planar face ---
+        // --- Selection action bar: contextual actions for the picked entity ---
         if self.sketch_session.is_none() && self.selection.can_sketch_on_face() {
             let mut start = false;
             #[allow(deprecated)]
@@ -638,6 +663,19 @@ impl Controller for Modeler {
             });
             if start {
                 self.sketch_on_selected_face();
+            }
+        } else if self.sketch_session.is_none() && self.edge_anchor.is_some() {
+            let mut fillet = false;
+            #[allow(deprecated)]
+            egui::Panel::top("selection_bar").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Edge selected");
+                    ui.separator();
+                    fillet = ui.button("⌒ Fillet this edge").clicked();
+                });
+            });
+            if fillet {
+                changed |= self.fillet_selected_edge();
             }
         }
 
@@ -753,12 +791,17 @@ impl Controller for Modeler {
         }
     }
 
-    fn on_pick(&mut self, pick: Option<Pick>) {
+    fn on_pick(&mut self, pick: Option<Pick>, point: Option<[f64; 3]>) {
         let face_plane = match pick {
             Some(Pick::Face(global)) => self.face_plane(global),
             _ => None,
         };
         self.selection.select(pick, face_plane);
+        // Remember the clicked point on a picked edge as a durable fillet anchor.
+        self.edge_anchor = match (pick, point) {
+            (Some(Pick::Edge(_)), Some(p)) => Some(DVec3::new(p[0], p[1], p[2])),
+            _ => None,
+        };
         // Clicking a body in the viewport makes it the operation target: select
         // its feature in the history (which is what the toolbar acts on).
         self.ui.selected = self.selected_body();
@@ -1055,6 +1098,7 @@ mod tests {
             bodies: Vec::new(),
             face_ranges: Vec::new(),
             edge_ranges: Vec::new(),
+            edge_anchor: None,
             manipulation: None,
         };
         let mesh = m.mesh();
@@ -1138,13 +1182,41 @@ mod tests {
         assert_eq!(m.ui.visible, vec![a, b]);
 
         // Face id 0 belongs to the first visible body (box A).
-        m.on_pick(Some(Pick::Face(0)));
+        m.on_pick(Some(Pick::Face(0)), None);
         assert_eq!(m.ui.selected, Some(a));
         assert_eq!(m.selected_body(), Some(a));
 
-        // Clicking empty space clears the target.
-        m.on_pick(None);
+        // Clicking an edge records its world point as a fillet anchor.
+        m.on_pick(Some(Pick::Edge(0)), Some([1.0, 2.0, 3.0]));
+        assert_eq!(m.selected_body(), Some(a));
+        assert_eq!(m.edge_anchor, Some(DVec3::new(1.0, 2.0, 3.0)));
+
+        // Clicking empty space clears the target and the anchor.
+        m.on_pick(None, None);
         assert_eq!(m.ui.selected, None);
+        assert_eq!(m.edge_anchor, None);
+    }
+
+    #[test]
+    fn filleting_a_selected_edge_adds_a_feature_that_rebuilds() {
+        // A box, then fillet just its top edge at x=0 (anchor on (0,5,10)).
+        let mut doc = Document::new("one");
+        let b = doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let mut m = Modeler::new();
+        m.doc = doc;
+        let _ = m.mesh();
+
+        // Simulate picking that edge, then invoking the action-bar fillet.
+        m.selection
+            .select(Some(Pick::Edge(0)), None);
+        m.edge_anchor = Some(DVec3::new(0.0, 5.0, 10.0));
+        m.ui.selected = Some(b);
+        assert!(m.fillet_selected_edge());
+
+        // The new feature regenerates without error and yields geometry.
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        assert!(!mesh.vertices.is_empty());
     }
 
     #[test]
@@ -1226,6 +1298,7 @@ mod tests {
             bodies: Vec::new(),
             face_ranges: Vec::new(),
             edge_ranges: Vec::new(),
+            edge_anchor: None,
             manipulation: None,
         };
         let mesh = m.mesh();

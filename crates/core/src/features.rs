@@ -31,6 +31,15 @@ pub struct FaceAnchor {
     pub normal: DVec3,
 }
 
+/// A durable reference to an edge by a point lying on it. The kernel re-finds
+/// the nearest edge to this point on each rebuild — same pragmatic "robust
+/// reference" approach as [`FaceAnchor`], adequate for edits that don't move or
+/// split the edge.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EdgeAnchor {
+    pub point: DVec3,
+}
+
 /// The three combination operations.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum BooleanOp {
@@ -77,6 +86,12 @@ pub enum FeatureKind {
     },
     /// Fillet every edge of `source` with a constant `radius`.
     FilletAll { source: FeatureId, radius: f64 },
+    /// Fillet a single edge of `source` (identified by `edge`) with `radius`.
+    Fillet {
+        source: FeatureId,
+        edge: EdgeAnchor,
+        radius: f64,
+    },
 
     /// Push or pull a planar face of `source` along its normal by `distance`
     /// (positive adds material, negative removes). The face is identified by
@@ -100,6 +115,7 @@ impl FeatureKind {
             | FeatureKind::ConstraintSketch { .. } => Vec::new(),
             FeatureKind::Translate { source, .. } => vec![*source],
             FeatureKind::FilletAll { source, .. } => vec![*source],
+            FeatureKind::Fillet { source, .. } => vec![*source],
             FeatureKind::Extrude { source, .. } => vec![*source],
             FeatureKind::PushPull { source, .. } => vec![*source],
             FeatureKind::Boolean { target, tool, .. } => vec![*target, *tool],
@@ -113,6 +129,7 @@ impl FeatureKind {
         match self {
             FeatureKind::Translate { source, .. }
             | FeatureKind::FilletAll { source, .. }
+            | FeatureKind::Fillet { source, .. }
             | FeatureKind::Extrude { source, .. }
             | FeatureKind::PushPull { source, .. } => Some(*source),
             // Heal to the kept body of a boolean.
@@ -131,6 +148,7 @@ impl FeatureKind {
         match self {
             FeatureKind::Translate { source, .. }
             | FeatureKind::FilletAll { source, .. }
+            | FeatureKind::Fillet { source, .. }
             | FeatureKind::Extrude { source, .. }
             | FeatureKind::PushPull { source, .. } => swap(source),
             FeatureKind::Boolean { target, tool, .. } => {
@@ -153,6 +171,7 @@ impl FeatureKind {
             FeatureKind::Extrude { .. } => "Extrude",
             FeatureKind::Boolean { .. } => "Boolean",
             FeatureKind::FilletAll { .. } => "Fillet",
+            FeatureKind::Fillet { .. } => "Fillet",
             FeatureKind::PushPull { .. } => "Push/Pull",
         }
     }

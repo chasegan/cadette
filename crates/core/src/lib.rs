@@ -24,7 +24,7 @@ pub mod units;
 
 pub use backend::GeometryBackend;
 pub use document::Document;
-pub use features::{BooleanOp, FaceAnchor, Feature, FeatureId, FeatureKind};
+pub use features::{BooleanOp, EdgeAnchor, FaceAnchor, Feature, FeatureId, FeatureKind};
 pub use glam::DVec3;
 pub use history::{DependencyError, History};
 pub use regen::{regenerate, RegenError, Regeneration};

@@ -226,8 +226,8 @@ fn add_feature_toolbar(
             );
         }
         if ui
-            .add_enabled(unary.is_some(), egui::Button::new("Fillet"))
-            .on_hover_text("Fillet all edges of the selected/last body")
+            .add_enabled(unary.is_some(), egui::Button::new("Fillet all"))
+            .on_hover_text("Fillet every edge of the selected/last body (to round a single edge, select it and use the action bar)")
             .clicked()
         {
             add(
@@ -432,7 +432,7 @@ fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
             changed |= drag(ui, "dY", &mut offset.y);
             changed |= drag(ui, "dZ", &mut offset.z);
         }
-        FeatureKind::FilletAll { radius, .. } => {
+        FeatureKind::FilletAll { radius, .. } | FeatureKind::Fillet { radius, .. } => {
             changed |= drag(ui, "Radius", radius);
         }
         FeatureKind::Boolean { op, .. } => {

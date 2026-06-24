@@ -59,7 +59,9 @@ pub trait Controller {
         Highlights::default()
     }
     /// A viewport click resolved to this entity (or `None` for empty space).
-    fn on_pick(&mut self, _pick: Option<Pick>) {}
+    /// `point` is the clicked world point on it (a face's surface or a point on
+    /// an edge), used to build durable anchors; `None` if unavailable.
+    fn on_pick(&mut self, _pick: Option<Pick>, _point: Option<[f64; 3]>) {}
     /// The entity currently under the cursor (or `None`), updated as it moves.
     fn on_hover(&mut self, _pick: Option<Pick>) {}
     /// Whether the viewport should resolve picks right now. (Disabled e.g.
@@ -576,7 +578,7 @@ impl Scene {
         h: u32,
     ) -> (Option<Pick>, Option<Vec3>) {
         if let Some(edge) = self.pick_edge(px as f32, py as f32, camera, w, h) {
-            return (Some(Pick::Edge(edge)), None);
+            return (Some(Pick::Edge(edge)), self.edge_point(edge, px, py, camera, w, h));
         }
         match self.pick_face(px, py, camera, w, h) {
             Some(id) => (Some(Pick::Face(id)), self.world_under_cursor(px, py, camera, w, h)),
@@ -742,6 +744,53 @@ impl Scene {
         }
         best.1
     }
+
+    /// A world-space point on edge `edge_id` nearest the cursor ray — a durable
+    /// anchor for fillet/chamfer. Picks the closest point among the edge's
+    /// segments to the ray cast through pixel `(px, py)`.
+    fn edge_point(
+        &self,
+        edge_id: u32,
+        px: u32,
+        py: u32,
+        camera: &OrbitCamera,
+        w: u32,
+        h: u32,
+    ) -> Option<Vec3> {
+        let cursor = PhysicalPosition::new(px as f64 + 0.5, py as f64 + 0.5);
+        let (origin, ray) = cursor_ray(camera, cursor, w, h);
+        let mut best = (f32::MAX, None);
+        for &(a, b, id) in &self.edge_segments {
+            if id != edge_id {
+                continue;
+            }
+            let (pt, d) = closest_point_on_segment_to_ray(a, b, origin, ray);
+            if d < best.0 {
+                best = (d, Some(pt));
+            }
+        }
+        best.1
+    }
+}
+
+/// Closest point on segment `[a, b]` to the ray `(origin, dir)`, with the
+/// distance between that point and the ray. Used to anchor edge picks.
+fn closest_point_on_segment_to_ray(a: Vec3, b: Vec3, origin: Vec3, dir: Vec3) -> (Vec3, f32) {
+    let ab = b - a;
+    let w0 = a - origin;
+    let (u, v) = (ab.dot(ab), ab.dot(dir));
+    let (d, e) = (ab.dot(w0), dir.dot(w0));
+    let denom = u - v * v; // dir is unit-length, so dir·dir = 1
+    let t = if denom.abs() < 1e-6 {
+        0.0
+    } else {
+        ((v * e - d) / denom).clamp(0.0, 1.0)
+    };
+    let pt = a + ab * t;
+    // Distance from pt to the ray line.
+    let to_pt = pt - origin;
+    let proj = to_pt.dot(dir);
+    (pt, (to_pt - dir * proj).length())
 }
 
 /// CPU edge segments (world endpoints + edge id) from the mesh's edge lines.
@@ -1309,8 +1358,9 @@ impl<C: Controller> WindowApp<C> {
 
     /// Resolve the entity under the cursor and hand it to the controller.
     fn pick_at_cursor(&mut self) {
-        let (pick, _) = self.pick_with_point_under_cursor();
-        self.controller.on_pick(pick);
+        let (pick, point) = self.pick_with_point_under_cursor();
+        self.controller
+            .on_pick(pick, point.map(|p| [p.x as f64, p.y as f64, p.z as f64]));
         if let Some(state) = self.state.as_ref() {
             state.window.request_redraw();
         }

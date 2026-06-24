@@ -114,6 +114,13 @@ pub mod ffi {
         /// Fillet every edge of `shape` with a constant `radius`.
         fn fillet_all_edges(shape: &Shape, radius: f64) -> Result<UniquePtr<Shape>>;
 
+        /// Fillet the single edge nearest point `(px,py,pz)` with `radius`.
+        fn fillet_edge(
+            shape: &Shape,
+            px: f64, py: f64, pz: f64,
+            radius: f64,
+        ) -> Result<UniquePtr<Shape>>;
+
         // --- Display / export ---------------------------------------------
         /// Tessellate to a triangle mesh. `deflection` is the max chord
         /// deviation (model units); smaller = smoother and heavier.

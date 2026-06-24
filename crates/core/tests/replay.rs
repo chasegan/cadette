@@ -57,6 +57,17 @@ impl GeometryBackend for Recording {
         }
         Ok(format!("fillet({body},{radius:.0})"))
     }
+    fn fillet_edge(
+        &mut self,
+        body: &String,
+        _anchor: rmf_core::EdgeAnchor,
+        radius: f64,
+    ) -> Result<String, String> {
+        if radius <= 0.0 {
+            return Err(format!("infeasible fillet radius {radius}"));
+        }
+        Ok(format!("fillet_edge({body},{radius:.0})"))
+    }
     fn push_pull(
         &mut self,
         body: &String,

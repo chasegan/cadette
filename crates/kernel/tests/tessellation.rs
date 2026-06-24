@@ -103,3 +103,24 @@ fn push_pull_disambiguates_coplanar_faces() {
     assert!((region_max_z(|x| x < 15.0) - 10.0).abs() < 0.5, "A moved");
     assert!((region_max_z(|x| x > 15.0) - 15.0).abs() < 0.5, "B not pushed");
 }
+
+#[test]
+fn fillet_edge_rounds_only_the_nearest_edge() {
+    // A 10mm cube; fillet just the top edge that runs along +Y at x=0, z=10.
+    // Anchor on that edge's midpoint (0, 5, 10).
+    let cube = Solid::cuboid(10.0, 10.0, 10.0).unwrap();
+    let rounded = cube.fillet_edge([0.0, 5.0, 10.0], 2.0).unwrap();
+
+    // Filleting one edge adds a rounded face: the box gains faces (6 -> 7).
+    let mesh = rounded.tessellate(0.3).unwrap();
+    let faces: BTreeSet<u32> = mesh.face_ids.iter().copied().collect();
+    assert_eq!(faces.len(), 7, "one fillet adds exactly one face, got {faces:?}");
+
+    // The sharp corner at (0,0,10)/(0,10,10) is gone: no vertex sits within the
+    // 2mm fillet radius of the original edge line (x≈0, z≈10).
+    let near_old_edge = mesh
+        .positions
+        .chunks_exact(3)
+        .any(|p| p[0].abs() < 0.2 && (p[2] - 10.0).abs() < 0.2);
+    assert!(!near_old_edge, "the sharp edge should have been rounded away");
+}

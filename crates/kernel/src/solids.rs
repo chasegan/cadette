@@ -122,6 +122,13 @@ impl Solid {
         Ok(Self::wrap(ffi::fillet_all_edges(&self.0, radius)?))
     }
 
+    /// Fillet the single edge nearest `point` with `radius`.
+    pub fn fillet_edge(&self, point: [f64; 3], radius: f64) -> Result<Self> {
+        Ok(Self::wrap(ffi::fillet_edge(
+            &self.0, point[0], point[1], point[2], radius,
+        )?))
+    }
+
     // --- Display / export ---------------------------------------------------
 
     /// Tessellate into a render-ready triangle [`Mesh`]. `deflection` is the
