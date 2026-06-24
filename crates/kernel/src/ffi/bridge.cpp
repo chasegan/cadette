@@ -27,6 +27,8 @@
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRep_Tool.hxx>
 #include <Poly_Triangulation.hxx>
+#include <Poly_PolygonOnTriangulation.hxx>
+#include <TColStd_Array1OfInteger.hxx>
 #include <StlAPI_Writer.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
@@ -303,6 +305,45 @@ Mesh tessellate(const Shape& s, double deflection) {
         m.normals[i] = nx / len;
         m.normals[i + 1] = ny / len;
         m.normals[i + 2] = nz / len;
+      }
+    }
+
+    // Crisp feature edges: one 3D polyline per unique edge, taken from the
+    // edge's tessellation on an adjacent face. Edge ids match exploration order.
+    TopTools_IndexedMapOfShape edge_map;
+    TopExp::MapShapes(s.shape, TopAbs_EDGE, edge_map);
+    std::vector<bool> emitted(edge_map.Extent() + 1, false);
+    for (TopExp_Explorer fex(s.shape, TopAbs_FACE); fex.More(); fex.Next()) {
+      const TopoDS_Face face = TopoDS::Face(fex.Current());
+      TopLoc_Location loc;
+      Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
+      if (tri.IsNull()) continue;
+      const gp_Trsf trsf = loc.Transformation();
+
+      for (TopExp_Explorer eex(face, TopAbs_EDGE); eex.More(); eex.Next()) {
+        const TopoDS_Edge edge = TopoDS::Edge(eex.Current());
+        const int eid = edge_map.FindIndex(edge);
+        if (eid == 0 || emitted[eid]) continue;
+        Handle(Poly_PolygonOnTriangulation) poly =
+            BRep_Tool::PolygonOnTriangulation(edge, tri, loc);
+        if (poly.IsNull()) continue;
+
+        const TColStd_Array1OfInteger& nodes = poly->Nodes();
+        const uint32_t first = static_cast<uint32_t>(m.edge_positions.size() / 3);
+        for (int i = nodes.Lower(); i <= nodes.Upper(); ++i) {
+          gp_Pnt p = tri->Node(nodes(i)).Transformed(trsf);
+          m.edge_positions.push_back(static_cast<float>(p.X()));
+          m.edge_positions.push_back(static_cast<float>(p.Y()));
+          m.edge_positions.push_back(static_cast<float>(p.Z()));
+          m.edge_ids.push_back(static_cast<uint32_t>(eid - 1));
+        }
+        const uint32_t count =
+            static_cast<uint32_t>(nodes.Upper() - nodes.Lower() + 1);
+        for (uint32_t i = 0; i + 1 < count; ++i) {
+          m.edge_indices.push_back(first + i);
+          m.edge_indices.push_back(first + i + 1);
+        }
+        emitted[eid] = true;
       }
     }
 

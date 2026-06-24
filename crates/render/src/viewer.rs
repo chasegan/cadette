@@ -23,7 +23,7 @@ use winit::window::WindowId;
 
 use crate::camera::OrbitCamera;
 use crate::view::ViewContext;
-use crate::Vertex;
+use crate::{EdgeVertex, Vertex};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
@@ -33,11 +33,14 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-/// A mesh ready for display: interleaved vertices + triangle indices.
+/// A mesh ready for display: interleaved face vertices + triangle indices, plus
+/// crisp edge lines.
 #[derive(Clone, Default)]
 pub struct MeshData {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
+    pub edge_vertices: Vec<EdgeVertex>,
+    pub edge_indices: Vec<u32>,
 }
 
 /// The application's hook into the viewport.
@@ -103,9 +106,14 @@ struct Scene {
     pipeline: wgpu::RenderPipeline,
     /// Offscreen pipeline that writes face ids for picking.
     pick_pipeline: wgpu::RenderPipeline,
+    /// Line pipeline for crisp feature edges.
+    edge_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
+    edge_vertex_buffer: wgpu::Buffer,
+    edge_index_buffer: wgpu::Buffer,
+    edge_index_count: u32,
     globals_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
 }
@@ -239,16 +247,72 @@ impl Scene {
             cache: None,
         });
 
+        // Edge pipeline: line list, dark, biased slightly toward the camera so
+        // the lines sit crisply on the shaded surface without z-fighting.
+        let edge_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rmf-edge-shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("edges.wgsl").into()),
+        });
+        const EDGE_ATTRS: [wgpu::VertexAttribute; 2] =
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Uint32];
+        let edge_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<EdgeVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &EDGE_ATTRS,
+        };
+        let edge_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("rmf-edge-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &edge_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[edge_layout],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &edge_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                ..Default::default()
+            },
+            // Depth bias is illegal on line topology; the edge shader nudges
+            // clip-space z toward the camera instead.
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let (vertex_buffer, index_buffer, index_count) = make_mesh_buffers(&device, mesh);
+        let (edge_vertex_buffer, edge_index_buffer, edge_index_count) =
+            make_edge_buffers(&device, mesh);
 
         Self {
             device,
             queue,
             pipeline,
             pick_pipeline,
+            edge_pipeline,
             vertex_buffer,
             index_buffer,
             index_count,
+            edge_vertex_buffer,
+            edge_index_buffer,
+            edge_index_count,
             globals_buffer,
             bind_group,
         }
@@ -260,6 +324,10 @@ impl Scene {
         self.vertex_buffer = v;
         self.index_buffer = i;
         self.index_count = n;
+        let (ev, ei, en) = make_edge_buffers(&self.device, mesh);
+        self.edge_vertex_buffer = ev;
+        self.edge_index_buffer = ei;
+        self.edge_index_count = en;
     }
 
     /// Record the 3D pass (clearing color + depth) into `encoder`. `selected`
@@ -308,6 +376,13 @@ impl Scene {
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.index_count, 0, 0..1);
+        }
+        if self.edge_index_count > 0 {
+            pass.set_pipeline(&self.edge_pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_vertex_buffer(0, self.edge_vertex_buffer.slice(..));
+            pass.set_index_buffer(self.edge_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..self.edge_index_count, 0, 0..1);
         }
     }
 
@@ -461,6 +536,34 @@ fn make_mesh_buffers(
         usage: wgpu::BufferUsages::INDEX,
     });
     (vbuf, ibuf, mesh.indices.len() as u32)
+}
+
+fn make_edge_buffers(device: &wgpu::Device, mesh: &MeshData) -> (wgpu::Buffer, wgpu::Buffer, u32) {
+    use wgpu::util::DeviceExt;
+    if mesh.edge_vertices.is_empty() || mesh.edge_indices.is_empty() {
+        let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("rmf-edge-vertices-empty"),
+            contents: bytemuck::bytes_of(&EdgeVertex::default()),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("rmf-edge-indices-empty"),
+            contents: bytemuck::cast_slice(&[0u32]),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        return (vbuf, ibuf, 0);
+    }
+    let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("rmf-edge-vertices"),
+        contents: bytemuck::cast_slice(&mesh.edge_vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("rmf-edge-indices"),
+        contents: bytemuck::cast_slice(&mesh.edge_indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+    (vbuf, ibuf, mesh.edge_indices.len() as u32)
 }
 
 fn create_depth(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
@@ -1068,6 +1171,7 @@ mod tests {
         let mesh = MeshData {
             vertices: vec![v(-10.0, -10.0), v(10.0, -10.0), v(10.0, 10.0), v(-10.0, 10.0)],
             indices: vec![0, 1, 2, 0, 2, 3],
+            ..Default::default()
         };
         let scene = Scene::new(device, queue, wgpu::TextureFormat::Rgba8Unorm, &mesh);
         let camera = OrbitCamera::framing(Vec3::ZERO, 15.0);

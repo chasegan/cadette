@@ -24,4 +24,10 @@ fn box_tessellation_tags_six_faces() {
         let f = mesh.face_ids[tri[0] as usize];
         assert!(tri.iter().all(|&v| mesh.face_ids[v as usize] == f));
     }
+
+    // A box has twelve edges; each emits a polyline tagged with its edge id.
+    assert_eq!(mesh.edge_ids.len(), mesh.edge_positions.len() / 3);
+    assert!(!mesh.edge_indices.is_empty());
+    let edges: BTreeSet<u32> = mesh.edge_ids.iter().copied().collect();
+    assert_eq!(edges.len(), 12, "a box has twelve edges, got {edges:?}");
 }

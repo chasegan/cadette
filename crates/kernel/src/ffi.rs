@@ -26,6 +26,11 @@ pub mod ffi {
         /// Per-vertex source face index (one entry per `positions` triple).
         /// Faces are numbered in OCCT exploration order; used for GPU picking.
         face_ids: Vec<u32>,
+        /// Crisp feature edges: flat xyz polyline points, line-segment index
+        /// pairs into them, and a per-point source edge id (for edge picking).
+        edge_positions: Vec<f32>,
+        edge_indices: Vec<u32>,
+        edge_ids: Vec<u32>,
     }
 
     unsafe extern "C++" {

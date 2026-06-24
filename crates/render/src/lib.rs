@@ -45,3 +45,24 @@ pub fn interleave(positions: &[f32], normals: &[f32], face_ids: &[u32]) -> Vec<V
         })
         .collect()
 }
+
+/// A crisp edge-line vertex: position + source edge id (for edge picking).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub struct EdgeVertex {
+    pub position: [f32; 3],
+    pub edge_id: u32,
+}
+
+/// Interleave the kernel's edge position/id arrays into edge-line vertices.
+pub fn interleave_edges(positions: &[f32], edge_ids: &[u32]) -> Vec<EdgeVertex> {
+    debug_assert_eq!(positions.len() / 3, edge_ids.len());
+    positions
+        .chunks_exact(3)
+        .zip(edge_ids)
+        .map(|(p, &edge_id)| EdgeVertex {
+            position: [p[0], p[1], p[2]],
+            edge_id,
+        })
+        .collect()
+}

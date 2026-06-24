@@ -646,6 +646,15 @@ impl Controller for Modeler {
                     ));
                     mesh.indices.extend(part.indices.iter().map(|i| i + base));
                     face_offset += part.face_ids.iter().copied().max().unwrap_or(0) + 1;
+
+                    // Crisp edges.
+                    let edge_base = mesh.edge_vertices.len() as u32;
+                    mesh.edge_vertices.extend(rmf_render::interleave_edges(
+                        &part.edge_positions,
+                        &part.edge_ids,
+                    ));
+                    mesh.edge_indices
+                        .extend(part.edge_indices.iter().map(|i| i + edge_base));
                 }
                 Err(e) => self.ui.errors.push((rmf_core::FeatureId(0), e.to_string())),
             }
