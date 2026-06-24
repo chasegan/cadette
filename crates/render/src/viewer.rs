@@ -23,7 +23,7 @@ use winit::window::WindowId;
 
 use crate::camera::OrbitCamera;
 use crate::view::ViewContext;
-use crate::{EdgeVertex, Vertex};
+use crate::{EdgeVertex, GizmoVertex, Vertex};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
@@ -90,6 +90,74 @@ pub trait Controller {
     }
     /// Finish the active push/pull: commit it, or cancel and discard.
     fn finish_manipulation(&mut self, _commit: bool) {}
+
+    /// The transform gizmo to show this frame, or `None` to hide it. Shown at a
+    /// selected body (gumball-style).
+    fn gizmo(&self) -> Option<Gizmo> {
+        None
+    }
+    /// Begin a transform on `handle` (a gizmo arrow was grabbed).
+    fn start_transform(&mut self, _handle: GizmoHandle) {}
+    /// Update the active transform to a world-space translation `offset` from the
+    /// grab point. Returns whether geometry changed (so the host re-meshes).
+    fn update_transform(&mut self, _offset: [f64; 3]) -> bool {
+        false
+    }
+    /// Finish the active transform: commit it, or cancel and discard.
+    fn finish_transform(&mut self, _commit: bool) {}
+}
+
+/// A transform gizmo shown at a selected body.
+pub struct Gizmo {
+    /// World-space origin — the body's bounding-box center.
+    pub origin: [f64; 3],
+}
+
+/// A draggable gizmo handle. (Slice 1: axis-translate arrows only; planar
+/// handles and rotation rings come later.)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GizmoHandle {
+    /// Translate along a world axis.
+    TranslateAxis(Axis3),
+}
+
+/// One of the three world axes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Axis3 {
+    X,
+    Y,
+    Z,
+}
+
+impl Axis3 {
+    const ALL: [Axis3; 3] = [Axis3::X, Axis3::Y, Axis3::Z];
+
+    /// Unit direction.
+    fn dir(self) -> Vec3 {
+        match self {
+            Axis3::X => Vec3::X,
+            Axis3::Y => Vec3::Y,
+            Axis3::Z => Vec3::Z,
+        }
+    }
+
+    /// The two unit vectors perpendicular to this axis (for arrowheads).
+    fn perps(self) -> (Vec3, Vec3) {
+        match self {
+            Axis3::X => (Vec3::Y, Vec3::Z),
+            Axis3::Y => (Vec3::X, Vec3::Z),
+            Axis3::Z => (Vec3::X, Vec3::Y),
+        }
+    }
+
+    /// Base color (X red, Y green, Z blue).
+    fn color(self) -> [f32; 3] {
+        match self {
+            Axis3::X => [0.90, 0.25, 0.28],
+            Axis3::Y => [0.35, 0.78, 0.30],
+            Axis3::Z => [0.30, 0.45, 0.95],
+        }
+    }
 }
 
 /// Pixel format of the offscreen face-id pick buffer.
@@ -191,12 +259,17 @@ struct Scene {
     pick_pipeline: wgpu::RenderPipeline,
     /// Line pipeline for crisp feature edges.
     edge_pipeline: wgpu::RenderPipeline,
+    /// Line pipeline for the transform gizmo (drawn on top, depth test off).
+    gizmo_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
     edge_vertex_buffer: wgpu::Buffer,
     edge_index_buffer: wgpu::Buffer,
     edge_index_count: u32,
+    /// Gizmo line vertices (rebuilt each frame; empty when hidden).
+    gizmo_vertex_buffer: wgpu::Buffer,
+    gizmo_vertex_count: u32,
     /// CPU copy of edge segments (world endpoints + edge id) for screen-space
     /// edge picking — edges are too thin for the GPU id buffer.
     edge_segments: Vec<(Vec3, Vec3, u32)>,
@@ -383,9 +456,58 @@ impl Scene {
             cache: None,
         });
 
+        // Gizmo pipeline: colored line list, always drawn on top (depth test
+        // disabled) so handles stay visible and grabbable through the model.
+        let gizmo_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rmf-gizmo-shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("gizmo.wgsl").into()),
+        });
+        const GIZMO_ATTRS: [wgpu::VertexAttribute; 2] =
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+        let gizmo_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<GizmoVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &GIZMO_ATTRS,
+        };
+        let gizmo_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("rmf-gizmo-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &gizmo_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[gizmo_layout],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &gizmo_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let (vertex_buffer, index_buffer, index_count) = make_mesh_buffers(&device, mesh);
         let (edge_vertex_buffer, edge_index_buffer, edge_index_count) =
             make_edge_buffers(&device, mesh);
+        let (gizmo_vertex_buffer, gizmo_vertex_count) = make_gizmo_buffer(&device, &[]);
 
         Self {
             device,
@@ -393,12 +515,15 @@ impl Scene {
             pipeline,
             pick_pipeline,
             edge_pipeline,
+            gizmo_pipeline,
             vertex_buffer,
             index_buffer,
             index_count,
             edge_vertex_buffer,
             edge_index_buffer,
             edge_index_count,
+            gizmo_vertex_buffer,
+            gizmo_vertex_count,
             edge_segments: edge_segments(mesh),
             globals_buffer,
             bind_group,
@@ -416,6 +541,13 @@ impl Scene {
         self.edge_index_buffer = ei;
         self.edge_index_count = en;
         self.edge_segments = edge_segments(mesh);
+    }
+
+    /// Replace the gizmo line geometry (empty `verts` hides it).
+    fn upload_gizmo(&mut self, verts: &[GizmoVertex]) {
+        let (buf, n) = make_gizmo_buffer(&self.device, verts);
+        self.gizmo_vertex_buffer = buf;
+        self.gizmo_vertex_count = n;
     }
 
     /// Record the 3D pass (clearing color + depth) into `encoder`. `selected`
@@ -471,6 +603,13 @@ impl Scene {
             pass.set_vertex_buffer(0, self.edge_vertex_buffer.slice(..));
             pass.set_index_buffer(self.edge_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.edge_index_count, 0, 0..1);
+        }
+        // The gizmo draws last, on top of everything (its pipeline ignores depth).
+        if self.gizmo_vertex_count > 0 {
+            pass.set_pipeline(&self.gizmo_pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_vertex_buffer(0, self.gizmo_vertex_buffer.slice(..));
+            pass.draw(0..self.gizmo_vertex_count, 0..1);
         }
     }
 
@@ -895,6 +1034,110 @@ fn manip_distance(
     (b * e - c * d) / denom
 }
 
+// --- Transform gizmo -------------------------------------------------------
+
+/// How close (pixels) the cursor must be to an arrow to grab it.
+const GIZMO_PICK_PX: f32 = 10.0;
+/// Hovered/active arrow highlight color (gold).
+const GIZMO_HILITE: [f32; 3] = [1.0, 0.80, 0.15];
+
+/// World length of the gizmo arrows — proportional to the orbit distance so the
+/// gizmo stays a roughly constant size on screen.
+fn gizmo_axis_length(camera: &OrbitCamera) -> f32 {
+    camera.distance * 0.22
+}
+
+/// Project `p` to pixel coordinates, or `None` if behind the camera.
+fn project_point(p: Vec3, camera: &OrbitCamera, w: u32, h: u32) -> Option<(f32, f32)> {
+    let clip = camera.view_proj(w as f32 / h.max(1) as f32) * p.extend(1.0);
+    if clip.w <= 1e-6 {
+        return None;
+    }
+    let ndc = clip.truncate() / clip.w;
+    Some(((ndc.x * 0.5 + 0.5) * w as f32, (0.5 - ndc.y * 0.5) * h as f32))
+}
+
+/// The gizmo axis whose arrow is under `cursor`, within [`GIZMO_PICK_PX`].
+fn gizmo_hit_test(
+    origin: Vec3,
+    camera: &OrbitCamera,
+    cursor: PhysicalPosition<f64>,
+    w: u32,
+    h: u32,
+) -> Option<Axis3> {
+    let len = gizmo_axis_length(camera);
+    let po = project_point(origin, camera, w, h)?;
+    let (cx, cy) = (cursor.x as f32, cursor.y as f32);
+    let mut best = (GIZMO_PICK_PX, None);
+    for axis in Axis3::ALL {
+        if let Some(tip) = project_point(origin + axis.dir() * len, camera, w, h) {
+            let d = point_segment_distance(cx, cy, po, tip);
+            if d < best.0 {
+                best = (d, Some(axis));
+            }
+        }
+    }
+    best.1
+}
+
+/// Build the gizmo line geometry (3 colored arrows) at `origin`. `active` is the
+/// axis to highlight (hovered or being dragged), if any.
+fn gizmo_geometry(origin: Vec3, camera: &OrbitCamera, active: Option<Axis3>) -> Vec<GizmoVertex> {
+    let len = gizmo_axis_length(camera);
+    let head = len * 0.18; // arrowhead length
+    let radius = len * 0.06; // arrowhead base radius
+    let mut verts = Vec::new();
+
+    for axis in Axis3::ALL {
+        let color = if active == Some(axis) {
+            GIZMO_HILITE
+        } else {
+            axis.color()
+        };
+        let dir = axis.dir();
+        let tip = origin + dir * len;
+        let base = origin + dir * (len - head);
+        let (u, v) = axis.perps();
+        let line = |verts: &mut Vec<GizmoVertex>, a: Vec3, b: Vec3| {
+            verts.push(GizmoVertex { position: a.to_array(), color });
+            verts.push(GizmoVertex { position: b.to_array(), color });
+        };
+
+        // Shaft from the origin to the arrowhead base.
+        line(&mut verts, origin, base);
+        // Arrowhead: four lines from the tip to a square base ring, plus the ring.
+        let ring = [
+            base + u * radius,
+            base + v * radius,
+            base - u * radius,
+            base - v * radius,
+        ];
+        for i in 0..4 {
+            line(&mut verts, tip, ring[i]);
+            line(&mut verts, ring[i], ring[(i + 1) % 4]);
+        }
+    }
+    verts
+}
+
+fn make_gizmo_buffer(device: &wgpu::Device, verts: &[GizmoVertex]) -> (wgpu::Buffer, u32) {
+    use wgpu::util::DeviceExt;
+    if verts.is_empty() {
+        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("rmf-gizmo-empty"),
+            contents: bytemuck::bytes_of(&GizmoVertex::default()),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        return (buf, 0);
+    }
+    let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("rmf-gizmo"),
+        contents: bytemuck::cast_slice(verts),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    (buf, verts.len() as u32)
+}
+
 fn make_mesh_buffers(
     device: &wgpu::Device,
     mesh: &MeshData,
@@ -1085,6 +1328,17 @@ struct MouseState {
     hover_dirty: bool,
 }
 
+/// An in-progress gizmo arrow drag: the axis line `(origin, dir)` captured at
+/// grab time (kept fixed so the body translating under it doesn't move the
+/// reference), and the drag distance along it at the grab point.
+#[derive(Clone, Copy)]
+struct GizmoDrag {
+    axis: Axis3,
+    origin: Vec3,
+    dir: Vec3,
+    start: f32,
+}
+
 struct WindowApp<C: Controller> {
     controller: C,
     camera: OrbitCamera,
@@ -1092,6 +1346,8 @@ struct WindowApp<C: Controller> {
     /// Active push/pull drag axis `(point, unit normal)`, set when a left-drag
     /// began on a manipulable face.
     manip_axis: Option<(Vec3, Vec3)>,
+    /// Active gizmo arrow drag, set when a left-press grabbed a gizmo handle.
+    gizmo_drag: Option<GizmoDrag>,
     /// Geometry changed outside `ui` (a manipulation drag) — re-mesh next frame.
     mesh_dirty: bool,
     /// Latest keyboard modifier state, for ⇧/⌘-click additive selection.
@@ -1117,6 +1373,7 @@ impl<C: Controller> WindowApp<C> {
             camera: OrbitCamera::framing(Vec3::ZERO, 1.0),
             mouse: MouseState::default(),
             manip_axis: None,
+            gizmo_drag: None,
             mesh_dirty: false,
             modifiers: winit::keyboard::ModifiersState::empty(),
             state: None,
@@ -1212,34 +1469,60 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                 match button {
                     MouseButton::Left => {
                         if down && !egui_used {
-                            // The "smart left button": a drag that starts on a
-                            // manipulable face push/pulls it; anywhere else orbits.
-                            let (pick, world) = if self.controller.wants_picking() {
-                                self.pick_with_point_under_cursor()
+                            let (w, h) = self
+                                .state
+                                .as_ref()
+                                .map(|s| (s.config.width, s.config.height))
+                                .unwrap_or((1, 1));
+                            // A gizmo arrow grab takes priority over everything.
+                            let gizmo_hit = self.controller.gizmo().and_then(|g| {
+                                let origin = Vec3::new(
+                                    g.origin[0] as f32,
+                                    g.origin[1] as f32,
+                                    g.origin[2] as f32,
+                                );
+                                gizmo_hit_test(origin, &self.camera, self.mouse.cursor, w, h)
+                                    .map(|axis| (origin, axis))
+                            });
+                            if let Some((origin, axis)) = gizmo_hit {
+                                let dir = axis.dir();
+                                let start =
+                                    manip_distance(&self.camera, self.mouse.cursor, origin, dir, w, h);
+                                self.controller
+                                    .start_transform(GizmoHandle::TranslateAxis(axis));
+                                self.gizmo_drag = Some(GizmoDrag { axis, origin, dir, start });
+                                self.manip_axis = None;
+                                self.mouse.orbiting = false;
                             } else {
-                                (None, None)
-                            };
-                            let eye = self.camera.eye();
-                            let axis = match (pick, world) {
-                                (Some(p), Some(pt)) => self.controller.start_manipulation(
-                                    p,
-                                    [pt.x as f64, pt.y as f64, pt.z as f64],
-                                    [eye.x as f64, eye.y as f64, eye.z as f64],
-                                ),
-                                _ => None,
-                            };
-                            match axis {
-                                Some((point, normal)) => {
-                                    self.manip_axis = Some((
-                                        Vec3::new(point[0] as f32, point[1] as f32, point[2] as f32),
-                                        Vec3::new(normal[0] as f32, normal[1] as f32, normal[2] as f32)
-                                            .normalize_or_zero(),
-                                    ));
-                                    self.mouse.orbiting = false;
-                                }
-                                None => {
-                                    self.manip_axis = None;
-                                    self.mouse.orbiting = true;
+                                // The "smart left button": a drag that starts on a
+                                // manipulable face push/pulls it; else orbits.
+                                let (pick, world) = if self.controller.wants_picking() {
+                                    self.pick_with_point_under_cursor()
+                                } else {
+                                    (None, None)
+                                };
+                                let eye = self.camera.eye();
+                                let axis = match (pick, world) {
+                                    (Some(p), Some(pt)) => self.controller.start_manipulation(
+                                        p,
+                                        [pt.x as f64, pt.y as f64, pt.z as f64],
+                                        [eye.x as f64, eye.y as f64, eye.z as f64],
+                                    ),
+                                    _ => None,
+                                };
+                                match axis {
+                                    Some((point, normal)) => {
+                                        self.manip_axis = Some((
+                                            Vec3::new(point[0] as f32, point[1] as f32, point[2] as f32),
+                                            Vec3::new(normal[0] as f32, normal[1] as f32, normal[2] as f32)
+                                                .normalize_or_zero(),
+                                        ));
+                                        self.mouse.orbiting = false;
+                                    }
+                                    None => {
+                                        self.manip_axis = None;
+                                        self.mouse.orbiting = true;
+                                    }
                                 }
                             }
                             self.mouse.left_press = Some(self.mouse.cursor);
@@ -1248,7 +1531,17 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                             self.mouse.orbiting = false;
                             self.mouse.last = None;
                             self.mouse.hover_dirty = true;
-                            if self.manip_axis.is_some() && self.mouse.dragged {
+                            if self.gizmo_drag.take().is_some() {
+                                // Commit only if it actually moved (a click on the
+                                // arrow without a drag discards the no-op feature).
+                                self.controller.finish_transform(self.mouse.dragged);
+                                if self.mouse.dragged {
+                                    self.mesh_dirty = true;
+                                    if let Some(s) = self.state.as_ref() {
+                                        s.window.request_redraw();
+                                    }
+                                }
+                            } else if self.manip_axis.is_some() && self.mouse.dragged {
                                 self.controller.finish_manipulation(true);
                                 self.mesh_dirty = true;
                                 if let Some(s) = self.state.as_ref() {
@@ -1300,7 +1593,28 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                     }
                 }
                 if !egui_used {
-                    if self.manip_axis.is_some() && self.mouse.dragged {
+                    if let Some(g) = self.gizmo_drag {
+                        // Gizmo translate: offset = drag along the grabbed axis.
+                        if self.mouse.dragged {
+                            let cur = manip_distance(
+                                &self.camera,
+                                self.mouse.cursor,
+                                g.origin,
+                                g.dir,
+                                state.config.width,
+                                state.config.height,
+                            );
+                            let off = g.dir * (cur - g.start);
+                            if self
+                                .controller
+                                .update_transform([off.x as f64, off.y as f64, off.z as f64])
+                            {
+                                self.mesh_dirty = true;
+                            }
+                            state.window.request_redraw();
+                        }
+                        self.mouse.last = None;
+                    } else if self.manip_axis.is_some() && self.mouse.dragged {
                         // Push/pull: distance = drag along the face normal.
                         let (point, dir) = self.manip_axis.unwrap();
                         let dist = manip_distance(
@@ -1464,6 +1778,24 @@ impl<C: Controller> WindowApp<C> {
             self.controller.on_hover(hovered);
         }
 
+        // Build the transform gizmo for this frame, highlighting the axis under
+        // the cursor (or the one being dragged).
+        let gizmo_verts = if let Some(g) = self.controller.gizmo() {
+            let origin = Vec3::new(g.origin[0] as f32, g.origin[1] as f32, g.origin[2] as f32);
+            let (w, h) = (state.config.width, state.config.height);
+            let active = if let Some(drag) = self.gizmo_drag {
+                Some(drag.axis)
+            } else if state.egui_ctx.is_pointer_over_egui() {
+                None
+            } else {
+                gizmo_hit_test(origin, &self.camera, self.mouse.cursor, w, h)
+            };
+            gizmo_geometry(origin, &self.camera, active)
+        } else {
+            Vec::new()
+        };
+        state.scene.upload_gizmo(&gizmo_verts);
+
         let jobs = state
             .egui_ctx
             .tessellate(full_output.shapes, full_output.pixels_per_point);
@@ -1596,6 +1928,10 @@ pub fn screenshot(
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     let egui_cmds = egui_renderer.update_buffers(&device, &queue, &mut encoder, &jobs, &screen);
     let highlights = controller.highlights();
+    if let Some(g) = controller.gizmo() {
+        let origin = Vec3::new(g.origin[0] as f32, g.origin[1] as f32, g.origin[2] as f32);
+        scene.upload_gizmo(&gizmo_geometry(origin, &camera, None));
+    }
     scene.encode(&mut encoder, &color_view, &depth_view, &camera, width, height, &highlights);
     encode_egui(&mut encoder, &egui_renderer, &color_view, &jobs, &screen);
     queue.submit(egui_cmds.into_iter().chain(std::iter::once(encoder.finish())));
@@ -1753,5 +2089,27 @@ mod tests {
         let p = scene.world_under_cursor(32, 32, &camera, 64, 64).unwrap();
         assert!(p.length() < 1.0, "expected near origin, got {p:?}");
         assert!(p.z.abs() < 0.05, "should be on the z=0 plane, got z={}", p.z);
+    }
+
+    /// The gizmo hit-test grabs the arrow whose shaft the cursor sits on, and
+    /// nothing when the cursor is away from all three. (Pure projection math, no
+    /// GPU needed.)
+    #[test]
+    fn gizmo_hit_test_grabs_the_axis_under_the_cursor() {
+        let camera = OrbitCamera::framing(Vec3::ZERO, 15.0);
+        let (w, h) = (640u32, 480u32);
+        let origin = Vec3::ZERO;
+        let len = gizmo_axis_length(&camera);
+
+        // A cursor sitting on the X shaft (70% out, clear of the shared origin).
+        for axis in Axis3::ALL {
+            let on = project_point(origin + axis.dir() * len * 0.7, &camera, w, h).unwrap();
+            let cursor = PhysicalPosition::new(on.0 as f64, on.1 as f64);
+            assert_eq!(gizmo_hit_test(origin, &camera, cursor, w, h), Some(axis));
+        }
+
+        // Top-left corner is far from the centered gizmo → no grab.
+        let far = PhysicalPosition::new(4.0, 4.0);
+        assert_eq!(gizmo_hit_test(origin, &camera, far, w, h), None);
     }
 }

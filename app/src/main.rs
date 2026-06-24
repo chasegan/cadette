@@ -18,7 +18,7 @@ use rmf_core::{
 use rmf_interaction::Selection;
 use rmf_kernel::{KernelBackend, Solid};
 use rmf_render::egui;
-use rmf_render::{Controller, Highlights, MeshData, Pick, ViewContext};
+use rmf_render::{Controller, Gizmo, GizmoHandle, Highlights, MeshData, Pick, ViewContext};
 use rmf_ui::{history_panel, HistoryState};
 
 const DEFLECTION_MM: f64 = 0.1;
@@ -165,6 +165,34 @@ struct Manipulation {
     feature: Option<FeatureId>,
 }
 
+/// An in-progress gizmo transform: the body being moved and the `Translate`
+/// feature once the first drag has created it.
+#[derive(Clone, Copy)]
+struct TransformDrag {
+    source: FeatureId,
+    feature: Option<FeatureId>,
+}
+
+/// Bounding-box center of a flat `[x,y,z,...]` position array.
+fn positions_center(positions: &[f32]) -> [f64; 3] {
+    if positions.is_empty() {
+        return [0.0; 3];
+    }
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for p in positions.chunks_exact(3) {
+        for k in 0..3 {
+            min[k] = min[k].min(p[k]);
+            max[k] = max[k].max(p[k]);
+        }
+    }
+    [
+        ((min[0] + max[0]) * 0.5) as f64,
+        ((min[1] + max[1]) * 0.5) as f64,
+        ((min[2] + max[2]) * 0.5) as f64,
+    ]
+}
+
 /// Ties the document, the OCCT backend, and the history panel together as a
 /// [`Controller`] the viewport drives.
 struct Modeler {
@@ -189,12 +217,17 @@ struct Modeler {
     bodies: Vec<Solid>,
     face_ranges: Vec<u32>,
     edge_ranges: Vec<u32>,
+    /// Bounding-box center of each visible body (aligned with `ui.visible`), the
+    /// gizmo origin for that body.
+    body_centers: Vec<[f64; 3]>,
     /// World-space anchor point for each selected edge (keyed by its global pick
     /// id), captured at click time so each edge in a multi-selection keeps its
     /// own durable fillet anchor.
     edge_anchors: HashMap<u32, DVec3>,
     /// Active push/pull drag, if any.
     manipulation: Option<Manipulation>,
+    /// Active gizmo move drag, if any.
+    transform: Option<TransformDrag>,
 }
 
 impl Modeler {
@@ -211,8 +244,10 @@ impl Modeler {
             bodies: Vec::new(),
             face_ranges: Vec::new(),
             edge_ranges: Vec::new(),
+            body_centers: Vec::new(),
             edge_anchors: HashMap::new(),
             manipulation: None,
+            transform: None,
         }
     }
 
@@ -772,11 +807,13 @@ impl Controller for Modeler {
         let mut edge_offset = 0u32;
         self.face_ranges.clear();
         self.edge_ranges.clear();
+        self.body_centers.clear();
         for body in &bodies {
             self.face_ranges.push(face_offset);
             self.edge_ranges.push(edge_offset);
             match body.tessellate(DEFLECTION_MM) {
                 Ok(part) => {
+                    self.body_centers.push(positions_center(&part.positions));
                     let base = mesh.vertices.len() as u32;
                     let face_ids: Vec<u32> =
                         part.face_ids.iter().map(|f| f + face_offset).collect();
@@ -800,7 +837,10 @@ impl Controller for Modeler {
                         .extend(part.edge_indices.iter().map(|i| i + edge_base));
                     edge_offset += part.edge_ids.iter().copied().max().unwrap_or(0) + 1;
                 }
-                Err(e) => self.ui.errors.push((rmf_core::FeatureId(0), e.to_string())),
+                Err(e) => {
+                    self.body_centers.push([0.0; 3]); // keep aligned with visible
+                    self.ui.errors.push((rmf_core::FeatureId(0), e.to_string()));
+                }
             }
         }
         self.bodies = bodies;
@@ -923,6 +963,78 @@ impl Controller for Modeler {
         };
         // Discard a cancelled or no-op push/pull (and the undo it recorded).
         if !commit || distance.abs() < 1e-3 {
+            self.doc.history.remove(id);
+            self.undo.pop();
+        }
+    }
+
+    fn gizmo(&self) -> Option<Gizmo> {
+        // Gumball-style: show at a single selected face's body (move target).
+        if self.sketch_session.is_some() {
+            return None;
+        }
+        match self.selection.selected() {
+            [Pick::Face(_)] => {
+                let body = self.selected_body()?;
+                let idx = self.ui.visible.iter().position(|&f| f == body)?;
+                Some(Gizmo {
+                    origin: *self.body_centers.get(idx)?,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn start_transform(&mut self, handle: GizmoHandle) {
+        let GizmoHandle::TranslateAxis(_) = handle;
+        if let Some(source) = self.selected_body() {
+            self.transform = Some(TransformDrag {
+                source,
+                feature: None,
+            });
+        }
+    }
+
+    fn update_transform(&mut self, offset: [f64; 3]) -> bool {
+        let Some(mut t) = self.transform else {
+            return false;
+        };
+        let offset = DVec3::from_array(offset);
+        match t.feature {
+            None => {
+                // First real drag: one undo entry, then add the Move feature.
+                self.record_undo(self.doc.clone());
+                let id = self
+                    .doc
+                    .add("Move", FeatureKind::Translate { source: t.source, offset });
+                t.feature = Some(id);
+                self.ui.selected = Some(id);
+            }
+            Some(id) => {
+                if let Some(FeatureKind::Translate { offset: o, .. }) =
+                    self.doc.history.get_mut(id).map(|f| &mut f.kind)
+                {
+                    *o = offset;
+                }
+            }
+        }
+        self.transform = Some(t);
+        true
+    }
+
+    fn finish_transform(&mut self, commit: bool) {
+        let Some(t) = self.transform.take() else {
+            return;
+        };
+        let Some(id) = t.feature else {
+            return; // never dragged far enough to create a feature
+        };
+        let offset = match self.doc.history.get(id).map(|f| &f.kind) {
+            Some(FeatureKind::Translate { offset, .. }) => *offset,
+            _ => DVec3::ZERO,
+        };
+        // Discard a cancelled or no-op move (and the undo it recorded).
+        if !commit || offset.length() < 1e-3 {
             self.doc.history.remove(id);
             self.undo.pop();
         }
@@ -1131,8 +1243,10 @@ mod tests {
             bodies: Vec::new(),
             face_ranges: Vec::new(),
             edge_ranges: Vec::new(),
+            body_centers: Vec::new(),
             edge_anchors: HashMap::new(),
             manipulation: None,
+            transform: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());
@@ -1201,6 +1315,57 @@ mod tests {
         assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
         let (_min, max) = bounds(&mesh);
         assert!((max[2] - 15.0).abs() < 0.5, "max z {}", max[2]);
+    }
+
+    #[test]
+    fn gizmo_shows_on_face_selection_and_drag_moves_the_body() {
+        use rmf_render::{Axis3, GizmoHandle};
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        let b = m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let _ = m.mesh();
+
+        // No selection → no gizmo. Selecting a face shows it at the body center.
+        assert!(m.gizmo().is_none());
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        let g = m.gizmo().expect("gizmo on face selection");
+        assert!((g.origin[0] - 5.0).abs() < 0.1 && (g.origin[2] - 5.0).abs() < 0.1);
+
+        // A drag along X creates one Move feature, then edits it in place.
+        let n0 = m.doc.history.len();
+        m.start_transform(GizmoHandle::TranslateAxis(Axis3::X));
+        assert!(m.update_transform([5.0, 0.0, 0.0]));
+        assert_eq!(m.doc.history.len(), n0 + 1);
+        assert!(m.update_transform([8.0, 0.0, 0.0])); // same feature, new offset
+        assert_eq!(m.doc.history.len(), n0 + 1);
+        m.finish_transform(true);
+
+        // The committed Move carries the final offset and rebuilds shifted +8 X.
+        let moved = m.doc.history.features().iter().any(|f| {
+            matches!(&f.kind, FeatureKind::Translate { offset, .. } if (offset.x - 8.0).abs() < 1e-6)
+        });
+        assert!(moved, "expected a Move with offset x=8");
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        let (min, max) = bounds(&mesh);
+        assert!((min[0] - 8.0).abs() < 0.1 && (max[0] - 18.0).abs() < 0.1, "x {min:?}..{max:?}");
+    }
+
+    #[test]
+    fn gizmo_drag_with_no_movement_is_discarded() {
+        use rmf_render::{Axis3, GizmoHandle};
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let _ = m.mesh();
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        let n0 = m.doc.history.len();
+
+        // A click on the arrow that never really moved adds then discards.
+        m.start_transform(GizmoHandle::TranslateAxis(Axis3::X));
+        m.finish_transform(false);
+        assert_eq!(m.doc.history.len(), n0);
+        assert!(m.transform.is_none());
     }
 
     #[test]
@@ -1362,8 +1527,10 @@ mod tests {
             bodies: Vec::new(),
             face_ranges: Vec::new(),
             edge_ranges: Vec::new(),
+            body_centers: Vec::new(),
             edge_anchors: HashMap::new(),
             manipulation: None,
+            transform: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());

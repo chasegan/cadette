@@ -14,7 +14,9 @@ pub use egui;
 
 pub use camera::OrbitCamera;
 pub use view::ViewContext;
-pub use viewer::{run, screenshot, Controller, Highlights, MeshData, Pick};
+pub use viewer::{
+    run, screenshot, Axis3, Controller, Gizmo, GizmoHandle, Highlights, MeshData, Pick,
+};
 
 use bytemuck::{Pod, Zeroable};
 
@@ -52,6 +54,15 @@ pub fn interleave(positions: &[f32], normals: &[f32], face_ids: &[u32]) -> Vec<V
 pub struct EdgeVertex {
     pub position: [f32; 3],
     pub edge_id: u32,
+}
+
+/// A transform-gizmo line vertex: world-space position + RGB color. The gizmo
+/// is drawn as colored lines (axis arrows) on top of the model.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub struct GizmoVertex {
+    pub position: [f32; 3],
+    pub color: [f32; 3],
 }
 
 /// Interleave the kernel's edge position/id arrays into edge-line vertices.
