@@ -168,6 +168,9 @@ struct Modeler {
     editing: bool,
     /// Active interactive sketch, if drawing.
     sketch_session: Option<SketchSession>,
+    /// The face id highlighted from a viewport pick (transient — cleared on
+    /// regeneration, since face ids are per-regen).
+    selected_face: Option<u32>,
 }
 
 impl Modeler {
@@ -180,6 +183,7 @@ impl Modeler {
             redo: Vec::new(),
             editing: false,
             sketch_session: None,
+            selected_face: None,
         }
     }
 
@@ -628,18 +632,38 @@ impl Controller for Modeler {
         self.ui.visible = regen.visible().to_vec();
 
         let mut mesh = MeshData::default();
+        let mut face_offset = 0u32; // keep face ids unique across visible bodies
         for body in regen.visible_bodies() {
             match body.tessellate(DEFLECTION_MM) {
                 Ok(part) => {
                     let base = mesh.vertices.len() as u32;
-                    mesh.vertices
-                        .extend(rmf_render::interleave(&part.positions, &part.normals));
+                    let face_ids: Vec<u32> =
+                        part.face_ids.iter().map(|f| f + face_offset).collect();
+                    mesh.vertices.extend(rmf_render::interleave(
+                        &part.positions,
+                        &part.normals,
+                        &face_ids,
+                    ));
                     mesh.indices.extend(part.indices.iter().map(|i| i + base));
+                    face_offset += part.face_ids.iter().copied().max().unwrap_or(0) + 1;
                 }
                 Err(e) => self.ui.errors.push((rmf_core::FeatureId(0), e.to_string())),
             }
         }
         mesh
+    }
+
+    fn highlight(&self) -> Option<u32> {
+        self.selected_face
+    }
+
+    fn on_face_pick(&mut self, face: Option<u32>) {
+        self.selected_face = face;
+    }
+
+    fn wants_picking(&self) -> bool {
+        // In sketch mode, viewport clicks draw/select 2D entities instead.
+        self.sketch_session.is_none()
     }
 }
 
@@ -710,6 +734,16 @@ fn main() -> anyhow::Result<()> {
         }
         modeler.resolve_session();
         let path = "out/constrain-demo.png";
+        std::fs::create_dir_all("out")?;
+        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        println!("wrote {path}");
+        return Ok(());
+    }
+
+    // Verification aid: highlight a face by id to confirm the shader tint path.
+    if std::env::args().any(|a| a == "--highlight-demo") {
+        modeler.selected_face = Some(0);
+        let path = "out/highlight-demo.png";
         std::fs::create_dir_all("out")?;
         rmf_render::screenshot(modeler, 1280, 820, path)?;
         println!("wrote {path}");
@@ -827,6 +861,7 @@ mod tests {
             redo: Vec::new(),
             editing: false,
             sketch_session: None,
+            selected_face: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());
@@ -910,6 +945,7 @@ mod tests {
             redo: Vec::new(),
             editing: false,
             sketch_session: None,
+            selected_face: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());

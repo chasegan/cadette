@@ -51,24 +51,44 @@ pub trait Controller {
     fn ui(&mut self, ctx: &egui::Context, view: &ViewContext) -> bool;
     /// Produce the mesh to display.
     fn mesh(&mut self) -> MeshData;
+    /// The face id to highlight this frame, if any.
+    fn highlight(&self) -> Option<u32> {
+        None
+    }
+    /// A viewport click resolved to this face (or `None` for empty space).
+    fn on_face_pick(&mut self, _face: Option<u32>) {}
+    /// Whether the viewport should resolve clicks to face picks right now.
+    /// (Disabled e.g. while drawing a sketch, where clicks mean something else.)
+    fn wants_picking(&self) -> bool {
+        false
+    }
 }
 
-/// GPU uniform block, mirrored by `Globals` in `shader.wgsl`.
+/// Pixel format of the offscreen face-id pick buffer.
+const PICK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
+
+/// GPU uniform block, mirrored by `Globals` in the shaders.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Globals {
     view_proj: [[f32; 4]; 4],
     camera_pos: [f32; 4],
     light_dir: [f32; 4],
+    /// `[face_id, has_selection, 0, 0]` — highlight the face when `has_selection`.
+    selected: [u32; 4],
 }
 
 impl Globals {
-    fn for_view(camera: &OrbitCamera, aspect: f32) -> Self {
+    fn for_view(camera: &OrbitCamera, aspect: f32, selected: Option<u32>) -> Self {
         let eye = camera.eye();
         Globals {
             view_proj: camera.view_proj(aspect).to_cols_array_2d(),
             camera_pos: [eye.x, eye.y, eye.z, 1.0],
             light_dir: [0.4, 0.5, 1.0, 0.0],
+            selected: match selected {
+                Some(id) => [id, 1, 0, 0],
+                None => [0, 0, 0, 0],
+            },
         }
     }
 }
@@ -81,6 +101,8 @@ struct Scene {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
+    /// Offscreen pipeline that writes face ids for picking.
+    pick_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
@@ -137,12 +159,19 @@ impl Scene {
             immediate_size: 0,
         });
 
-        const ATTRS: [wgpu::VertexAttribute; 2] =
-            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
-        let vertex_layout = wgpu::VertexBufferLayout {
+        const ATTRS: [wgpu::VertexAttribute; 3] =
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Uint32];
+        let vertex_layout = || wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &ATTRS,
+        };
+        let depth_stencil = wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Less),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
         };
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -151,7 +180,7 @@ impl Scene {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[vertex_layout],
+                buffers: &[vertex_layout()],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -169,13 +198,42 @@ impl Scene {
                 cull_mode: None,
                 ..Default::default()
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
+            depth_stencil: Some(depth_stencil.clone()),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // Picking pipeline: same geometry, writes face ids to an R32Uint target.
+        let pick_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rmf-pick-shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("pick.wgsl").into()),
+        });
+        let pick_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("rmf-pick-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &pick_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[vertex_layout()],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &pick_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: PICK_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
             }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(depth_stencil),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
@@ -187,6 +245,7 @@ impl Scene {
             device,
             queue,
             pipeline,
+            pick_pipeline,
             vertex_buffer,
             index_buffer,
             index_count,
@@ -203,7 +262,8 @@ impl Scene {
         self.index_count = n;
     }
 
-    /// Record the 3D pass (clearing color + depth) into `encoder`.
+    /// Record the 3D pass (clearing color + depth) into `encoder`. `selected`
+    /// highlights that face id, if any.
     fn encode(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -212,9 +272,10 @@ impl Scene {
         camera: &OrbitCamera,
         width: u32,
         height: u32,
+        selected: Option<u32>,
     ) {
         let aspect = width as f32 / height.max(1) as f32;
-        let globals = Globals::for_view(camera, aspect);
+        let globals = Globals::for_view(camera, aspect, selected);
         self.queue
             .write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
 
@@ -248,6 +309,124 @@ impl Scene {
             pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.index_count, 0, 0..1);
         }
+    }
+
+    /// Render the face-id pass and read back the face under pixel `(px, py)`.
+    /// Returns the face id, or `None` for background. Synchronous — intended
+    /// for discrete clicks, not per-frame hover.
+    fn pick_face(
+        &self,
+        px: u32,
+        py: u32,
+        camera: &OrbitCamera,
+        width: u32,
+        height: u32,
+    ) -> Option<u32> {
+        if self.index_count == 0 || px >= width || py >= height {
+            return None;
+        }
+
+        let aspect = width as f32 / height.max(1) as f32;
+        let globals = Globals::for_view(camera, aspect, None);
+        self.queue
+            .write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
+
+        let id_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rmf-pick-target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: PICK_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let id_view = id_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth = create_depth(&self.device, width, height);
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("rmf-pick") });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("rmf-pick-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &id_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        // 0 = no geometry (the pick shader writes face_id + 1).
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.pick_pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..self.index_count, 0, 0..1);
+        }
+
+        // Copy the single pixel under the cursor to a readback buffer.
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rmf-pick-readback"),
+            size: wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &id_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x: px, y: py, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
+                    rows_per_image: Some(1),
+                },
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(Some(encoder.finish()));
+
+        let slice = readback.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |r| r.expect("map pick readback"));
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .ok();
+        let data = slice.get_mapped_range();
+        let raw = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        drop(data);
+        readback.unmap();
+
+        (raw != 0).then(|| raw - 1)
     }
 }
 
@@ -402,6 +581,12 @@ struct MouseState {
     last: Option<PhysicalPosition<f64>>,
     orbiting: bool,
     panning: bool,
+    /// Latest cursor position (physical pixels), tracked every move.
+    cursor: PhysicalPosition<f64>,
+    /// Where the left button went down, and whether it has since dragged far
+    /// enough to count as a drag rather than a click.
+    left_press: Option<PhysicalPosition<f64>>,
+    dragged: bool,
 }
 
 struct WindowApp<C: Controller> {
@@ -516,35 +701,66 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                 state.window.request_redraw();
             }
 
-            WindowEvent::MouseInput { button, state: pressed, .. } if !egui_used => {
+            WindowEvent::MouseInput { button, state: pressed, .. } => {
                 let down = pressed == ElementState::Pressed;
                 match button {
-                    MouseButton::Left => self.mouse.orbiting = down,
-                    MouseButton::Right | MouseButton::Middle => self.mouse.panning = down,
+                    MouseButton::Left => {
+                        if down && !egui_used {
+                            self.mouse.orbiting = true;
+                            self.mouse.left_press = Some(self.mouse.cursor);
+                            self.mouse.dragged = false;
+                        } else if !down {
+                            self.mouse.orbiting = false;
+                            self.mouse.last = None;
+                            // A left click that didn't drag, in the viewport, is
+                            // a selection pick (if the controller wants one).
+                            if self.mouse.left_press.take().is_some()
+                                && !self.mouse.dragged
+                                && self.controller.wants_picking()
+                            {
+                                self.pick_at_cursor();
+                            }
+                        }
+                    }
+                    MouseButton::Right | MouseButton::Middle => {
+                        if !egui_used {
+                            self.mouse.panning = down;
+                        }
+                        if !down {
+                            self.mouse.last = None;
+                        }
+                    }
                     _ => {}
-                }
-                if !down {
-                    self.mouse.last = None;
                 }
             }
 
-            WindowEvent::CursorMoved { position, .. } if !egui_used => {
-                if let Some(last) = self.mouse.last {
-                    let dx = (position.x - last.x) as f32;
-                    let dy = (position.y - last.y) as f32;
-                    if self.mouse.orbiting {
-                        self.camera.orbit(dx * 0.01, dy * 0.01);
-                        state.window.request_redraw();
-                    } else if self.mouse.panning {
-                        self.camera.pan(dx, dy);
-                        state.window.request_redraw();
+            WindowEvent::CursorMoved { position, .. } => {
+                self.mouse.cursor = position;
+                // Promote to a drag once the pointer leaves a small dead zone.
+                if let Some(press) = self.mouse.left_press {
+                    let d = (position.x - press.x).hypot(position.y - press.y);
+                    if d > 4.0 {
+                        self.mouse.dragged = true;
                     }
                 }
-                self.mouse.last = if self.mouse.orbiting || self.mouse.panning {
-                    Some(position)
-                } else {
-                    None
-                };
+                if !egui_used {
+                    if let Some(last) = self.mouse.last {
+                        let dx = (position.x - last.x) as f32;
+                        let dy = (position.y - last.y) as f32;
+                        if self.mouse.orbiting {
+                            self.camera.orbit(dx * 0.01, dy * 0.01);
+                            state.window.request_redraw();
+                        } else if self.mouse.panning {
+                            self.camera.pan(dx, dy);
+                            state.window.request_redraw();
+                        }
+                    }
+                    self.mouse.last = if self.mouse.orbiting || self.mouse.panning {
+                        Some(position)
+                    } else {
+                        None
+                    };
+                }
             }
 
             WindowEvent::MouseWheel { delta, .. } if !egui_used => {
@@ -582,6 +798,23 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
 }
 
 impl<C: Controller> WindowApp<C> {
+    /// Resolve the face under the cursor and hand it to the controller.
+    fn pick_at_cursor(&mut self) {
+        let face = match self.state.as_ref() {
+            Some(state) => {
+                let (w, h) = (state.config.width, state.config.height);
+                let px = (self.mouse.cursor.x as i64).clamp(0, w as i64 - 1) as u32;
+                let py = (self.mouse.cursor.y as i64).clamp(0, h as i64 - 1) as u32;
+                state.scene.pick_face(px, py, &self.camera, w, h)
+            }
+            None => return,
+        };
+        self.controller.on_face_pick(face);
+        if let Some(state) = self.state.as_ref() {
+            state.window.request_redraw();
+        }
+    }
+
     fn redraw(&mut self) {
         let Some(state) = self.state.as_mut() else {
             return;
@@ -656,6 +889,7 @@ impl<C: Controller> WindowApp<C> {
             &self.camera,
             state.config.width,
             state.config.height,
+            self.controller.highlight(),
         );
         encode_egui(&mut encoder, &state.egui_renderer, &view, &jobs, &screen);
 
@@ -737,7 +971,8 @@ pub fn screenshot(
     let mut encoder =
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     let egui_cmds = egui_renderer.update_buffers(&device, &queue, &mut encoder, &jobs, &screen);
-    scene.encode(&mut encoder, &color_view, &depth_view, &camera, width, height);
+    let highlight = controller.highlight();
+    scene.encode(&mut encoder, &color_view, &depth_view, &camera, width, height, highlight);
     encode_egui(&mut encoder, &egui_renderer, &color_view, &jobs, &screen);
     queue.submit(egui_cmds.into_iter().chain(std::iter::once(encoder.finish())));
     for id in &full_output.textures_delta.free {
@@ -812,4 +1047,33 @@ fn save_texture_png(
         image::ImageBuffer::from_raw(width, height, pixels).expect("image buffer size");
     img.save(path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a device, render a single +Z-facing quad (face id 0), and confirm
+    /// the picker resolves the center pixel to that face — the GPU pick path.
+    #[test]
+    fn picks_the_face_under_the_center_pixel() {
+        let instance = wgpu::Instance::default();
+        let (_adapter, device, queue) = pollster::block_on(request_device(&instance, None));
+
+        let v = |x: f32, y: f32| Vertex {
+            position: [x, y, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            face_id: 0,
+        };
+        let mesh = MeshData {
+            vertices: vec![v(-10.0, -10.0), v(10.0, -10.0), v(10.0, 10.0), v(-10.0, 10.0)],
+            indices: vec![0, 1, 2, 0, 2, 3],
+        };
+        let scene = Scene::new(device, queue, wgpu::TextureFormat::Rgba8Unorm, &mesh);
+        let camera = OrbitCamera::framing(Vec3::ZERO, 15.0);
+
+        // The quad straddles the origin (the camera target), so the center ray
+        // hits it.
+        assert_eq!(scene.pick_face(32, 32, &camera, 64, 64), Some(0));
+    }
 }

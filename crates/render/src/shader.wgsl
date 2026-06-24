@@ -1,11 +1,12 @@
-// Minimal lit shader for the Milestone B viewport.
-// Z-up world space; shading is a key directional light + a camera "headlight"
-// + ambient, so the form reads clearly from any orbit angle.
+// Lit shader for the viewport. Z-up world space; key directional light + a
+// camera "headlight" + ambient. The selected face (by id) is tinted.
 
 struct Globals {
     view_proj : mat4x4<f32>,
     camera_pos : vec4<f32>,
     light_dir : vec4<f32>,
+    // selected.x = highlighted face id, selected.y = 1 if a face is selected.
+    selected : vec4<u32>,
 };
 
 @group(0) @binding(0) var<uniform> globals : Globals;
@@ -14,17 +15,20 @@ struct VsOut {
     @builtin(position) clip : vec4<f32>,
     @location(0) world_normal : vec3<f32>,
     @location(1) world_pos : vec3<f32>,
+    @location(2) @interpolate(flat) face_id : u32,
 };
 
 @vertex
 fn vs_main(
     @location(0) position : vec3<f32>,
     @location(1) normal : vec3<f32>,
+    @location(2) face_id : u32,
 ) -> VsOut {
     var out : VsOut;
     out.clip = globals.view_proj * vec4<f32>(position, 1.0);
     out.world_normal = normal;
     out.world_pos = position;
+    out.face_id = face_id;
     return out;
 }
 
@@ -42,7 +46,10 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
     let head = max(dot(n, view), 0.0) * 0.3;
     let ambient = 0.2;
 
-    let base = vec3<f32>(0.62, 0.66, 0.72);
+    var base = vec3<f32>(0.62, 0.66, 0.72);
+    if (globals.selected.y == 1u && in.face_id == globals.selected.x) {
+        base = vec3<f32>(1.0, 0.62, 0.25); // selection highlight
+    }
     let shade = ambient + key * 0.7 + head;
     return vec4<f32>(base * shade, 1.0);
 }

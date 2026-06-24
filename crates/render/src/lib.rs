@@ -18,24 +18,30 @@ pub use viewer::{run, screenshot, Controller, MeshData};
 
 use bytemuck::{Pod, Zeroable};
 
-/// A single render vertex: world-space position + normal. Matches the flat
-/// arrays produced by `rmf_kernel::Mesh` (interleaved here for GPU upload).
+/// A single render vertex: world-space position + normal + source face id.
+/// Matches the flat arrays produced by `rmf_kernel::Mesh`. The `face_id` drives
+/// GPU picking and face highlighting.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
+    pub face_id: u32,
 }
 
-/// Interleave the kernel's parallel position/normal arrays into GPU vertices.
-pub fn interleave(positions: &[f32], normals: &[f32]) -> Vec<Vertex> {
+/// Interleave the kernel's parallel position/normal/face-id arrays into GPU
+/// vertices.
+pub fn interleave(positions: &[f32], normals: &[f32], face_ids: &[u32]) -> Vec<Vertex> {
     debug_assert_eq!(positions.len(), normals.len());
+    debug_assert_eq!(positions.len() / 3, face_ids.len());
     positions
         .chunks_exact(3)
         .zip(normals.chunks_exact(3))
-        .map(|(p, n)| Vertex {
+        .zip(face_ids)
+        .map(|((p, n), &face_id)| Vertex {
             position: [p[0], p[1], p[2]],
             normal: [n[0], n[1], n[2]],
+            face_id,
         })
         .collect()
 }
