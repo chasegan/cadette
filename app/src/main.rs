@@ -13,7 +13,7 @@ use rmf_core::{
     regenerate, BooleanOp, Constraint, Document, FeatureKind, LineId, PointId, Profile, RegenError,
     Sketch2d, SketchPlane, DVec3,
 };
-use rmf_kernel::KernelBackend;
+use rmf_kernel::{KernelBackend, Solid};
 use rmf_render::egui;
 use rmf_render::{Controller, Highlights, MeshData, Pick, ViewContext};
 use rmf_ui::{history_panel, HistoryState};
@@ -172,6 +172,14 @@ struct Modeler {
     /// (subtle hover). Transient — ids are per-regeneration.
     selected: Option<Pick>,
     hovered: Option<Pick>,
+    /// Visible bodies from the last regeneration, kept so a picked face's plane
+    /// can be queried. `face_ranges[i]` is the global face id where body `i`'s
+    /// faces start.
+    bodies: Vec<Solid>,
+    face_ranges: Vec<u32>,
+    /// The plane of the currently selected face, if it is planar (enables
+    /// "Sketch on this face").
+    selected_face_plane: Option<SketchPlane>,
 }
 
 impl Modeler {
@@ -186,6 +194,31 @@ impl Modeler {
             sketch_session: None,
             selected: None,
             hovered: None,
+            bodies: Vec::new(),
+            face_ranges: Vec::new(),
+            selected_face_plane: None,
+        }
+    }
+
+    /// Body index + local face index for a global picked face id.
+    fn locate_face(&self, global: u32) -> Option<(usize, u32)> {
+        let i = self.face_ranges.iter().rposition(|&start| start <= global)?;
+        Some((i, global - self.face_ranges[i]))
+    }
+
+    /// The plane of a picked face, if it is planar.
+    fn face_plane(&self, global: u32) -> Option<SketchPlane> {
+        let (i, local) = self.locate_face(global)?;
+        let (origin, x, y) = self.bodies.get(i)?.face_plane(local).ok().flatten()?;
+        Some(SketchPlane::from_frame(origin.into(), x.into(), y.into()))
+    }
+
+    /// Start a sketch on the currently selected face's plane.
+    fn sketch_on_selected_face(&mut self) {
+        if let Some(plane) = self.selected_face_plane {
+            self.start_sketch(plane);
+            self.selected = None;
+            self.selected_face_plane = None;
         }
     }
 
@@ -569,6 +602,22 @@ impl Controller for Modeler {
         let mut changed = false;
         let mut sketch_actions: Vec<SketchAction> = Vec::new();
 
+        // --- Selection action bar: sketch on a selected planar face ---
+        if self.sketch_session.is_none() && self.selected_face_plane.is_some() {
+            let mut start = false;
+            #[allow(deprecated)]
+            egui::Panel::top("selection_bar").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Planar face selected");
+                    ui.separator();
+                    start = ui.button("✏ Sketch on this face").clicked();
+                });
+            });
+            if start {
+                self.sketch_on_selected_face();
+            }
+        }
+
         // --- Sketch top bar (before the side panel, so it spans full width) ---
         if self.sketch_session.is_some() {
             self.sketch_top_bar(ctx, &mut sketch_actions);
@@ -632,10 +681,13 @@ impl Controller for Modeler {
             .map(|e| (e.feature(), error_message(e, &self.doc)))
             .collect();
         self.ui.visible = regen.visible().to_vec();
+        let bodies = regen.into_visible_bodies();
 
         let mut mesh = MeshData::default();
         let mut face_offset = 0u32; // keep face ids unique across visible bodies
-        for body in regen.visible_bodies() {
+        self.face_ranges.clear();
+        for body in &bodies {
+            self.face_ranges.push(face_offset);
             match body.tessellate(DEFLECTION_MM) {
                 Ok(part) => {
                     let base = mesh.vertices.len() as u32;
@@ -661,6 +713,7 @@ impl Controller for Modeler {
                 Err(e) => self.ui.errors.push((rmf_core::FeatureId(0), e.to_string())),
             }
         }
+        self.bodies = bodies;
         mesh
     }
 
@@ -673,6 +726,10 @@ impl Controller for Modeler {
 
     fn on_pick(&mut self, pick: Option<Pick>) {
         self.selected = pick;
+        self.selected_face_plane = match pick {
+            Some(Pick::Face(global)) => self.face_plane(global),
+            _ => None,
+        };
     }
 
     fn on_hover(&mut self, pick: Option<Pick>) {
@@ -885,12 +942,48 @@ mod tests {
             sketch_session: None,
             selected: None,
             hovered: None,
+            bodies: Vec::new(),
+            face_ranges: Vec::new(),
+            selected_face_plane: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());
         assert!((span(&mesh, 0) - 30.0).abs() < 0.5, "x span {}", span(&mesh, 0));
         assert!((span(&mesh, 1) - 20.0).abs() < 0.5, "y span {}", span(&mesh, 1));
         assert!((span(&mesh, 2) - 15.0).abs() < 0.5, "z span {}", span(&mesh, 2));
+    }
+
+    #[test]
+    fn sketch_on_a_custom_plane_extrudes_there() {
+        // A rectangle on a plane lifted to z = 20, extruded +10, should produce
+        // a solid spanning z in [20, 30] — the sketch-on-face geometry path.
+        let plane = SketchPlane::from_frame(
+            DVec3::new(0.0, 0.0, 20.0),
+            DVec3::X,
+            DVec3::Y,
+        );
+        let mut doc = Document::new("on-face");
+        let base = doc.add(
+            "Sketch",
+            FeatureKind::ConstraintSketch {
+                plane,
+                sketch: constraint_rectangle(20.0, 20.0),
+            },
+        );
+        doc.add(
+            "Extrude",
+            FeatureKind::Extrude {
+                source: base,
+                distance: 10.0,
+            },
+        );
+        let mut m = Modeler::new();
+        m.doc = doc;
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty());
+        let (min, max) = bounds(&mesh);
+        assert!((min[2] - 20.0).abs() < 0.5, "min z {}", min[2]);
+        assert!((max[2] - 30.0).abs() < 0.5, "max z {}", max[2]);
     }
 
     #[test]
@@ -970,6 +1063,9 @@ mod tests {
             sketch_session: None,
             selected: None,
             hovered: None,
+            bodies: Vec::new(),
+            face_ranges: Vec::new(),
+            selected_face_plane: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());

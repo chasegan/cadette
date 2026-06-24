@@ -72,6 +72,15 @@ impl<B, E> Regeneration<B, E> {
         self.visible.iter().filter_map(|id| self.bodies.get(id))
     }
 
+    /// Take ownership of the visible bodies, in history order. Lets the host
+    /// keep them after regeneration (e.g. to query a picked face's plane).
+    pub fn into_visible_bodies(mut self) -> Vec<B> {
+        self.visible
+            .iter()
+            .filter_map(|id| self.bodies.remove(id))
+            .collect()
+    }
+
     /// Per-feature failures collected during regeneration.
     pub fn errors(&self) -> &[RegenError<E>] {
         &self.errors

@@ -8,8 +8,9 @@
 use glam::DVec3;
 use serde::{Deserialize, Serialize};
 
-/// One of the three world-aligned base planes, passing through the origin.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+/// The plane a sketch lives on: one of the world base planes, or a custom frame
+/// (e.g. a selected face).
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub enum SketchPlane {
     /// X-Y plane, normal +Z (the default; matches the Z-up world).
     Xy,
@@ -17,12 +18,30 @@ pub enum SketchPlane {
     Xz,
     /// Y-Z plane, normal +X.
     Yz,
+    /// An arbitrary plane: origin plus in-plane x/y axes (from a face).
+    Custom {
+        origin: DVec3,
+        x_dir: DVec3,
+        y_dir: DVec3,
+    },
 }
 
 impl SketchPlane {
-    /// Origin of the sketch frame (the world origin for MVP).
+    /// A custom plane from a face frame.
+    pub fn from_frame(origin: DVec3, x_dir: DVec3, y_dir: DVec3) -> Self {
+        SketchPlane::Custom {
+            origin,
+            x_dir,
+            y_dir,
+        }
+    }
+
+    /// Origin of the sketch frame.
     pub fn origin(self) -> DVec3 {
-        DVec3::ZERO
+        match self {
+            SketchPlane::Custom { origin, .. } => origin,
+            _ => DVec3::ZERO,
+        }
     }
 
     /// In-plane "right" axis (local +x).
@@ -30,6 +49,7 @@ impl SketchPlane {
         match self {
             SketchPlane::Xy | SketchPlane::Xz => DVec3::X,
             SketchPlane::Yz => DVec3::Y,
+            SketchPlane::Custom { x_dir, .. } => x_dir,
         }
     }
 
@@ -38,6 +58,7 @@ impl SketchPlane {
         match self {
             SketchPlane::Xy => DVec3::Y,
             SketchPlane::Xz | SketchPlane::Yz => DVec3::Z,
+            SketchPlane::Custom { y_dir, .. } => y_dir,
         }
     }
 
@@ -52,6 +73,7 @@ impl SketchPlane {
             SketchPlane::Xy => "XY",
             SketchPlane::Xz => "XZ",
             SketchPlane::Yz => "YZ",
+            SketchPlane::Custom { .. } => "Face",
         }
     }
 }

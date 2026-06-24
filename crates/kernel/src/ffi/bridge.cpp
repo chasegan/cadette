@@ -239,8 +239,11 @@ Mesh tessellate(const Shape& s, double deflection) {
     mesher.Perform();
 
     uint32_t base = 0;        // running vertex offset across faces
-    uint32_t face_index = 0;  // source face id (exploration order)
-    for (TopExp_Explorer ex(s.shape, TopAbs_FACE); ex.More(); ex.Next()) {
+    // Face id = TopExp face index, incremented for every face so it matches
+    // face_plane()'s indexing even if some face lacks a triangulation.
+    uint32_t face_index = 0;
+    for (TopExp_Explorer ex(s.shape, TopAbs_FACE); ex.More();
+         ex.Next(), ++face_index) {
       const TopoDS_Face face = TopoDS::Face(ex.Current());
       TopLoc_Location loc;
       Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
@@ -294,7 +297,6 @@ Mesh tessellate(const Shape& s, double deflection) {
       }
 
       base += static_cast<uint32_t>(nb_nodes);
-      ++face_index;
     }
 
     // Normalize accumulated vertex normals.
@@ -348,6 +350,31 @@ Mesh tessellate(const Shape& s, double deflection) {
     }
 
     return m;
+  });
+}
+
+PlaneFrame face_plane(const Shape& s, uint32_t index) {
+  return guard("face_plane", [&] {
+    PlaneFrame pf{};
+    pf.ok = false;
+    uint32_t i = 0;
+    for (TopExp_Explorer ex(s.shape, TopAbs_FACE); ex.More(); ex.Next(), ++i) {
+      if (i != index) continue;
+      const TopoDS_Face face = TopoDS::Face(ex.Current());
+      Handle(Geom_Surface) surface = BRep_Tool::Surface(face);
+      Handle(Geom_Plane) plane = Handle(Geom_Plane)::DownCast(surface);
+      if (plane.IsNull()) break;  // not planar — can't sketch on it
+      const gp_Ax3 axis = plane->Pln().Position();
+      const gp_Pnt o = axis.Location();
+      const gp_Dir x = axis.XDirection();
+      const gp_Dir y = axis.YDirection();
+      pf.ok = true;
+      pf.ox = o.X(); pf.oy = o.Y(); pf.oz = o.Z();
+      pf.xx = x.X(); pf.xy = x.Y(); pf.xz = x.Z();
+      pf.yx = y.X(); pf.yy = y.Y(); pf.yz = y.Z();
+      break;
+    }
+    return pf;
   });
 }
 

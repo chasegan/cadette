@@ -33,6 +33,22 @@ pub mod ffi {
         edge_ids: Vec<u32>,
     }
 
+    /// A planar face's local frame: origin plus in-plane x/y axes. `ok` is false
+    /// if the queried face index is out of range or the face isn't planar.
+    #[derive(Clone, Copy, Debug, Default)]
+    struct PlaneFrame {
+        ok: bool,
+        ox: f64,
+        oy: f64,
+        oz: f64,
+        xx: f64,
+        xy: f64,
+        xz: f64,
+        yx: f64,
+        yy: f64,
+        yz: f64,
+    }
+
     unsafe extern "C++" {
         include!("rmf-kernel/src/ffi/bridge.hpp");
 
@@ -93,6 +109,9 @@ pub mod ffi {
 
         /// Write a binary STL. `deflection` controls mesh resolution.
         fn write_stl(shape: &Shape, path: &str, deflection: f64) -> Result<()>;
+
+        /// The plane of the face at `index` (TopExp order), for sketch-on-face.
+        fn face_plane(shape: &Shape, index: u32) -> Result<PlaneFrame>;
     }
 }
 

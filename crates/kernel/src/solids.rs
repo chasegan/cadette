@@ -127,4 +127,15 @@ impl Solid {
         ffi::write_stl(&self.0, path, deflection)?;
         Ok(())
     }
+
+    /// The plane of the face at `index` (TopExp order) as `(origin, x_dir,
+    /// y_dir)`, or `None` if the index is out of range or the face isn't planar.
+    pub fn face_plane(&self, index: u32) -> Result<Option<([f64; 3], [f64; 3], [f64; 3])>> {
+        let pf = ffi::face_plane(&self.0, index)?;
+        Ok(pf.ok.then_some((
+            [pf.ox, pf.oy, pf.oz],
+            [pf.xx, pf.xy, pf.xz],
+            [pf.yx, pf.yy, pf.yz],
+        )))
+    }
 }
