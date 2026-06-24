@@ -90,6 +90,18 @@ pub mod ffi {
         /// Extrude a planar face along its normal by `distance` into a solid.
         fn extrude(shape: &Shape, distance: f64) -> Result<UniquePtr<Shape>>;
 
+        // --- Push/pull -----------------------------------------------------
+        /// Offset the planar face of `shape` anchored at `(px,py,pz)` with
+        /// normal `(nx,ny,nz)` along that normal by `distance` (fuse if
+        /// positive, cut if negative).
+        #[allow(clippy::too_many_arguments)]
+        fn push_pull(
+            shape: &Shape,
+            px: f64, py: f64, pz: f64,
+            nx: f64, ny: f64, nz: f64,
+            distance: f64,
+        ) -> Result<UniquePtr<Shape>>;
+
         // --- Transforms ---------------------------------------------------
         fn translate(shape: &Shape, dx: f64, dy: f64, dz: f64) -> Result<UniquePtr<Shape>>;
 

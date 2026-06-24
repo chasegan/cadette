@@ -8,7 +8,7 @@
 
 use glam::DVec3;
 
-use crate::features::BooleanOp;
+use crate::features::{BooleanOp, FaceAnchor};
 use crate::sketch::{Profile, SketchPlane};
 
 /// A geometry engine capable of producing and combining solid bodies.
@@ -50,4 +50,13 @@ pub trait GeometryBackend {
     ) -> Result<Self::Body, Self::Error>;
 
     fn fillet_all(&mut self, body: &Self::Body, radius: f64) -> Result<Self::Body, Self::Error>;
+
+    /// Push or pull the planar face of `body` identified by `anchor` along its
+    /// normal by `distance` (positive adds material, negative removes).
+    fn push_pull(
+        &mut self,
+        body: &Self::Body,
+        anchor: FaceAnchor,
+        distance: f64,
+    ) -> Result<Self::Body, Self::Error>;
 }

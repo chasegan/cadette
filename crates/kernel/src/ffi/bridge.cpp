@@ -177,6 +177,48 @@ std::unique_ptr<Shape> extrude(const Shape& s, double distance) {
   });
 }
 
+// --- Push/pull --------------------------------------------------------------
+
+std::unique_ptr<Shape> push_pull(const Shape& s, double px, double py, double pz,
+                                 double nx, double ny, double nz,
+                                 double distance) {
+  return guard("push_pull", [&] {
+    const gp_Pnt anchor(px, py, pz);
+    const gp_Dir wanted(nx, ny, nz);
+
+    // Find the planar face whose plane passes through the anchor with a
+    // matching normal (the durable face reference).
+    TopoDS_Face target;
+    bool found = false;
+    for (TopExp_Explorer ex(s.shape, TopAbs_FACE); ex.More(); ex.Next()) {
+      const TopoDS_Face face = TopoDS::Face(ex.Current());
+      Handle(Geom_Surface) surface = BRep_Tool::Surface(face);
+      Handle(Geom_Plane) plane = Handle(Geom_Plane)::DownCast(surface);
+      if (plane.IsNull()) continue;
+      const gp_Pln pln = plane->Pln();
+      if (pln.Distance(anchor) > 1e-4) continue;
+      if (std::abs(pln.Axis().Direction().Dot(wanted)) < 0.99) continue;
+      target = face;
+      found = true;
+      break;
+    }
+    if (!found) {
+      throw std::runtime_error("push_pull: no matching planar face");
+    }
+
+    gp_Vec direction(wanted);
+    direction *= distance;
+    if (direction.Magnitude() < 1e-9) {
+      return std::make_unique<Shape>(s.shape);  // no-op
+    }
+    const TopoDS_Shape prism = BRepPrimAPI_MakePrism(target, direction).Shape();
+    const TopoDS_Shape result =
+        distance >= 0.0 ? BRepAlgoAPI_Fuse(s.shape, prism).Shape()
+                        : BRepAlgoAPI_Cut(s.shape, prism).Shape();
+    return std::make_unique<Shape>(result);
+  });
+}
+
 // --- Transforms -------------------------------------------------------------
 
 std::unique_ptr<Shape> translate(const Shape& s, double dx, double dy,

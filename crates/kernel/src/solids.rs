@@ -89,6 +89,14 @@ impl Solid {
         Ok(Self::wrap(ffi::extrude(&self.0, distance)?))
     }
 
+    /// Push/pull the planar face anchored at `point` with `normal` along that
+    /// normal by `distance` (positive fuses material, negative cuts).
+    pub fn push_pull(&self, point: [f64; 3], normal: [f64; 3], distance: f64) -> Result<Self> {
+        Ok(Self::wrap(ffi::push_pull(
+            &self.0, point[0], point[1], point[2], normal[0], normal[1], normal[2], distance,
+        )?))
+    }
+
     // --- Booleans -----------------------------------------------------------
 
     /// Union: merge `self` and `other` into one body.

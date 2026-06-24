@@ -57,6 +57,14 @@ impl GeometryBackend for Recording {
         }
         Ok(format!("fillet({body},{radius:.0})"))
     }
+    fn push_pull(
+        &mut self,
+        body: &String,
+        _anchor: rmf_core::FaceAnchor,
+        distance: f64,
+    ) -> Result<String, String> {
+        Ok(format!("pushpull({body},{distance:.0})"))
+    }
 }
 
 /// The canonical Phase-0 part, as parametric data: a filleted box with a bored

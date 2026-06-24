@@ -46,6 +46,10 @@ std::unique_ptr<Shape> make_polygon_face(double ox, double oy, double oz,
 // --- Extrude ----------------------------------------------------------------
 std::unique_ptr<Shape> extrude(const Shape& s, double distance);
 
+// --- Push/pull --------------------------------------------------------------
+std::unique_ptr<Shape> push_pull(const Shape& s, double px, double py, double pz,
+                                 double nx, double ny, double nz, double distance);
+
 // --- Transforms -------------------------------------------------------------
 std::unique_ptr<Shape> translate(const Shape& s, double dx, double dy, double dz);
 

@@ -979,6 +979,35 @@ mod tests {
     }
 
     #[test]
+    fn push_pull_feature_extends_a_box() {
+        use rmf_core::FaceAnchor;
+        let mut doc = Document::new("pp");
+        let b = doc.add(
+            "Box",
+            FeatureKind::Box {
+                size: DVec3::new(10.0, 10.0, 10.0),
+            },
+        );
+        doc.add(
+            "Push/Pull",
+            FeatureKind::PushPull {
+                source: b,
+                anchor: FaceAnchor {
+                    point: DVec3::new(5.0, 5.0, 10.0),
+                    normal: DVec3::Z,
+                },
+                distance: 5.0,
+            },
+        );
+        let mut m = Modeler::new();
+        m.doc = doc;
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        let (_min, max) = bounds(&mesh);
+        assert!((max[2] - 15.0).abs() < 0.5, "max z {}", max[2]);
+    }
+
+    #[test]
     fn undo_and_redo_restore_document_state() {
         let mut m = Modeler::new();
         let n0 = m.doc.history.len();

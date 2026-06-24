@@ -21,6 +21,16 @@ use crate::sketch::{Profile, Sketch2d, SketchPlane};
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 pub struct FeatureId(pub u64);
 
+/// A durable reference to a planar face by its geometry: a point on the face's
+/// plane and the plane normal. The kernel re-finds the matching face on each
+/// rebuild — a pragmatic "robust reference" that survives upstream edits which
+/// don't move or split the face. (Topological naming is the fuller solution.)
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FaceAnchor {
+    pub point: DVec3,
+    pub normal: DVec3,
+}
+
 /// The three combination operations.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum BooleanOp {
@@ -67,6 +77,15 @@ pub enum FeatureKind {
     },
     /// Fillet every edge of `source` with a constant `radius`.
     FilletAll { source: FeatureId, radius: f64 },
+
+    /// Push or pull a planar face of `source` along its normal by `distance`
+    /// (positive adds material, negative removes). The face is identified by
+    /// `anchor`, re-found each rebuild.
+    PushPull {
+        source: FeatureId,
+        anchor: FaceAnchor,
+        distance: f64,
+    },
 }
 
 impl FeatureKind {
@@ -82,6 +101,7 @@ impl FeatureKind {
             FeatureKind::Translate { source, .. } => vec![*source],
             FeatureKind::FilletAll { source, .. } => vec![*source],
             FeatureKind::Extrude { source, .. } => vec![*source],
+            FeatureKind::PushPull { source, .. } => vec![*source],
             FeatureKind::Boolean { target, tool, .. } => vec![*target, *tool],
         }
     }
@@ -93,7 +113,8 @@ impl FeatureKind {
         match self {
             FeatureKind::Translate { source, .. }
             | FeatureKind::FilletAll { source, .. }
-            | FeatureKind::Extrude { source, .. } => Some(*source),
+            | FeatureKind::Extrude { source, .. }
+            | FeatureKind::PushPull { source, .. } => Some(*source),
             // Heal to the kept body of a boolean.
             FeatureKind::Boolean { target, .. } => Some(*target),
             _ => None,
@@ -110,7 +131,8 @@ impl FeatureKind {
         match self {
             FeatureKind::Translate { source, .. }
             | FeatureKind::FilletAll { source, .. }
-            | FeatureKind::Extrude { source, .. } => swap(source),
+            | FeatureKind::Extrude { source, .. }
+            | FeatureKind::PushPull { source, .. } => swap(source),
             FeatureKind::Boolean { target, tool, .. } => {
                 swap(target);
                 swap(tool);
@@ -131,6 +153,7 @@ impl FeatureKind {
             FeatureKind::Extrude { .. } => "Extrude",
             FeatureKind::Boolean { .. } => "Boolean",
             FeatureKind::FilletAll { .. } => "Fillet",
+            FeatureKind::PushPull { .. } => "Push/Pull",
         }
     }
 }

@@ -6,7 +6,7 @@
 //! [`KernelError`], so a failed operation surfaces as a per-feature regen error
 //! rather than aborting the whole rebuild.
 
-use rmf_core::{BooleanOp, DVec3, GeometryBackend, Profile, SketchPlane};
+use rmf_core::{BooleanOp, DVec3, FaceAnchor, GeometryBackend, Profile, SketchPlane};
 
 use crate::{KernelError, Solid};
 
@@ -83,5 +83,14 @@ impl GeometryBackend for KernelBackend {
 
     fn fillet_all(&mut self, body: &Solid, radius: f64) -> Result<Solid, KernelError> {
         body.fillet_all_edges(radius)
+    }
+
+    fn push_pull(
+        &mut self,
+        body: &Solid,
+        anchor: FaceAnchor,
+        distance: f64,
+    ) -> Result<Solid, KernelError> {
+        body.push_pull(anchor.point.to_array(), anchor.normal.to_array(), distance)
     }
 }

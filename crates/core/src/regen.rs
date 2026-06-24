@@ -181,5 +181,13 @@ where
             let body = input(*source)?;
             backend.fillet_all(body, *radius).map_err(backend_err)
         }
+        FeatureKind::PushPull {
+            source,
+            anchor,
+            distance,
+        } => {
+            let body = input(*source)?;
+            backend.push_pull(body, *anchor, *distance).map_err(backend_err)
+        }
     }
 }

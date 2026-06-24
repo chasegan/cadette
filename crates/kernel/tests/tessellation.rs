@@ -50,3 +50,29 @@ fn box_faces_report_planar_frames() {
     // Out of range -> None, not an error.
     assert!(cube.face_plane(99).unwrap().is_none());
 }
+
+fn max_z(solid: &Solid) -> f32 {
+    let mesh = solid.tessellate(0.5).unwrap();
+    mesh.positions
+        .chunks_exact(3)
+        .map(|p| p[2])
+        .fold(f32::MIN, f32::max)
+}
+
+#[test]
+fn push_pull_offsets_the_anchored_face() {
+    let cube = Solid::cuboid(10.0, 10.0, 10.0).unwrap();
+    assert!((max_z(&cube) - 10.0).abs() < 0.5);
+
+    // Top face at z=10, normal +Z. Pushing out by 5 fuses material (z -> 15).
+    let taller = cube
+        .push_pull([5.0, 5.0, 10.0], [0.0, 0.0, 1.0], 5.0)
+        .unwrap();
+    assert!((max_z(&taller) - 15.0).abs() < 0.5, "pushed max z {}", max_z(&taller));
+
+    // Pulling in by 3 cuts material (z -> 7).
+    let shorter = cube
+        .push_pull([5.0, 5.0, 10.0], [0.0, 0.0, 1.0], -3.0)
+        .unwrap();
+    assert!((max_z(&shorter) - 7.0).abs() < 0.5, "pulled max z {}", max_z(&shorter));
+}

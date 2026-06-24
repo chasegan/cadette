@@ -424,6 +424,9 @@ fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
         FeatureKind::Extrude { distance, .. } => {
             changed |= drag_signed(ui, "Distance", distance);
         }
+        FeatureKind::PushPull { distance, .. } => {
+            changed |= drag_signed(ui, "Distance", distance);
+        }
         FeatureKind::Translate { offset, .. } => {
             changed |= drag(ui, "dX", &mut offset.x);
             changed |= drag(ui, "dY", &mut offset.y);
