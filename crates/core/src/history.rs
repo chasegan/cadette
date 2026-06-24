@@ -84,10 +84,20 @@ impl History {
         self.features.iter_mut().find(|f| f.id == id)
     }
 
-    /// Remove a feature. Note this can orphan downstream references; the caller
-    /// should validate or handle the resulting regeneration errors.
+    /// Remove a feature, healing dependents: references to the removed feature
+    /// are rewired to its primary input (e.g. deleting a fillet reconnects its
+    /// dependents to the body it was filleting). Dependents of a feature with
+    /// no usable input (a primitive or sketch) are left dangling and will
+    /// surface as regeneration errors.
     pub fn remove(&mut self, id: FeatureId) -> Option<Feature> {
-        self.index_of(id).map(|i| self.features.remove(i))
+        let index = self.index_of(id)?;
+        let removed = self.features.remove(index);
+        if let Some(replacement) = removed.kind.primary_input() {
+            for feature in &mut self.features {
+                feature.kind.remap_input(id, replacement);
+            }
+        }
+        Some(removed)
     }
 
     pub fn set_suppressed(&mut self, id: FeatureId, suppressed: bool) {

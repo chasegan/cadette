@@ -629,7 +629,7 @@ impl Controller for Modeler {
         self.ui.errors = regen
             .errors()
             .iter()
-            .map(|e| (e.feature(), error_message(e)))
+            .map(|e| (e.feature(), error_message(e, &self.doc)))
             .collect();
         self.ui.visible = regen.visible().to_vec();
 
@@ -685,10 +685,13 @@ impl Controller for Modeler {
     }
 }
 
-fn error_message(err: &RegenError<rmf_kernel::KernelError>) -> String {
+fn error_message(err: &RegenError<rmf_kernel::KernelError>, doc: &Document) -> String {
     match err {
         RegenError::Backend { source, .. } => source.to_string(),
-        RegenError::MissingInput { input, .. } => format!("missing input {input:?}"),
+        RegenError::MissingInput { input, .. } => match doc.history.get(*input) {
+            Some(f) => format!("needs '{}' (suppressed)", f.name),
+            None => "needs a step that was deleted".to_string(),
+        },
         RegenError::Invalid { reason, .. } => reason.to_string(),
     }
 }
@@ -976,6 +979,18 @@ mod tests {
         assert!((span(0) - 30.0).abs() < 0.5, "x span {}", span(0));
         assert!((span(1) - 20.0).abs() < 0.5, "y span {}", span(1));
         assert!((span(2) - 15.0).abs() < 0.5, "z span {}", span(2));
+    }
+
+    #[test]
+    fn deleting_the_fillet_heals_the_bore_hole() {
+        // Reproduces the reported bug: deleting "Fillet edges" must rewire the
+        // bore hole to the pre-fillet body, not error with a missing input.
+        let mut m = Modeler::new();
+        let fillet_id = m.doc.history.features()[2].id; // "Fillet edges"
+        m.doc.history.remove(fillet_id);
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors after delete: {:?}", m.ui.errors);
+        assert!(!mesh.indices.is_empty());
     }
 
     #[test]

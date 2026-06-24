@@ -86,6 +86,39 @@ impl FeatureKind {
         }
     }
 
+    /// The input a dependent should rewire to if this feature is deleted — its
+    /// primary upstream body. `None` for features with no usable input
+    /// (primitives, sketches), whose dependents can't be healed.
+    pub fn primary_input(&self) -> Option<FeatureId> {
+        match self {
+            FeatureKind::Translate { source, .. }
+            | FeatureKind::FilletAll { source, .. }
+            | FeatureKind::Extrude { source, .. } => Some(*source),
+            // Heal to the kept body of a boolean.
+            FeatureKind::Boolean { target, .. } => Some(*target),
+            _ => None,
+        }
+    }
+
+    /// Replace every reference to feature `from` with `to`.
+    pub fn remap_input(&mut self, from: FeatureId, to: FeatureId) {
+        let swap = |id: &mut FeatureId| {
+            if *id == from {
+                *id = to;
+            }
+        };
+        match self {
+            FeatureKind::Translate { source, .. }
+            | FeatureKind::FilletAll { source, .. }
+            | FeatureKind::Extrude { source, .. } => swap(source),
+            FeatureKind::Boolean { target, tool, .. } => {
+                swap(target);
+                swap(tool);
+            }
+            _ => {}
+        }
+    }
+
     /// A short, stable type label for UI/history display.
     pub fn type_name(&self) -> &'static str {
         match self {

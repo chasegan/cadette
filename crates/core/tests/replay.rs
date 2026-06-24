@@ -122,6 +122,22 @@ fn sketch_extrude_reduces_to_a_prism() {
 }
 
 #[test]
+fn deleting_a_feature_heals_its_dependents() {
+    // box -> fillet(box) -> cut(fillet, cyl). Deleting the fillet should rewire
+    // the cut's target back to the box, not orphan it.
+    let (mut doc, [b, f, _c, cut]) = sample();
+    doc.history.remove(f);
+
+    match doc.history.get(cut).unwrap().kind {
+        FeatureKind::Boolean { target, .. } => assert_eq!(target, b, "cut rewired to the box"),
+        _ => panic!("cut should still be a boolean"),
+    }
+    assert!(doc.history.validate().is_ok());
+    let regen = regenerate(&doc, &mut Recording);
+    assert!(regen.is_ok(), "no dangling references after a healed delete");
+}
+
+#[test]
 fn history_validates_clean() {
     let (doc, _) = sample();
     assert!(doc.history.validate().is_ok());
