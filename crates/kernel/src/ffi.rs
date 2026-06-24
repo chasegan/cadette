@@ -23,6 +23,9 @@ pub mod ffi {
         positions: Vec<f32>,
         normals: Vec<f32>,
         indices: Vec<u32>,
+        /// Per-vertex source face index (one entry per `positions` triple).
+        /// Faces are numbered in OCCT exploration order; used for GPU picking.
+        face_ids: Vec<u32>,
     }
 
     unsafe extern "C++" {

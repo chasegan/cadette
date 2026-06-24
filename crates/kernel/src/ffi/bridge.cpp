@@ -236,7 +236,8 @@ Mesh tessellate(const Shape& s, double deflection) {
                                     /*isInParallel=*/true);
     mesher.Perform();
 
-    uint32_t base = 0;  // running vertex offset across faces
+    uint32_t base = 0;        // running vertex offset across faces
+    uint32_t face_index = 0;  // source face id (exploration order)
     for (TopExp_Explorer ex(s.shape, TopAbs_FACE); ex.More(); ex.Next()) {
       const TopoDS_Face face = TopoDS::Face(ex.Current());
       TopLoc_Location loc;
@@ -248,7 +249,8 @@ Mesh tessellate(const Shape& s, double deflection) {
       const int nb_nodes = tri->NbNodes();
 
       // Positions (transformed to world space); normals zero-initialized and
-      // accumulated from adjacent triangles below for smooth shading.
+      // accumulated from adjacent triangles below for smooth shading. Every
+      // vertex of this face carries the same face id for picking.
       for (int i = 1; i <= nb_nodes; ++i) {
         gp_Pnt p = tri->Node(i).Transformed(trsf);
         m.positions.push_back(static_cast<float>(p.X()));
@@ -257,6 +259,7 @@ Mesh tessellate(const Shape& s, double deflection) {
         m.normals.push_back(0.0f);
         m.normals.push_back(0.0f);
         m.normals.push_back(0.0f);
+        m.face_ids.push_back(face_index);
       }
 
       const int nb_tris = tri->NbTriangles();
@@ -289,6 +292,7 @@ Mesh tessellate(const Shape& s, double deflection) {
       }
 
       base += static_cast<uint32_t>(nb_nodes);
+      ++face_index;
     }
 
     // Normalize accumulated vertex normals.
