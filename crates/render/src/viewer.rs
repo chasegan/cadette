@@ -58,10 +58,10 @@ pub trait Controller {
     fn highlights(&self) -> Highlights {
         Highlights::default()
     }
-    /// A viewport click resolved to this face (or `None` for empty space).
-    fn on_face_pick(&mut self, _face: Option<u32>) {}
-    /// The face currently under the cursor (or `None`), updated as it moves.
-    fn on_face_hover(&mut self, _face: Option<u32>) {}
+    /// A viewport click resolved to this entity (or `None` for empty space).
+    fn on_pick(&mut self, _pick: Option<Pick>) {}
+    /// The entity currently under the cursor (or `None`), updated as it moves.
+    fn on_hover(&mut self, _pick: Option<Pick>) {}
     /// Whether the viewport should resolve picks right now. (Disabled e.g.
     /// while drawing a sketch, where clicks mean something else.)
     fn wants_picking(&self) -> bool {
@@ -72,6 +72,16 @@ pub trait Controller {
 /// Pixel format of the offscreen face-id pick buffer.
 const PICK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
+/// A picked entity in the viewport.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Pick {
+    Face(u32),
+    Edge(u32),
+}
+
+/// How close (pixels) the cursor must be to an edge to pick it over a face.
+const EDGE_PICK_PX: f32 = 6.0;
+
 /// GPU uniform block, mirrored by `Globals` in the shaders.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -79,31 +89,42 @@ struct Globals {
     view_proj: [[f32; 4]; 4],
     camera_pos: [f32; 4],
     light_dir: [f32; 4],
-    /// `[face_id, has_selection, 0, 0]` — highlight the face when `has_selection`.
-    selected: [u32; 4],
+    /// `[selected_face, has_sel, hovered_face, has_hov]`.
+    faces: [u32; 4],
+    /// `[selected_edge, has_sel, hovered_edge, has_hov]`.
+    edges: [u32; 4],
+}
+
+/// Split a pick into ([face_id, has_face], [edge_id, has_edge]).
+fn pick_slots(pick: Option<Pick>) -> ([u32; 2], [u32; 2]) {
+    match pick {
+        Some(Pick::Face(id)) => ([id, 1], [0, 0]),
+        Some(Pick::Edge(id)) => ([0, 0], [id, 1]),
+        None => ([0, 0], [0, 0]),
+    }
 }
 
 impl Globals {
     fn for_view(camera: &OrbitCamera, aspect: f32, highlights: Highlights) -> Self {
         let eye = camera.eye();
-        let sel = highlights.selected_face.map_or([0, 0], |id| [id, 1]);
-        let hov = highlights.hovered_face.map_or([0, 0], |id| [id, 1]);
+        let (sel_face, sel_edge) = pick_slots(highlights.selected);
+        let (hov_face, hov_edge) = pick_slots(highlights.hovered);
         Globals {
             view_proj: camera.view_proj(aspect).to_cols_array_2d(),
             camera_pos: [eye.x, eye.y, eye.z, 1.0],
             light_dir: [0.4, 0.5, 1.0, 0.0],
-            // [selected_id, has_selected, hovered_id, has_hovered]
-            selected: [sel[0], sel[1], hov[0], hov[1]],
+            faces: [sel_face[0], sel_face[1], hov_face[0], hov_face[1]],
+            edges: [sel_edge[0], sel_edge[1], hov_edge[0], hov_edge[1]],
         }
     }
 }
 
-/// Faces to emphasize this frame: a clicked selection (strong) and a hover
-/// pre-highlight (subtle).
+/// Entities to emphasize this frame: a clicked selection (strong) and a hover
+/// pre-highlight (subtle). Each may be a face or an edge.
 #[derive(Clone, Copy, Default)]
 pub struct Highlights {
-    pub selected_face: Option<u32>,
-    pub hovered_face: Option<u32>,
+    pub selected: Option<Pick>,
+    pub hovered: Option<Pick>,
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +145,9 @@ struct Scene {
     edge_vertex_buffer: wgpu::Buffer,
     edge_index_buffer: wgpu::Buffer,
     edge_index_count: u32,
+    /// CPU copy of edge segments (world endpoints + edge id) for screen-space
+    /// edge picking — edges are too thin for the GPU id buffer.
+    edge_segments: Vec<(Vec3, Vec3, u32)>,
     globals_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
 }
@@ -323,6 +347,7 @@ impl Scene {
             edge_vertex_buffer,
             edge_index_buffer,
             edge_index_count,
+            edge_segments: edge_segments(mesh),
             globals_buffer,
             bind_group,
         }
@@ -338,6 +363,7 @@ impl Scene {
         self.edge_vertex_buffer = ev;
         self.edge_index_buffer = ei;
         self.edge_index_count = en;
+        self.edge_segments = edge_segments(mesh);
     }
 
     /// Record the 3D pass (clearing color + depth) into `encoder`. `selected`
@@ -513,6 +539,66 @@ impl Scene {
 
         (raw != 0).then(|| raw - 1)
     }
+
+    /// Pick the entity under pixel `(px, py)`: a nearby edge takes priority
+    /// over the face behind it; otherwise the face (or nothing).
+    fn pick_at(&self, px: u32, py: u32, camera: &OrbitCamera, w: u32, h: u32) -> Option<Pick> {
+        if let Some(edge) = self.pick_edge(px as f32, py as f32, camera, w, h) {
+            return Some(Pick::Edge(edge));
+        }
+        self.pick_face(px, py, camera, w, h).map(Pick::Face)
+    }
+
+    /// Nearest edge to `(px, py)` in screen space, within [`EDGE_PICK_PX`].
+    fn pick_edge(&self, px: f32, py: f32, camera: &OrbitCamera, w: u32, h: u32) -> Option<u32> {
+        let view_proj = camera.view_proj(w as f32 / h.max(1) as f32);
+        let (wf, hf) = (w as f32, h as f32);
+        let project = |p: Vec3| -> Option<(f32, f32)> {
+            let clip = view_proj * p.extend(1.0);
+            if clip.w <= 1e-6 {
+                return None;
+            }
+            let ndc = clip.truncate() / clip.w;
+            Some(((ndc.x * 0.5 + 0.5) * wf, (0.5 - ndc.y * 0.5) * hf))
+        };
+
+        let mut best = (EDGE_PICK_PX, None);
+        for &(a, b, id) in &self.edge_segments {
+            if let (Some(pa), Some(pb)) = (project(a), project(b)) {
+                let d = point_segment_distance(px, py, pa, pb);
+                if d < best.0 {
+                    best = (d, Some(id));
+                }
+            }
+        }
+        best.1
+    }
+}
+
+/// CPU edge segments (world endpoints + edge id) from the mesh's edge lines.
+fn edge_segments(mesh: &MeshData) -> Vec<(Vec3, Vec3, u32)> {
+    mesh.edge_indices
+        .chunks_exact(2)
+        .filter_map(|pair| {
+            let a = mesh.edge_vertices.get(pair[0] as usize)?;
+            let b = mesh.edge_vertices.get(pair[1] as usize)?;
+            Some((Vec3::from(a.position), Vec3::from(b.position), a.edge_id))
+        })
+        .collect()
+}
+
+/// Distance from a point to a line segment, all in screen pixels.
+fn point_segment_distance(px: f32, py: f32, a: (f32, f32), b: (f32, f32)) -> f32 {
+    let (abx, aby) = (b.0 - a.0, b.1 - a.1);
+    let (apx, apy) = (px - a.0, py - a.1);
+    let len_sq = abx * abx + aby * aby;
+    let t = if len_sq > 0.0 {
+        ((apx * abx + apy * aby) / len_sq).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (cx, cy) = (a.0 + abx * t, a.1 + aby * t);
+    ((px - cx).powi(2) + (py - cy).powi(2)).sqrt()
 }
 
 fn make_mesh_buffers(
@@ -918,18 +1004,18 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
 }
 
 impl<C: Controller> WindowApp<C> {
-    /// Resolve the face under the cursor and hand it to the controller.
+    /// Resolve the entity under the cursor and hand it to the controller.
     fn pick_at_cursor(&mut self) {
-        let face = match self.state.as_ref() {
+        let pick = match self.state.as_ref() {
             Some(state) => {
                 let (w, h) = (state.config.width, state.config.height);
                 let px = (self.mouse.cursor.x as i64).clamp(0, w as i64 - 1) as u32;
                 let py = (self.mouse.cursor.y as i64).clamp(0, h as i64 - 1) as u32;
-                state.scene.pick_face(px, py, &self.camera, w, h)
+                state.scene.pick_at(px, py, &self.camera, w, h)
             }
             None => return,
         };
-        self.controller.on_face_pick(face);
+        self.controller.on_pick(pick);
         if let Some(state) = self.state.as_ref() {
             state.window.request_redraw();
         }
@@ -962,6 +1048,11 @@ impl<C: Controller> WindowApp<C> {
 
         // Hover pre-highlight: pick the face under the cursor at most once per
         // frame, and only when the cursor/camera actually moved.
+        //
+        // The pick is a synchronous GPU readback (it stalls until the pass
+        // finishes). Measured fine for these scene sizes; if it ever stutters
+        // on heavier models, switch to an async readback (issue the copy, read
+        // the mapped result a frame or two later) to remove the stall.
         if self.mouse.hover_dirty {
             self.mouse.hover_dirty = false;
             let hovered = if self.controller.wants_picking()
@@ -971,11 +1062,11 @@ impl<C: Controller> WindowApp<C> {
                 let (w, h) = (state.config.width, state.config.height);
                 let px = (self.mouse.cursor.x as i64).clamp(0, w as i64 - 1) as u32;
                 let py = (self.mouse.cursor.y as i64).clamp(0, h as i64 - 1) as u32;
-                state.scene.pick_face(px, py, &self.camera, w, h)
+                state.scene.pick_at(px, py, &self.camera, w, h)
             } else {
                 None
             };
-            self.controller.on_face_hover(hovered);
+            self.controller.on_hover(hovered);
         }
 
         let jobs = state
@@ -1214,5 +1305,33 @@ mod tests {
         // The quad straddles the origin (the camera target), so the center ray
         // hits it.
         assert_eq!(scene.pick_face(32, 32, &camera, 64, 64), Some(0));
+    }
+
+    /// An edge passing through the cursor is picked in preference to the face
+    /// behind it.
+    #[test]
+    fn pick_prefers_a_nearby_edge_over_the_face() {
+        let instance = wgpu::Instance::default();
+        let (_adapter, device, queue) = pollster::block_on(request_device(&instance, None));
+
+        let v = |x: f32, y: f32| Vertex {
+            position: [x, y, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            face_id: 0,
+        };
+        let mesh = MeshData {
+            vertices: vec![v(-10.0, -10.0), v(10.0, -10.0), v(10.0, 10.0), v(-10.0, 10.0)],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            // A horizontal edge through the origin (the screen center).
+            edge_vertices: vec![
+                EdgeVertex { position: [-10.0, 0.0, 0.0], edge_id: 0 },
+                EdgeVertex { position: [10.0, 0.0, 0.0], edge_id: 0 },
+            ],
+            edge_indices: vec![0, 1],
+        };
+        let scene = Scene::new(device, queue, wgpu::TextureFormat::Rgba8Unorm, &mesh);
+        let camera = OrbitCamera::framing(Vec3::ZERO, 15.0);
+
+        assert_eq!(scene.pick_at(32, 32, &camera, 64, 64), Some(Pick::Edge(0)));
     }
 }

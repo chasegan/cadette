@@ -15,7 +15,7 @@ use rmf_core::{
 };
 use rmf_kernel::KernelBackend;
 use rmf_render::egui;
-use rmf_render::{Controller, MeshData, ViewContext};
+use rmf_render::{Controller, Highlights, MeshData, Pick, ViewContext};
 use rmf_ui::{history_panel, HistoryState};
 
 const DEFLECTION_MM: f64 = 0.1;
@@ -168,10 +168,10 @@ struct Modeler {
     editing: bool,
     /// Active interactive sketch, if drawing.
     sketch_session: Option<SketchSession>,
-    /// The face id clicked (strong highlight) and the one under the cursor
-    /// (subtle hover). Both transient — face ids are per-regeneration.
-    selected_face: Option<u32>,
-    hovered_face: Option<u32>,
+    /// The entity clicked (strong highlight) and the one under the cursor
+    /// (subtle hover). Transient — ids are per-regeneration.
+    selected: Option<Pick>,
+    hovered: Option<Pick>,
 }
 
 impl Modeler {
@@ -184,8 +184,8 @@ impl Modeler {
             redo: Vec::new(),
             editing: false,
             sketch_session: None,
-            selected_face: None,
-            hovered_face: None,
+            selected: None,
+            hovered: None,
         }
     }
 
@@ -664,19 +664,19 @@ impl Controller for Modeler {
         mesh
     }
 
-    fn highlights(&self) -> rmf_render::Highlights {
-        rmf_render::Highlights {
-            selected_face: self.selected_face,
-            hovered_face: self.hovered_face,
+    fn highlights(&self) -> Highlights {
+        Highlights {
+            selected: self.selected,
+            hovered: self.hovered,
         }
     }
 
-    fn on_face_pick(&mut self, face: Option<u32>) {
-        self.selected_face = face;
+    fn on_pick(&mut self, pick: Option<Pick>) {
+        self.selected = pick;
     }
 
-    fn on_face_hover(&mut self, face: Option<u32>) {
-        self.hovered_face = face;
+    fn on_hover(&mut self, pick: Option<Pick>) {
+        self.hovered = pick;
     }
 
     fn wants_picking(&self) -> bool {
@@ -760,8 +760,8 @@ fn main() -> anyhow::Result<()> {
 
     // Verification aid: highlight a face by id to confirm the shader tint path.
     if std::env::args().any(|a| a == "--highlight-demo") {
-        modeler.selected_face = Some(0); // strong (clicked)
-        modeler.hovered_face = Some(1); // subtle (hover)
+        modeler.selected = Some(Pick::Face(0)); // strong face (clicked)
+        modeler.hovered = Some(Pick::Edge(0)); // hovered edge
         let path = "out/highlight-demo.png";
         std::fs::create_dir_all("out")?;
         rmf_render::screenshot(modeler, 1280, 820, path)?;
@@ -880,8 +880,8 @@ mod tests {
             redo: Vec::new(),
             editing: false,
             sketch_session: None,
-            selected_face: None,
-            hovered_face: None,
+            selected: None,
+            hovered: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());
@@ -965,8 +965,8 @@ mod tests {
             redo: Vec::new(),
             editing: false,
             sketch_session: None,
-            selected_face: None,
-            hovered_face: None,
+            selected: None,
+            hovered: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());
