@@ -126,6 +126,27 @@ fn fillet_edge_rounds_only_the_nearest_edge() {
 }
 
 #[test]
+fn rotate_about_z_swaps_the_footprint() {
+    // A 20x10x10 box at the origin, rotated 90° about Z through its center
+    // (10,5,5): its X-span (20) and Y-span (10) should swap.
+    let bar = Solid::cuboid(20.0, 10.0, 10.0).unwrap();
+    let turned = bar
+        .rotate([10.0, 5.0, 5.0], [0.0, 0.0, 1.0], std::f64::consts::FRAC_PI_2)
+        .unwrap();
+    let mesh = turned.tessellate(0.5).unwrap();
+    let (mut minx, mut maxx, mut miny, mut maxy) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+    for p in mesh.positions.chunks_exact(3) {
+        minx = minx.min(p[0]);
+        maxx = maxx.max(p[0]);
+        miny = miny.min(p[1]);
+        maxy = maxy.max(p[1]);
+    }
+    // After a 90° turn the footprint is 10 wide in X and 20 deep in Y.
+    assert!((maxx - minx - 10.0).abs() < 0.5, "x span {}", maxx - minx);
+    assert!((maxy - miny - 20.0).abs() < 0.5, "y span {}", maxy - miny);
+}
+
+#[test]
 fn fillet_edges_rounds_several_at_once() {
     // Round all four vertical edges of a 10mm cube in one operation. Anchors at
     // each vertical edge's midpoint (z=5).

@@ -105,6 +105,16 @@ pub mod ffi {
         // --- Transforms ---------------------------------------------------
         fn translate(shape: &Shape, dx: f64, dy: f64, dz: f64) -> Result<UniquePtr<Shape>>;
 
+        /// Rotate `shape` by `angle` radians about the axis through `(cx,cy,cz)`
+        /// with direction `(ax,ay,az)`.
+        #[allow(clippy::too_many_arguments)]
+        fn rotate(
+            shape: &Shape,
+            cx: f64, cy: f64, cz: f64,
+            ax: f64, ay: f64, az: f64,
+            angle: f64,
+        ) -> Result<UniquePtr<Shape>>;
+
         // --- Booleans -----------------------------------------------------
         fn fuse(a: &Shape, b: &Shape) -> Result<UniquePtr<Shape>>;
         fn cut(a: &Shape, b: &Shape) -> Result<UniquePtr<Shape>>;

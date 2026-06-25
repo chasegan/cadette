@@ -76,6 +76,15 @@ impl GeometryBackend for Recording {
     ) -> Result<String, String> {
         Ok(format!("pushpull({body},{distance:.0})"))
     }
+    fn rotate(
+        &mut self,
+        body: &String,
+        _center: DVec3,
+        _axis: DVec3,
+        angle: f64,
+    ) -> Result<String, String> {
+        Ok(format!("rotate({body},{angle:.2})"))
+    }
 }
 
 /// The canonical Phase-0 part, as parametric data: a filleted box with a bored

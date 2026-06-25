@@ -18,7 +18,9 @@ use rmf_core::{
 use rmf_interaction::Selection;
 use rmf_kernel::{KernelBackend, Solid};
 use rmf_render::egui;
-use rmf_render::{Controller, Gizmo, GizmoHandle, Highlights, MeshData, Pick, ViewContext};
+use rmf_render::{
+    Controller, Gizmo, GizmoHandle, Highlights, MeshData, Pick, TransformDelta, ViewContext,
+};
 use rmf_ui::{history_panel, HistoryState};
 
 const DEFLECTION_MM: f64 = 0.1;
@@ -165,12 +167,15 @@ struct Manipulation {
     feature: Option<FeatureId>,
 }
 
-/// An in-progress gizmo transform: the body being moved and the `Translate`
-/// feature once the first drag has created it.
+/// An in-progress gizmo transform: the body being moved/rotated, the feature
+/// once the first drag created it, and (for rotation) the fixed pivot — the
+/// body's AABB center drifts as it turns, so the gizmo and rotation axis stay
+/// pinned at the center captured when the drag began.
 #[derive(Clone, Copy)]
 struct TransformDrag {
     source: FeatureId,
     feature: Option<FeatureId>,
+    pivot: Option<[f64; 3]>,
 }
 
 /// Bounding-box center of a flat `[x,y,z,...]` position array.
@@ -270,6 +275,19 @@ impl Modeler {
             Pick::Edge(g) => self.locate_edge(g)?.0,
         };
         self.ui.visible.get(body_index).copied()
+    }
+
+    /// The gizmo origin — the bounding-box center of a single selected face's
+    /// body (the only selection that shows the gizmo).
+    fn gizmo_origin(&self) -> Option<[f64; 3]> {
+        match self.selection.selected() {
+            [Pick::Face(_)] => {
+                let body = self.selected_body()?;
+                let idx = self.ui.visible.iter().position(|&f| f == body)?;
+                self.body_centers.get(idx).copied()
+            }
+            _ => None,
+        }
     }
 
     /// The plane of a picked face, if it is planar.
@@ -969,53 +987,64 @@ impl Controller for Modeler {
     }
 
     fn gizmo(&self) -> Option<Gizmo> {
-        // Gumball-style: show at a single selected face's body (move target).
         if self.sketch_session.is_some() {
             return None;
         }
-        match self.selection.selected() {
-            [Pick::Face(_)] => {
-                let body = self.selected_body()?;
-                let idx = self.ui.visible.iter().position(|&f| f == body)?;
-                Some(Gizmo {
-                    origin: *self.body_centers.get(idx)?,
-                })
+        // During a rotation the gizmo stays pinned at the captured pivot (the
+        // body's AABB center drifts as it turns).
+        if let Some(t) = self.transform {
+            if let Some(pivot) = t.pivot {
+                return Some(Gizmo { origin: pivot });
             }
+        }
+        self.gizmo_origin().map(|origin| Gizmo { origin })
+    }
+
+    fn start_transform(&mut self, handle: GizmoHandle) {
+        let Some(source) = self.selected_body() else {
+            return;
+        };
+        // Rotation pins the gizmo/axis at the body center captured now.
+        let pivot = match handle {
+            GizmoHandle::RotateAxis(_) => self.gizmo_origin(),
             _ => None,
-        }
+        };
+        self.transform = Some(TransformDrag { source, feature: None, pivot });
     }
 
-    fn start_transform(&mut self, _handle: GizmoHandle) {
-        // Axis and plane handles both translate the selected body; the render
-        // side supplies the world-space offset to update_transform.
-        if let Some(source) = self.selected_body() {
-            self.transform = Some(TransformDrag {
-                source,
-                feature: None,
-            });
-        }
-    }
-
-    fn update_transform(&mut self, offset: [f64; 3]) -> bool {
+    fn update_transform(&mut self, delta: TransformDelta) -> bool {
         let Some(mut t) = self.transform else {
             return false;
         };
-        let offset = DVec3::from_array(offset);
+        let (name, kind) = match delta {
+            TransformDelta::Translate(offset) => (
+                "Move",
+                FeatureKind::Translate {
+                    source: t.source,
+                    offset: DVec3::from_array(offset),
+                },
+            ),
+            TransformDelta::Rotate { axis, angle } => (
+                "Rotate",
+                FeatureKind::Rotate {
+                    source: t.source,
+                    axis: DVec3::from_array(axis),
+                    angle,
+                    center: DVec3::from_array(t.pivot.unwrap_or([0.0; 3])),
+                },
+            ),
+        };
         match t.feature {
             None => {
-                // First real drag: one undo entry, then add the Move feature.
+                // First real drag: one undo entry, then add the feature.
                 self.record_undo(self.doc.clone());
-                let id = self
-                    .doc
-                    .add("Move", FeatureKind::Translate { source: t.source, offset });
+                let id = self.doc.add(name, kind);
                 t.feature = Some(id);
                 self.ui.selected = Some(id);
             }
             Some(id) => {
-                if let Some(FeatureKind::Translate { offset: o, .. }) =
-                    self.doc.history.get_mut(id).map(|f| &mut f.kind)
-                {
-                    *o = offset;
+                if let Some(k) = self.doc.history.get_mut(id).map(|f| &mut f.kind) {
+                    *k = kind;
                 }
             }
         }
@@ -1030,12 +1059,13 @@ impl Controller for Modeler {
         let Some(id) = t.feature else {
             return; // never dragged far enough to create a feature
         };
-        let offset = match self.doc.history.get(id).map(|f| &f.kind) {
-            Some(FeatureKind::Translate { offset, .. }) => *offset,
-            _ => DVec3::ZERO,
+        // Discard a cancelled or no-op transform (and the undo it recorded).
+        let nonzero = match self.doc.history.get(id).map(|f| &f.kind) {
+            Some(FeatureKind::Translate { offset, .. }) => offset.length() >= 1e-3,
+            Some(FeatureKind::Rotate { angle, .. }) => angle.abs() >= 1e-4,
+            _ => true,
         };
-        // Discard a cancelled or no-op move (and the undo it recorded).
-        if !commit || offset.length() < 1e-3 {
+        if !commit || !nonzero {
             self.doc.history.remove(id);
             self.undo.pop();
         }
@@ -1320,7 +1350,7 @@ mod tests {
 
     #[test]
     fn gizmo_shows_on_face_selection_and_drag_moves_the_body() {
-        use rmf_render::{Axis3, GizmoHandle};
+        use rmf_render::{Axis3, GizmoHandle, TransformDelta};
         let mut m = Modeler::new();
         m.doc = Document::new("one");
         let b = m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
@@ -1335,9 +1365,9 @@ mod tests {
         // A drag along X creates one Move feature, then edits it in place.
         let n0 = m.doc.history.len();
         m.start_transform(GizmoHandle::TranslateAxis(Axis3::X));
-        assert!(m.update_transform([5.0, 0.0, 0.0]));
+        assert!(m.update_transform(TransformDelta::Translate([5.0, 0.0, 0.0])));
         assert_eq!(m.doc.history.len(), n0 + 1);
-        assert!(m.update_transform([8.0, 0.0, 0.0])); // same feature, new offset
+        assert!(m.update_transform(TransformDelta::Translate([8.0, 0.0, 0.0]))); // edits in place
         assert_eq!(m.doc.history.len(), n0 + 1);
         m.finish_transform(true);
 
@@ -1350,6 +1380,46 @@ mod tests {
         assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
         let (min, max) = bounds(&mesh);
         assert!((min[0] - 8.0).abs() < 0.1 && (max[0] - 18.0).abs() < 0.1, "x {min:?}..{max:?}");
+    }
+
+    #[test]
+    fn gizmo_ring_drag_rotates_the_body_about_a_pinned_pivot() {
+        use rmf_render::{Axis3, GizmoHandle, TransformDelta};
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        // A 20x10x10 bar so a 90° turn about Z visibly swaps its footprint.
+        m.doc.add("Bar", FeatureKind::Box { size: DVec3::new(20.0, 10.0, 10.0) });
+        let _ = m.mesh();
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        let pivot = m.gizmo().unwrap().origin; // AABB center (10,5,5)
+
+        let n0 = m.doc.history.len();
+        m.start_transform(GizmoHandle::RotateAxis(Axis3::Z));
+        let quarter = std::f64::consts::FRAC_PI_2;
+        assert!(m.update_transform(TransformDelta::Rotate {
+            axis: [0.0, 0.0, 1.0],
+            angle: quarter,
+        }));
+        assert_eq!(m.doc.history.len(), n0 + 1);
+
+        // The gizmo stays pinned at the original pivot mid-rotation.
+        assert_eq!(m.gizmo().unwrap().origin, pivot);
+        m.finish_transform(true);
+
+        // The Rotate feature carries the pinned center, and the bar's footprint
+        // swapped: now 10 wide in X, 20 deep in Y.
+        let rot = m.doc.history.features().iter().find_map(|f| match &f.kind {
+            FeatureKind::Rotate { center, angle, .. } => Some((*center, *angle)),
+            _ => None,
+        });
+        let (center, angle) = rot.expect("a Rotate feature");
+        assert!((angle - quarter).abs() < 1e-9);
+        assert!((center.x - pivot[0]).abs() < 1e-9);
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        let (min, max) = bounds(&mesh);
+        assert!((max[0] - min[0] - 10.0).abs() < 0.2, "x span {}", max[0] - min[0]);
+        assert!((max[1] - min[1] - 20.0).abs() < 0.2, "y span {}", max[1] - min[1]);
     }
 
     #[test]

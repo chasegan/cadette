@@ -197,5 +197,14 @@ where
             let body = input(*source)?;
             backend.push_pull(body, *anchor, *distance).map_err(backend_err)
         }
+        FeatureKind::Rotate {
+            source,
+            axis,
+            angle,
+            center,
+        } => {
+            let body = input(*source)?;
+            backend.rotate(body, *center, *axis, *angle).map_err(backend_err)
+        }
     }
 }

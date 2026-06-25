@@ -84,6 +84,14 @@ impl Solid {
         Ok(Self::wrap(ffi::translate(&self.0, dx, dy, dz)?))
     }
 
+    /// A copy of this solid rotated by `angle` radians about the line through
+    /// `center` with direction `axis`.
+    pub fn rotate(&self, center: [f64; 3], axis: [f64; 3], angle: f64) -> Result<Self> {
+        Ok(Self::wrap(ffi::rotate(
+            &self.0, center[0], center[1], center[2], axis[0], axis[1], axis[2], angle,
+        )?))
+    }
+
     /// Extrude this planar face along its normal by `distance` into a solid.
     pub fn extrude(&self, distance: f64) -> Result<Self> {
         Ok(Self::wrap(ffi::extrude(&self.0, distance)?))

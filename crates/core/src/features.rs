@@ -102,6 +102,15 @@ pub enum FeatureKind {
         anchor: FaceAnchor,
         distance: f64,
     },
+
+    /// Rotate `source` by `angle` radians about the line through `center` with
+    /// direction `axis` (used by the gizmo's rotation rings).
+    Rotate {
+        source: FeatureId,
+        axis: DVec3,
+        angle: f64,
+        center: DVec3,
+    },
 }
 
 impl FeatureKind {
@@ -119,6 +128,7 @@ impl FeatureKind {
             FeatureKind::Fillet { source, .. } => vec![*source],
             FeatureKind::Extrude { source, .. } => vec![*source],
             FeatureKind::PushPull { source, .. } => vec![*source],
+            FeatureKind::Rotate { source, .. } => vec![*source],
             FeatureKind::Boolean { target, tool, .. } => vec![*target, *tool],
         }
     }
@@ -132,7 +142,8 @@ impl FeatureKind {
             | FeatureKind::FilletAll { source, .. }
             | FeatureKind::Fillet { source, .. }
             | FeatureKind::Extrude { source, .. }
-            | FeatureKind::PushPull { source, .. } => Some(*source),
+            | FeatureKind::PushPull { source, .. }
+            | FeatureKind::Rotate { source, .. } => Some(*source),
             // Heal to the kept body of a boolean.
             FeatureKind::Boolean { target, .. } => Some(*target),
             _ => None,
@@ -151,7 +162,8 @@ impl FeatureKind {
             | FeatureKind::FilletAll { source, .. }
             | FeatureKind::Fillet { source, .. }
             | FeatureKind::Extrude { source, .. }
-            | FeatureKind::PushPull { source, .. } => swap(source),
+            | FeatureKind::PushPull { source, .. }
+            | FeatureKind::Rotate { source, .. } => swap(source),
             FeatureKind::Boolean { target, tool, .. } => {
                 swap(target);
                 swap(tool);
@@ -174,6 +186,7 @@ impl FeatureKind {
             FeatureKind::FilletAll { .. } => "Fillet",
             FeatureKind::Fillet { .. } => "Fillet",
             FeatureKind::PushPull { .. } => "Push/Pull",
+            FeatureKind::Rotate { .. } => "Rotate",
         }
     }
 }

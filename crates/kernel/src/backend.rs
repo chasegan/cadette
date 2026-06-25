@@ -103,4 +103,14 @@ impl GeometryBackend for KernelBackend {
     ) -> Result<Solid, KernelError> {
         body.push_pull(anchor.point.to_array(), anchor.normal.to_array(), distance)
     }
+
+    fn rotate(
+        &mut self,
+        body: &Solid,
+        center: DVec3,
+        axis: DVec3,
+        angle: f64,
+    ) -> Result<Solid, KernelError> {
+        body.rotate(center.to_array(), axis.to_array(), angle)
+    }
 }

@@ -68,4 +68,14 @@ pub trait GeometryBackend {
         anchor: FaceAnchor,
         distance: f64,
     ) -> Result<Self::Body, Self::Error>;
+
+    /// Rotate `body` by `angle` radians about the line through `center` with
+    /// direction `axis`.
+    fn rotate(
+        &mut self,
+        body: &Self::Body,
+        center: DVec3,
+        axis: DVec3,
+        angle: f64,
+    ) -> Result<Self::Body, Self::Error>;
 }

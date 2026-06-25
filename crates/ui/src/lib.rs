@@ -436,6 +436,17 @@ fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
         FeatureKind::FilletAll { radius, .. } | FeatureKind::Fillet { radius, .. } => {
             changed |= drag(ui, "Radius", radius);
         }
+        FeatureKind::Rotate { angle, .. } => {
+            // Edit the angle in degrees; stored as radians.
+            let mut deg = angle.to_degrees();
+            if ui
+                .add(egui::DragValue::new(&mut deg).speed(1.0).suffix("°"))
+                .changed()
+            {
+                *angle = deg.to_radians();
+                changed = true;
+            }
+        }
         FeatureKind::Boolean { op, .. } => {
             changed |= boolean_op(ui, op);
         }

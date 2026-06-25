@@ -20,6 +20,7 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <Geom_Plane.hxx>
+#include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Circ.hxx>
 #include <gp_Dir.hxx>
@@ -235,6 +236,16 @@ std::unique_ptr<Shape> translate(const Shape& s, double dx, double dy,
   return guard("translate", [&] {
     gp_Trsf t;
     t.SetTranslation(gp_Vec(dx, dy, dz));
+    BRepBuilderAPI_Transform xf(s.shape, t, /*copy=*/true);
+    return std::make_unique<Shape>(xf.Shape());
+  });
+}
+
+std::unique_ptr<Shape> rotate(const Shape& s, double cx, double cy, double cz,
+                              double ax, double ay, double az, double angle) {
+  return guard("rotate", [&] {
+    gp_Trsf t;
+    t.SetRotation(gp_Ax1(gp_Pnt(cx, cy, cz), gp_Dir(ax, ay, az)), angle);
     BRepBuilderAPI_Transform xf(s.shape, t, /*copy=*/true);
     return std::make_unique<Shape>(xf.Shape());
   });

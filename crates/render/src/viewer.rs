@@ -96,11 +96,11 @@ pub trait Controller {
     fn gizmo(&self) -> Option<Gizmo> {
         None
     }
-    /// Begin a transform on `handle` (a gizmo arrow was grabbed).
+    /// Begin a transform on `handle` (a gizmo handle was grabbed).
     fn start_transform(&mut self, _handle: GizmoHandle) {}
-    /// Update the active transform to a world-space translation `offset` from the
-    /// grab point. Returns whether geometry changed (so the host re-meshes).
-    fn update_transform(&mut self, _offset: [f64; 3]) -> bool {
+    /// Update the active transform by `delta` (an absolute translation/rotation
+    /// from the grab point). Returns whether geometry changed (so we re-mesh).
+    fn update_transform(&mut self, _delta: TransformDelta) -> bool {
         false
     }
     /// Finish the active transform: commit it, or cancel and discard.
@@ -113,13 +113,24 @@ pub struct Gizmo {
     pub origin: [f64; 3],
 }
 
-/// A draggable gizmo handle. (Rotation rings come in a later slice.)
+/// A draggable gizmo handle.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GizmoHandle {
     /// Translate along a world axis (an arrow).
     TranslateAxis(Axis3),
     /// Translate within a world plane (a corner square).
     TranslatePlane(Plane3),
+    /// Rotate about a world axis (a ring).
+    RotateAxis(Axis3),
+}
+
+/// An absolute transform from the grab point, applied by the controller.
+#[derive(Clone, Copy, Debug)]
+pub enum TransformDelta {
+    /// World-space translation offset.
+    Translate([f64; 3]),
+    /// Rotation by `angle` radians about `axis` (through the gizmo pivot).
+    Rotate { axis: [f64; 3], angle: f64 },
 }
 
 /// One of the three world axes.
@@ -139,6 +150,16 @@ impl Axis3 {
             Axis3::X => Vec3::X,
             Axis3::Y => Vec3::Y,
             Axis3::Z => Vec3::Z,
+        }
+    }
+
+    /// The two unit vectors spanning the plane perpendicular to this axis (the
+    /// in-plane basis for the rotation ring).
+    fn perps(self) -> (Vec3, Vec3) {
+        match self {
+            Axis3::X => (Vec3::Y, Vec3::Z),
+            Axis3::Y => (Vec3::Z, Vec3::X),
+            Axis3::Z => (Vec3::X, Vec3::Y),
         }
     }
 
@@ -1080,6 +1101,84 @@ const GIZMO_HILITE: [f32; 3] = [1.0, 0.80, 0.15];
 const GIZMO_PLANE_OFFSET: f32 = 0.38;
 /// Side length of a planar handle, as a fraction of the axis length.
 const GIZMO_PLANE_SIZE: f32 = 0.18;
+/// Rotation-ring radius, as a fraction of the axis length (encircles the arrows).
+const GIZMO_RING_RADIUS: f32 = 1.05;
+/// Segments used to draw / hit-test a rotation ring.
+const RING_SEGMENTS: usize = 64;
+
+/// Ratio of the cursor's screen distance from the gizmo center to the ring's
+/// screen radius — the input to the radial snap zones (~1.0 means on the ring).
+fn gizmo_ring_ratio(
+    center: Vec3,
+    axis: Axis3,
+    camera: &OrbitCamera,
+    cursor: PhysicalPosition<f64>,
+    w: u32,
+    h: u32,
+) -> f32 {
+    let len = gizmo_axis_length(camera);
+    let Some(cc) = project_point(center, camera, w, h) else {
+        return 99.0;
+    };
+    let (u, _) = axis.perps();
+    let Some(edge) = project_point(center + u * len * GIZMO_RING_RADIUS, camera, w, h) else {
+        return 99.0;
+    };
+    let ring_px = (edge.0 - cc.0).hypot(edge.1 - cc.1).max(1.0);
+    (cursor.x as f32 - cc.0).hypot(cursor.y as f32 - cc.1) / ring_px
+}
+
+/// World-space points evenly spaced around a rotation ring (axis `axis`).
+fn ring_points(origin: Vec3, axis: Axis3, len: f32) -> [Vec3; RING_SEGMENTS] {
+    let (u, v) = axis.perps();
+    let r = len * GIZMO_RING_RADIUS;
+    std::array::from_fn(|i| {
+        let t = i as f32 / RING_SEGMENTS as f32 * std::f32::consts::TAU;
+        origin + (u * t.cos() + v * t.sin()) * r
+    })
+}
+
+/// The signed angle (radians) of `p` (relative to the ring center) within the
+/// rotation plane of `axis`, measured from the `u` basis vector.
+fn ring_angle(p_minus_center: Vec3, axis: Axis3) -> f32 {
+    let (u, v) = axis.perps();
+    p_minus_center.dot(v).atan2(p_minus_center.dot(u))
+}
+
+/// Wrap an angle delta to `[-π, π]` (so accumulating around the ring is smooth
+/// across the ±π seam).
+fn wrap_pi(a: f32) -> f32 {
+    let tau = std::f32::consts::TAU;
+    let mut a = a % tau;
+    if a > std::f32::consts::PI {
+        a -= tau;
+    } else if a < -std::f32::consts::PI {
+        a += tau;
+    }
+    a
+}
+
+/// Tinkercad-style radial snap: the cursor's distance from the gizmo center
+/// (relative to the ring radius `ring_px`) sets the snap increment — coarse near
+/// the center, finer farther out, free beyond. `free` (a modifier) disables it.
+/// Returns the snapped angle in radians.
+fn snap_rotation(angle: f32, cursor_px: f32, free: bool) -> f32 {
+    if free {
+        return angle;
+    }
+    let d = cursor_px; // ratio of cursor distance to ring radius (caller-normalized)
+    let inc_deg = if d < 1.25 {
+        45.0
+    } else if d < 2.0 {
+        15.0
+    } else if d < 3.0 {
+        5.0
+    } else {
+        return angle; // free zone, far out
+    };
+    let inc = inc_deg * std::f32::consts::PI / 180.0;
+    (angle / inc).round() * inc
+}
 
 /// World length of the gizmo arrows — proportional to the orbit distance so the
 /// gizmo stays a roughly constant size on screen.
@@ -1170,7 +1269,27 @@ fn gizmo_hit_test(
             }
         }
     }
-    best.1.map(GizmoHandle::TranslateAxis)
+    if let Some(axis) = best.1 {
+        return Some(GizmoHandle::TranslateAxis(axis));
+    }
+
+    // Finally rotation rings (nearest ring outline within the threshold).
+    let mut best_ring = (GIZMO_PICK_PX, None);
+    for axis in Axis3::ALL {
+        let pts = ring_points(origin, axis, len);
+        let mut prev = project_point(pts[RING_SEGMENTS - 1], camera, w, h);
+        for p in pts {
+            let cur = project_point(p, camera, w, h);
+            if let (Some(a), Some(b)) = (prev, cur) {
+                let d = point_segment_distance(c.0, c.1, a, b);
+                if d < best_ring.0 {
+                    best_ring = (d, Some(axis));
+                }
+            }
+            prev = cur;
+        }
+    }
+    best_ring.1.map(GizmoHandle::RotateAxis)
 }
 
 /// Build the gizmo triangle geometry at `origin`: three camera-facing axis
@@ -1225,6 +1344,20 @@ fn gizmo_geometry(
         let q = plane_corners(origin, plane, len);
         tri(&mut verts, q[0], q[1], q[2], color);
         tri(&mut verts, q[0], q[2], q[3], color);
+    }
+
+    // Rotation rings (camera-facing tube around each axis).
+    let ring_w = len * 0.013;
+    for axis in Axis3::ALL {
+        let color = if active == Some(GizmoHandle::RotateAxis(axis)) {
+            GIZMO_HILITE
+        } else {
+            axis.color()
+        };
+        let pts = ring_points(origin, axis, len);
+        for i in 0..RING_SEGMENTS {
+            ribbon(&mut verts, pts[i], pts[(i + 1) % RING_SEGMENTS], ring_w, color);
+        }
     }
     verts
 }
@@ -1456,6 +1589,17 @@ enum GizmoDrag {
         normal: Vec3,
         grab: Vec3,
     },
+    /// Rotate about an axis: pivot `center`, plane normal, and accumulated angle.
+    /// `last` is the previous cursor angle (for seam-free accumulation), `total`
+    /// the raw accumulated angle, `snapped` the value last applied.
+    Rotate {
+        axis: Axis3,
+        center: Vec3,
+        normal: Vec3,
+        last: f32,
+        total: f32,
+        snapped: f32,
+    },
 }
 
 impl GizmoDrag {
@@ -1464,6 +1608,7 @@ impl GizmoDrag {
         match self {
             GizmoDrag::Axis { axis, .. } => GizmoHandle::TranslateAxis(*axis),
             GizmoDrag::Plane { plane, .. } => GizmoHandle::TranslatePlane(*plane),
+            GizmoDrag::Rotate { axis, .. } => GizmoHandle::RotateAxis(*axis),
         }
     }
 }
@@ -1635,6 +1780,22 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                                             .unwrap_or(origin);
                                         GizmoDrag::Plane { plane, point: origin, normal, grab }
                                     }
+                                    GizmoHandle::RotateAxis(axis) => {
+                                        let normal = axis.dir();
+                                        let (ro, rd) =
+                                            cursor_ray(&self.camera, self.mouse.cursor, w, h);
+                                        let last = ray_plane_intersect(ro, rd, origin, normal)
+                                            .map(|p| ring_angle(p - origin, axis))
+                                            .unwrap_or(0.0);
+                                        GizmoDrag::Rotate {
+                                            axis,
+                                            center: origin,
+                                            normal,
+                                            last,
+                                            total: 0.0,
+                                            snapped: 0.0,
+                                        }
+                                    }
                                 };
                                 self.controller.start_transform(handle);
                                 self.gizmo_drag = Some(drag);
@@ -1740,36 +1901,44 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                     }
                 }
                 if !egui_used {
-                    if let Some(g) = self.gizmo_drag {
-                        // Gizmo translate: offset = drag along the axis (closest
-                        // approach) or within the plane (ray-plane intersection).
+                    if let Some(drag) = self.gizmo_drag.as_mut() {
+                        // Gizmo: translate along the grabbed axis / within the
+                        // plane, or rotate about the grabbed ring (with snap).
                         if self.mouse.dragged {
                             let (w, h) = (state.config.width, state.config.height);
-                            let off = match g {
+                            let free = self.modifiers.alt_key();
+                            let cursor = self.mouse.cursor;
+                            let delta = match drag {
                                 GizmoDrag::Axis { origin, dir, start, .. } => {
-                                    let cur = manip_distance(
-                                        &self.camera,
-                                        self.mouse.cursor,
-                                        origin,
-                                        dir,
-                                        w,
-                                        h,
-                                    );
-                                    dir * (cur - start)
+                                    let cur = manip_distance(&self.camera, cursor, *origin, *dir, w, h);
+                                    let off = *dir * (cur - *start);
+                                    TransformDelta::Translate([off.x as f64, off.y as f64, off.z as f64])
                                 }
                                 GizmoDrag::Plane { point, normal, grab, .. } => {
-                                    let (ro, rd) =
-                                        cursor_ray(&self.camera, self.mouse.cursor, w, h);
-                                    match ray_plane_intersect(ro, rd, point, normal) {
-                                        Some(p) => p - grab,
-                                        None => Vec3::ZERO,
+                                    let (ro, rd) = cursor_ray(&self.camera, cursor, w, h);
+                                    let off = ray_plane_intersect(ro, rd, *point, *normal)
+                                        .map(|p| p - *grab)
+                                        .unwrap_or(Vec3::ZERO);
+                                    TransformDelta::Translate([off.x as f64, off.y as f64, off.z as f64])
+                                }
+                                GizmoDrag::Rotate { axis, center, normal, last, total, snapped } => {
+                                    let (ro, rd) = cursor_ray(&self.camera, cursor, w, h);
+                                    if let Some(p) = ray_plane_intersect(ro, rd, *center, *normal) {
+                                        let cur = ring_angle(p - *center, *axis);
+                                        *total += wrap_pi(cur - *last);
+                                        *last = cur;
+                                    }
+                                    let ratio =
+                                        gizmo_ring_ratio(*center, *axis, &self.camera, cursor, w, h);
+                                    *snapped = snap_rotation(*total, ratio, free);
+                                    let n = normal.normalize_or_zero();
+                                    TransformDelta::Rotate {
+                                        axis: [n.x as f64, n.y as f64, n.z as f64],
+                                        angle: *snapped as f64,
                                     }
                                 }
                             };
-                            if self
-                                .controller
-                                .update_transform([off.x as f64, off.y as f64, off.z as f64])
-                            {
+                            if self.controller.update_transform(delta) {
                                 self.mesh_dirty = true;
                             }
                             state.window.request_redraw();
@@ -2286,8 +2455,37 @@ mod tests {
             );
         }
 
+        // A cursor on a rotation ring (sampled at 45°, clear of the arrows that
+        // lie along the axes) grabs that axis's ring.
+        for axis in Axis3::ALL {
+            let (u, v) = axis.perps();
+            let diag = (u + v).normalize() * len * GIZMO_RING_RADIUS;
+            let on = project_point(origin + diag, &camera, w, h).unwrap();
+            let cursor = PhysicalPosition::new(on.0 as f64, on.1 as f64);
+            assert_eq!(
+                gizmo_hit_test(origin, &camera, cursor, w, h),
+                Some(GizmoHandle::RotateAxis(axis)),
+                "ring {axis:?}"
+            );
+        }
+
         // Top-left corner is far from the centered gizmo → no grab.
         let far = PhysicalPosition::new(4.0, 4.0);
         assert_eq!(gizmo_hit_test(origin, &camera, far, w, h), None);
+    }
+
+    /// Radial snap zones: a 40° turn snaps to 45° near the ring (coarse), to 40°
+    /// (5° steps) farther out, and stays free far out or with the modifier.
+    #[test]
+    fn rotation_snaps_by_radial_zone() {
+        let deg = |d: f32| d * std::f32::consts::PI / 180.0;
+        // Near the ring (ratio ~1) → coarse 45° snap.
+        assert!((snap_rotation(deg(40.0), 1.0, false) - deg(45.0)).abs() < 1e-4);
+        // Mid zone (ratio ~2.5) → 5° snap leaves 40° as-is.
+        assert!((snap_rotation(deg(40.0), 2.5, false) - deg(40.0)).abs() < 1e-4);
+        // Far out → free (no snap).
+        assert!((snap_rotation(deg(41.3), 4.0, false) - deg(41.3)).abs() < 1e-4);
+        // Modifier forces free even near the ring.
+        assert!((snap_rotation(deg(40.0), 1.0, true) - deg(40.0)).abs() < 1e-4);
     }
 }
