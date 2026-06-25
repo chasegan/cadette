@@ -1098,6 +1098,8 @@ fn manip_distance(
 const GIZMO_PICK_PX: f32 = 10.0;
 /// Hovered/active handle highlight color (gold).
 const GIZMO_HILITE: [f32; 3] = [1.0, 0.80, 0.15];
+/// Alpha for idle (non-hovered) handles — they recede until reached for.
+const GIZMO_FADE: f32 = 0.5;
 /// Inner edge of a planar handle, as a fraction of the axis length.
 const GIZMO_PLANE_OFFSET: f32 = 0.38;
 /// Side length of a planar handle, as a fraction of the axis length.
@@ -1364,12 +1366,13 @@ fn gizmo_geometry(
             tri(&mut verts, origin, at(a0), at(a1), wedge);
         }
 
-        // Snap tick marks straddling the ring at each increment.
+        // Snap tick marks straddling the ring at each increment — anchored at
+        // the grab angle so a tick sits exactly at 0 sweep and at every snap.
         if rv.inc > 0.0 {
             let ticks = (std::f32::consts::TAU / rv.inc).round() as usize;
             let tick = rgba([1.0, 1.0, 1.0], 0.6);
             for k in 0..ticks {
-                let a = k as f32 * rv.inc;
+                let a = rv.start + k as f32 * rv.inc;
                 let d = u * a.cos() + v * a.sin();
                 ribbon(&mut verts, origin + d * (r * 0.93), origin + d * (r * 1.07), len * 0.006, tick);
             }
@@ -1387,15 +1390,18 @@ fn gizmo_geometry(
         return verts;
     }
 
+    // The hovered handle is gold and opaque; the rest recede (faded) so the
+    // gizmo stays quiet until you reach for a specific handle.
+    let color_for = |handle: GizmoHandle, base: [f32; 3]| -> [f32; 4] {
+        if active == Some(handle) {
+            rgba(GIZMO_HILITE, 1.0)
+        } else {
+            rgba(base, GIZMO_FADE)
+        }
+    };
+
     for axis in Axis3::ALL {
-        let color = rgba(
-            if active == Some(GizmoHandle::TranslateAxis(axis)) {
-                GIZMO_HILITE
-            } else {
-                axis.color()
-            },
-            1.0,
-        );
+        let color = color_for(GizmoHandle::TranslateAxis(axis), axis.color());
         let dir = axis.dir();
         let tip = origin + dir * len;
         let base = origin + dir * (len - head);
@@ -1407,14 +1413,7 @@ fn gizmo_geometry(
     }
 
     for plane in Plane3::ALL {
-        let color = rgba(
-            if active == Some(GizmoHandle::TranslatePlane(plane)) {
-                GIZMO_HILITE
-            } else {
-                plane.color()
-            },
-            1.0,
-        );
+        let color = color_for(GizmoHandle::TranslatePlane(plane), plane.color());
         let q = plane_corners(origin, plane, len);
         tri(&mut verts, q[0], q[1], q[2], color);
         tri(&mut verts, q[0], q[2], q[3], color);
@@ -1423,14 +1422,7 @@ fn gizmo_geometry(
     // Rotation rings (camera-facing tube around each axis).
     let ring_w = len * 0.013;
     for axis in Axis3::ALL {
-        let color = rgba(
-            if active == Some(GizmoHandle::RotateAxis(axis)) {
-                GIZMO_HILITE
-            } else {
-                axis.color()
-            },
-            1.0,
-        );
+        let color = color_for(GizmoHandle::RotateAxis(axis), axis.color());
         let pts = ring_points(origin, axis, len);
         for i in 0..RING_SEGMENTS {
             ribbon(&mut verts, pts[i], pts[(i + 1) % RING_SEGMENTS], ring_w, color);
