@@ -277,6 +277,19 @@ impl Modeler {
         self.ui.visible.get(body_index).copied()
     }
 
+    /// A short readout for an in-progress gizmo drag (angle / distance), shown
+    /// floating next to the gizmo so the manipulation has a numeric value.
+    fn transform_readout(&self) -> Option<String> {
+        let id = self.transform?.feature?;
+        match self.doc.history.get(id).map(|f| &f.kind) {
+            Some(FeatureKind::Rotate { angle, .. }) => Some(format!("{:.0}°", angle.to_degrees())),
+            Some(FeatureKind::Translate { offset, .. }) => {
+                Some(format!("{:.1} mm", offset.length()))
+            }
+            _ => None,
+        }
+    }
+
     /// The gizmo origin — the bounding-box center of a single selected face's
     /// body (the only selection that shows the gizmo).
     fn gizmo_origin(&self) -> Option<[f64; 3]> {
@@ -752,6 +765,22 @@ impl Controller for Modeler {
             });
             if fillet {
                 changed |= self.fillet_selected_edges();
+            }
+        }
+
+        // --- Gizmo readout: the live angle / distance next to the gizmo ---
+        if let (Some(text), Some(origin)) =
+            (self.transform_readout(), self.gizmo().map(|g| g.origin))
+        {
+            if let Some(pos) = view.project(origin) {
+                egui::Area::new(egui::Id::new("gizmo_readout"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(pos + egui::vec2(16.0, -16.0))
+                    .show(ctx, |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            ui.label(egui::RichText::new(text).strong().size(15.0));
+                        });
+                    });
             }
         }
 

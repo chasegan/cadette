@@ -517,7 +517,7 @@ impl Scene {
             source: wgpu::ShaderSource::Wgsl(include_str!("gizmo.wgsl").into()),
         });
         const GIZMO_ATTRS: [wgpu::VertexAttribute; 2] =
-            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
         let gizmo_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<GizmoVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -537,7 +537,8 @@ impl Scene {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: color_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
+                    // Alpha blend so the rotation protractor wedge is translucent.
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -1158,26 +1159,51 @@ fn wrap_pi(a: f32) -> f32 {
     a
 }
 
-/// Tinkercad-style radial snap: the cursor's distance from the gizmo center
-/// (relative to the ring radius `ring_px`) sets the snap increment — coarse near
-/// the center, finer farther out, free beyond. `free` (a modifier) disables it.
-/// Returns the snapped angle in radians.
-fn snap_rotation(angle: f32, cursor_px: f32, free: bool) -> f32 {
+/// Tinkercad-style radial snap increment (radians): coarse near the ring, finer
+/// as the cursor moves out, `0` (free) far out or when `free` is held. `ratio`
+/// is the cursor distance from center over the ring radius (~1.0 = on the ring).
+fn snap_increment(ratio: f32, free: bool) -> f32 {
     if free {
-        return angle;
+        return 0.0;
     }
-    let d = cursor_px; // ratio of cursor distance to ring radius (caller-normalized)
-    let inc_deg = if d < 1.25 {
+    let deg = if ratio < 1.25 {
         45.0
-    } else if d < 2.0 {
+    } else if ratio < 2.0 {
         15.0
-    } else if d < 3.0 {
+    } else if ratio < 3.0 {
         5.0
     } else {
-        return angle; // free zone, far out
+        return 0.0; // free zone, far out
     };
-    let inc = inc_deg * std::f32::consts::PI / 180.0;
-    (angle / inc).round() * inc
+    deg * std::f32::consts::PI / 180.0
+}
+
+/// Snap `angle` to the increment for the given radial `ratio` (see
+/// [`snap_increment`]). Returns the snapped angle in radians.
+fn snap_rotation(angle: f32, ratio: f32, free: bool) -> f32 {
+    let inc = snap_increment(ratio, free);
+    if inc == 0.0 {
+        angle
+    } else {
+        (angle / inc).round() * inc
+    }
+}
+
+/// Wrap an RGB color to RGBA with the given alpha.
+fn rgba(c: [f32; 3], a: f32) -> [f32; 4] {
+    [c[0], c[1], c[2], a]
+}
+
+/// Visual state for the rotation protractor during a ring drag.
+#[derive(Clone, Copy)]
+struct RotationViz {
+    axis: Axis3,
+    /// Angle (in the ring plane) where the drag began.
+    start: f32,
+    /// Snapped swept angle (signed) from `start`.
+    swept: f32,
+    /// Current snap increment (radians); `0` when free (no tick marks).
+    inc: f32,
 }
 
 /// World length of the gizmo arrows — proportional to the orbit distance so the
@@ -1293,11 +1319,14 @@ fn gizmo_hit_test(
 }
 
 /// Build the gizmo triangle geometry at `origin`: three camera-facing axis
-/// arrows plus three planar-translate squares. `active` is highlighted gold.
+/// arrows, three planar-translate squares, and three rotation rings. `active`
+/// is highlighted gold; `rotation` (if a ring is being dragged) adds the
+/// translucent protractor wedge and snap tick marks.
 fn gizmo_geometry(
     origin: Vec3,
     camera: &OrbitCamera,
     active: Option<GizmoHandle>,
+    rotation: Option<RotationViz>,
 ) -> Vec<GizmoVertex> {
     let eye = camera.eye();
     let len = gizmo_axis_length(camera);
@@ -1306,25 +1335,67 @@ fn gizmo_geometry(
     let head_r = len * 0.07; // arrowhead half-width
     let mut verts = Vec::new();
 
-    let tri = |verts: &mut Vec<GizmoVertex>, a: Vec3, b: Vec3, c: Vec3, color: [f32; 3]| {
+    let tri = |verts: &mut Vec<GizmoVertex>, a: Vec3, b: Vec3, c: Vec3, color: [f32; 4]| {
         verts.push(GizmoVertex { position: a.to_array(), color });
         verts.push(GizmoVertex { position: b.to_array(), color });
         verts.push(GizmoVertex { position: c.to_array(), color });
     };
     // A camera-facing ribbon (two triangles) from `a` to `b`.
-    let ribbon = |verts: &mut Vec<GizmoVertex>, a: Vec3, b: Vec3, hw: f32, color: [f32; 3]| {
+    let ribbon = |verts: &mut Vec<GizmoVertex>, a: Vec3, b: Vec3, hw: f32, color: [f32; 4]| {
         let view = (eye - (a + b) * 0.5).normalize_or_zero();
         let perp = (b - a).cross(view).normalize_or_zero() * hw;
         tri(verts, a - perp, a + perp, b + perp, color);
         tri(verts, a - perp, b + perp, b - perp, color);
     };
 
+    // While rotating, focus the view: show only the active ring + protractor
+    // (the arrows, planes, and other rings would just be clutter mid-turn).
+    if let Some(rv) = rotation {
+        let (u, v) = rv.axis.perps();
+        let r = len * GIZMO_RING_RADIUS;
+        let at = |a: f32| origin + (u * a.cos() + v * a.sin()) * r;
+
+        // Translucent swept wedge from the start angle to the snapped angle.
+        let wedge = rgba(GIZMO_HILITE, 0.35);
+        let steps = ((rv.swept.abs() / (std::f32::consts::PI / 45.0)).ceil() as usize).max(1);
+        for i in 0..steps {
+            let a0 = rv.start + rv.swept * (i as f32 / steps as f32);
+            let a1 = rv.start + rv.swept * ((i + 1) as f32 / steps as f32);
+            tri(&mut verts, origin, at(a0), at(a1), wedge);
+        }
+
+        // Snap tick marks straddling the ring at each increment.
+        if rv.inc > 0.0 {
+            let ticks = (std::f32::consts::TAU / rv.inc).round() as usize;
+            let tick = rgba([1.0, 1.0, 1.0], 0.6);
+            for k in 0..ticks {
+                let a = k as f32 * rv.inc;
+                let d = u * a.cos() + v * a.sin();
+                ribbon(&mut verts, origin + d * (r * 0.93), origin + d * (r * 1.07), len * 0.006, tick);
+            }
+        }
+
+        // The active ring itself (gold), and the two radii bounding the wedge.
+        let gold = rgba(GIZMO_HILITE, 1.0);
+        let ring_w = len * 0.013;
+        let pts = ring_points(origin, rv.axis, len);
+        for i in 0..RING_SEGMENTS {
+            ribbon(&mut verts, pts[i], pts[(i + 1) % RING_SEGMENTS], ring_w, gold);
+        }
+        ribbon(&mut verts, origin, at(rv.start), len * 0.008, gold);
+        ribbon(&mut verts, origin, at(rv.start + rv.swept), len * 0.008, gold);
+        return verts;
+    }
+
     for axis in Axis3::ALL {
-        let color = if active == Some(GizmoHandle::TranslateAxis(axis)) {
-            GIZMO_HILITE
-        } else {
-            axis.color()
-        };
+        let color = rgba(
+            if active == Some(GizmoHandle::TranslateAxis(axis)) {
+                GIZMO_HILITE
+            } else {
+                axis.color()
+            },
+            1.0,
+        );
         let dir = axis.dir();
         let tip = origin + dir * len;
         let base = origin + dir * (len - head);
@@ -1336,11 +1407,14 @@ fn gizmo_geometry(
     }
 
     for plane in Plane3::ALL {
-        let color = if active == Some(GizmoHandle::TranslatePlane(plane)) {
-            GIZMO_HILITE
-        } else {
-            plane.color()
-        };
+        let color = rgba(
+            if active == Some(GizmoHandle::TranslatePlane(plane)) {
+                GIZMO_HILITE
+            } else {
+                plane.color()
+            },
+            1.0,
+        );
         let q = plane_corners(origin, plane, len);
         tri(&mut verts, q[0], q[1], q[2], color);
         tri(&mut verts, q[0], q[2], q[3], color);
@@ -1349,11 +1423,14 @@ fn gizmo_geometry(
     // Rotation rings (camera-facing tube around each axis).
     let ring_w = len * 0.013;
     for axis in Axis3::ALL {
-        let color = if active == Some(GizmoHandle::RotateAxis(axis)) {
-            GIZMO_HILITE
-        } else {
-            axis.color()
-        };
+        let color = rgba(
+            if active == Some(GizmoHandle::RotateAxis(axis)) {
+                GIZMO_HILITE
+            } else {
+                axis.color()
+            },
+            1.0,
+        );
         let pts = ring_points(origin, axis, len);
         for i in 0..RING_SEGMENTS {
             ribbon(&mut verts, pts[i], pts[(i + 1) % RING_SEGMENTS], ring_w, color);
@@ -1596,6 +1673,8 @@ enum GizmoDrag {
         axis: Axis3,
         center: Vec3,
         normal: Vec3,
+        /// Cursor angle where the drag began (the protractor's zero).
+        start: f32,
         last: f32,
         total: f32,
         snapped: f32,
@@ -1791,6 +1870,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                                             axis,
                                             center: origin,
                                             normal,
+                                            start: last,
                                             last,
                                             total: 0.0,
                                             snapped: 0.0,
@@ -1921,7 +2001,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                                         .unwrap_or(Vec3::ZERO);
                                     TransformDelta::Translate([off.x as f64, off.y as f64, off.z as f64])
                                 }
-                                GizmoDrag::Rotate { axis, center, normal, last, total, snapped } => {
+                                GizmoDrag::Rotate { axis, center, normal, last, total, snapped, .. } => {
                                     let (ro, rd) = cursor_ray(&self.camera, cursor, w, h);
                                     if let Some(p) = ray_plane_intersect(ro, rd, *center, *normal) {
                                         let cur = ring_angle(p - *center, *axis);
@@ -2120,7 +2200,21 @@ impl<C: Controller> WindowApp<C> {
             } else {
                 gizmo_hit_test(origin, &self.camera, self.mouse.cursor, w, h)
             };
-            gizmo_geometry(origin, &self.camera, active)
+            // While dragging a ring, build the protractor (wedge + snap ticks).
+            let rotation = match self.gizmo_drag {
+                Some(GizmoDrag::Rotate { axis, center, start, snapped, .. }) if self.mouse.dragged => {
+                    let ratio =
+                        gizmo_ring_ratio(center, axis, &self.camera, self.mouse.cursor, w, h);
+                    Some(RotationViz {
+                        axis,
+                        start,
+                        swept: snapped,
+                        inc: snap_increment(ratio, self.modifiers.alt_key()),
+                    })
+                }
+                _ => None,
+            };
+            gizmo_geometry(origin, &self.camera, active, rotation)
         } else {
             Vec::new()
         };
@@ -2260,7 +2354,7 @@ pub fn screenshot(
     let highlights = controller.highlights();
     if let Some(g) = controller.gizmo() {
         let origin = Vec3::new(g.origin[0] as f32, g.origin[1] as f32, g.origin[2] as f32);
-        scene.upload_gizmo(&gizmo_geometry(origin, &camera, None));
+        scene.upload_gizmo(&gizmo_geometry(origin, &camera, None, None));
     }
     scene.encode(&mut encoder, &color_view, &depth_view, &camera, width, height, &highlights);
     encode_egui(&mut encoder, &egui_renderer, &color_view, &jobs, &screen);

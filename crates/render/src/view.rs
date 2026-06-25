@@ -27,6 +27,12 @@ impl ViewContext {
         }
     }
 
+    /// Project a world point to a screen position (egui points), or `None` if it
+    /// is behind the camera. Used to anchor overlays (e.g. the gizmo readout).
+    pub fn project(&self, world: [f64; 3]) -> Option<Pos2> {
+        self.project_world(vec3(world))
+    }
+
     /// Project a world point to a screen position (egui points), or `None` if
     /// it is behind the camera.
     fn project_world(&self, world: Vec3) -> Option<Pos2> {

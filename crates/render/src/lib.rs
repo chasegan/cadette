@@ -57,13 +57,14 @@ pub struct EdgeVertex {
     pub edge_id: u32,
 }
 
-/// A transform-gizmo line vertex: world-space position + RGB color. The gizmo
-/// is drawn as colored lines (axis arrows) on top of the model.
+/// A transform-gizmo vertex: world-space position + RGBA color. The gizmo is
+/// drawn as colored triangles on top of the model; alpha lets the rotation
+/// protractor wedge be translucent.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
 pub struct GizmoVertex {
     pub position: [f32; 3],
-    pub color: [f32; 3],
+    pub color: [f32; 4],
 }
 
 /// Interleave the kernel's edge position/id arrays into edge-line vertices.
