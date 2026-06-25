@@ -778,7 +778,13 @@ impl Controller for Modeler {
                     .fixed_pos(pos + egui::vec2(16.0, -16.0))
                     .show(ctx, |ui| {
                         egui::Frame::popup(ui.style()).show(ui, |ui| {
-                            ui.label(egui::RichText::new(text).strong().size(15.0));
+                            // Extend (never wrap) so a value like "-135°" stays on
+                            // one line — the anchored Area is otherwise clamped to
+                            // the screen and wraps the text character by character.
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(text).strong().size(15.0))
+                                    .extend(),
+                            );
                         });
                     });
             }
@@ -1182,6 +1188,31 @@ fn main() -> anyhow::Result<()> {
         modeler.selection.select(Some(Pick::Face(0)), false, None); // strong face
         modeler.selection.hover(Some(Pick::Edge(0))); // hovered edge
         let path = "out/highlight-demo.png";
+        std::fs::create_dir_all("out")?;
+        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        println!("wrote {path}");
+        return Ok(());
+    }
+
+    // Verification aid: an in-progress rotation, so the gizmo readout (an egui
+    // overlay only shown mid-drag) renders headlessly. Uses a negative angle to
+    // exercise the worst-case width.
+    if std::env::args().any(|a| a == "--gizmo-readout-demo") {
+        let _ = modeler.mesh(); // populate visible + body_centers
+        modeler.on_pick(Some(Pick::Face(0)), None, false); // select a face → gizmo
+        if let (Some(source), Some(pivot)) = (modeler.selected_body(), modeler.gizmo_origin()) {
+            let id = modeler.doc.add(
+                "Rotate",
+                FeatureKind::Rotate {
+                    source,
+                    axis: DVec3::Z,
+                    angle: (-135.0f64).to_radians(),
+                    center: DVec3::from_array(pivot),
+                },
+            );
+            modeler.transform = Some(TransformDrag { source, feature: Some(id), pivot: Some(pivot) });
+        }
+        let path = "out/gizmo-readout-demo.png";
         std::fs::create_dir_all("out")?;
         rmf_render::screenshot(modeler, 1280, 820, path)?;
         println!("wrote {path}");

@@ -2311,6 +2311,13 @@ pub fn screenshot(
         camera.view_proj(width as f32 / height as f32),
         egui::vec2(width as f32 / PPP, height as f32 / PPP),
     );
+    // Warm-up pass: auto-sized egui Areas (e.g. the gizmo readout) need a prior
+    // frame to know their size before they paint. Keep its texture deltas — the
+    // font atlas is emitted on this first pass — and apply them below.
+    egui_ctx.begin_pass(raw_input.clone());
+    controller.ui(&egui_ctx, &view);
+    let warmup = egui_ctx.end_pass();
+
     egui_ctx.begin_pass(raw_input);
     controller.ui(&egui_ctx, &view);
     let full_output = egui_ctx.end_pass();
@@ -2337,7 +2344,12 @@ pub fn screenshot(
     let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
     let depth_view = create_depth(&device, width, height);
 
-    for (id, delta) in &full_output.textures_delta.set {
+    for (id, delta) in warmup
+        .textures_delta
+        .set
+        .iter()
+        .chain(full_output.textures_delta.set.iter())
+    {
         egui_renderer.update_texture(&device, &queue, *id, delta);
     }
     let mut encoder =
