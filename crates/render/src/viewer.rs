@@ -1191,6 +1191,32 @@ fn snap_rotation(angle: f32, ratio: f32, free: bool) -> f32 {
     }
 }
 
+/// Grid increment (mm) that translations snap to by default.
+const TRANSLATE_SNAP_MM: f32 = 1.0;
+
+/// Snap a world-space translation `offset` to the grid (each axis independently,
+/// which lands on grid intersections). `free` (a modifier) disables it.
+fn snap_translation(offset: Vec3, free: bool) -> Vec3 {
+    if free {
+        return offset;
+    }
+    let g = TRANSLATE_SNAP_MM;
+    Vec3::new(
+        (offset.x / g).round() * g,
+        (offset.y / g).round() * g,
+        (offset.z / g).round() * g,
+    )
+}
+
+/// Snap a scalar distance (mm) to the translation grid. `free` disables it.
+fn snap_distance(d: f32, free: bool) -> f32 {
+    if free {
+        d
+    } else {
+        (d / TRANSLATE_SNAP_MM).round() * TRANSLATE_SNAP_MM
+    }
+}
+
 /// Wrap an RGB color to RGBA with the given alpha.
 fn rgba(c: [f32; 3], a: f32) -> [f32; 4] {
     [c[0], c[1], c[2], a]
@@ -1983,7 +2009,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                             let delta = match drag {
                                 GizmoDrag::Axis { origin, dir, start, .. } => {
                                     let cur = manip_distance(&self.camera, cursor, *origin, *dir, w, h);
-                                    let off = *dir * (cur - *start);
+                                    let off = snap_translation(*dir * (cur - *start), free);
                                     TransformDelta::Translate([off.x as f64, off.y as f64, off.z as f64])
                                 }
                                 GizmoDrag::Plane { point, normal, grab, .. } => {
@@ -1991,6 +2017,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                                     let off = ray_plane_intersect(ro, rd, *point, *normal)
                                         .map(|p| p - *grab)
                                         .unwrap_or(Vec3::ZERO);
+                                    let off = snap_translation(off, free);
                                     TransformDelta::Translate([off.x as f64, off.y as f64, off.z as f64])
                                 }
                                 GizmoDrag::Rotate { axis, center, normal, last, total, snapped, .. } => {
@@ -2017,7 +2044,8 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                         }
                         self.mouse.last = None;
                     } else if self.manip_axis.is_some() && self.mouse.dragged {
-                        // Push/pull: distance = drag along the face normal.
+                        // Push/pull: distance = drag along the face normal, snapped
+                        // to the grid (Alt for free) — a face push/pull is a resize.
                         let (point, dir) = self.manip_axis.unwrap();
                         let dist = manip_distance(
                             &self.camera,
@@ -2027,6 +2055,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                             state.config.width,
                             state.config.height,
                         );
+                        let dist = snap_distance(dist, self.modifiers.alt_key());
                         if self.controller.update_manipulation(dist as f64) {
                             self.mesh_dirty = true;
                         }
@@ -2585,5 +2614,18 @@ mod tests {
         assert!((snap_rotation(deg(41.3), 4.0, false) - deg(41.3)).abs() < 1e-4);
         // Modifier forces free even near the ring.
         assert!((snap_rotation(deg(40.0), 1.0, true) - deg(40.0)).abs() < 1e-4);
+    }
+
+    /// Translations snap to the 1mm grid per axis; the modifier frees them.
+    #[test]
+    fn translation_snaps_to_the_grid() {
+        let snapped = snap_translation(Vec3::new(3.4, -2.6, 0.1), false);
+        assert_eq!(snapped, Vec3::new(3.0, -3.0, 0.0));
+        // Free (Alt) leaves it untouched.
+        let raw = Vec3::new(3.4, -2.6, 0.1);
+        assert_eq!(snap_translation(raw, true), raw);
+        // Scalar push/pull distance snaps too.
+        assert!((snap_distance(7.7, false) - 8.0).abs() < 1e-4);
+        assert!((snap_distance(7.7, true) - 7.7).abs() < 1e-4);
     }
 }
