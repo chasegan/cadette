@@ -565,7 +565,8 @@ impl Scene {
         let (vertex_buffer, index_buffer, index_count) = make_mesh_buffers(&device, mesh);
         let (edge_vertex_buffer, edge_index_buffer, edge_index_count) =
             make_edge_buffers(&device, mesh);
-        let (gizmo_vertex_buffer, gizmo_vertex_count) = make_gizmo_buffer(&device, &[]);
+        let gizmo_vertex_buffer = make_gizmo_buffer(&device);
+        let gizmo_vertex_count = 0u32;
 
         Self {
             device,
@@ -603,9 +604,13 @@ impl Scene {
 
     /// Replace the gizmo line geometry (empty `verts` hides it).
     fn upload_gizmo(&mut self, verts: &[GizmoVertex]) {
-        let (buf, n) = make_gizmo_buffer(&self.device, verts);
-        self.gizmo_vertex_buffer = buf;
-        self.gizmo_vertex_count = n;
+        // Rewrite the persistent buffer in place — no per-frame allocation.
+        let n = verts.len().min(GIZMO_MAX_VERTS as usize);
+        if n > 0 {
+            self.queue
+                .write_buffer(&self.gizmo_vertex_buffer, 0, bytemuck::cast_slice(&verts[..n]));
+        }
+        self.gizmo_vertex_count = n as u32;
     }
 
     /// Record the 3D pass (clearing color + depth) into `encoder`. `selected`
@@ -1457,22 +1462,19 @@ fn gizmo_geometry(
     verts
 }
 
-fn make_gizmo_buffer(device: &wgpu::Device, verts: &[GizmoVertex]) -> (wgpu::Buffer, u32) {
-    use wgpu::util::DeviceExt;
-    if verts.is_empty() {
-        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("rmf-gizmo-empty"),
-            contents: bytemuck::bytes_of(&GizmoVertex::default()),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        return (buf, 0);
-    }
-    let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+/// Capacity of the persistent gizmo vertex buffer. The full gumball (arrows +
+/// planes + three rings) and the rotation protractor are both well under this.
+const GIZMO_MAX_VERTS: u64 = 8192;
+
+/// Allocate the persistent gizmo vertex buffer once; [`Scene::upload_gizmo`]
+/// rewrites it each frame via `write_buffer` (no per-frame allocation).
+fn make_gizmo_buffer(device: &wgpu::Device) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("rmf-gizmo"),
-        contents: bytemuck::cast_slice(verts),
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-    (buf, verts.len() as u32)
+        size: GIZMO_MAX_VERTS * std::mem::size_of::<GizmoVertex>() as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
 }
 
 fn make_mesh_buffers(
@@ -2300,6 +2302,13 @@ impl<C: Controller> WindowApp<C> {
         for id in &full_output.textures_delta.free {
             state.egui_renderer.free_texture(id);
         }
+
+        // Reclaim GPU memory from resources dropped this frame — the per-frame
+        // command buffer, the rebuilt gizmo buffer, any replaced mesh buffers.
+        // wgpu only frees on poll; this loop redraws continuously, so without a
+        // non-blocking poll every frame the deferred-destruction queue grows
+        // unbounded and exhausts (unified) memory until the OS freezes.
+        device.poll(wgpu::PollType::Poll).ok();
     }
 }
 
