@@ -105,6 +105,27 @@ pub trait Controller {
     }
     /// Finish the active transform: commit it, or cancel and discard.
     fn finish_transform(&mut self, _commit: bool) {}
+
+    /// The ground-plane grid: its spacing (mm) drives translation snapping and,
+    /// when visible, the workplane overlay. Default = no grid / no snap.
+    fn grid(&self) -> GridSpec {
+        GridSpec::default()
+    }
+}
+
+/// The ground-plane grid configuration.
+#[derive(Clone, Copy)]
+pub struct GridSpec {
+    /// Snap/line spacing in mm. `<= 0` means no grid and no snapping.
+    pub size: f32,
+    /// Whether to draw the workplane overlay.
+    pub visible: bool,
+}
+
+impl Default for GridSpec {
+    fn default() -> Self {
+        GridSpec { size: 0.0, visible: false }
+    }
 }
 
 /// A transform gizmo shown at a selected body.
@@ -1196,29 +1217,25 @@ fn snap_rotation(angle: f32, ratio: f32, free: bool) -> f32 {
     }
 }
 
-/// Grid increment (mm) that translations snap to by default.
-const TRANSLATE_SNAP_MM: f32 = 1.0;
-
-/// Snap a world-space translation `offset` to the grid (each axis independently,
-/// which lands on grid intersections). `free` (a modifier) disables it.
-fn snap_translation(offset: Vec3, free: bool) -> Vec3 {
-    if free {
+/// Snap a world-space translation `offset` to a `grid` (each axis independently,
+/// landing on grid intersections). `free` (a modifier) or `grid <= 0` disables it.
+fn snap_translation(offset: Vec3, grid: f32, free: bool) -> Vec3 {
+    if free || grid <= 0.0 {
         return offset;
     }
-    let g = TRANSLATE_SNAP_MM;
     Vec3::new(
-        (offset.x / g).round() * g,
-        (offset.y / g).round() * g,
-        (offset.z / g).round() * g,
+        (offset.x / grid).round() * grid,
+        (offset.y / grid).round() * grid,
+        (offset.z / grid).round() * grid,
     )
 }
 
-/// Snap a scalar distance (mm) to the translation grid. `free` disables it.
-fn snap_distance(d: f32, free: bool) -> f32 {
-    if free {
+/// Snap a scalar distance (mm) to the `grid`. `free` or `grid <= 0` disables it.
+fn snap_distance(d: f32, grid: f32, free: bool) -> f32 {
+    if free || grid <= 0.0 {
         d
     } else {
-        (d / TRANSLATE_SNAP_MM).round() * TRANSLATE_SNAP_MM
+        (d / grid).round() * grid
     }
 }
 
@@ -2007,11 +2024,12 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                         if self.mouse.dragged {
                             let (w, h) = (state.config.width, state.config.height);
                             let free = self.modifiers.alt_key();
+                            let grid = self.controller.grid().size;
                             let cursor = self.mouse.cursor;
                             let delta = match drag {
                                 GizmoDrag::Axis { origin, dir, start, .. } => {
                                     let cur = manip_distance(&self.camera, cursor, *origin, *dir, w, h);
-                                    let off = snap_translation(*dir * (cur - *start), free);
+                                    let off = snap_translation(*dir * (cur - *start), grid, free);
                                     TransformDelta::Translate([off.x as f64, off.y as f64, off.z as f64])
                                 }
                                 GizmoDrag::Plane { point, normal, grab, .. } => {
@@ -2019,7 +2037,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                                     let off = ray_plane_intersect(ro, rd, *point, *normal)
                                         .map(|p| p - *grab)
                                         .unwrap_or(Vec3::ZERO);
-                                    let off = snap_translation(off, free);
+                                    let off = snap_translation(off, grid, free);
                                     TransformDelta::Translate([off.x as f64, off.y as f64, off.z as f64])
                                 }
                                 GizmoDrag::Rotate { axis, center, normal, last, total, snapped, .. } => {
@@ -2057,7 +2075,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                             state.config.width,
                             state.config.height,
                         );
-                        let dist = snap_distance(dist, self.modifiers.alt_key());
+                        let dist = snap_distance(dist, self.controller.grid().size, self.modifiers.alt_key());
                         if self.controller.update_manipulation(dist as f64) {
                             self.mesh_dirty = true;
                         }
@@ -2628,13 +2646,16 @@ mod tests {
     /// Translations snap to the 1mm grid per axis; the modifier frees them.
     #[test]
     fn translation_snaps_to_the_grid() {
-        let snapped = snap_translation(Vec3::new(3.4, -2.6, 0.1), false);
+        let snapped = snap_translation(Vec3::new(3.4, -2.6, 0.1), 1.0, false);
         assert_eq!(snapped, Vec3::new(3.0, -3.0, 0.0));
-        // Free (Alt) leaves it untouched.
+        // A 5mm grid snaps to coarser steps.
+        assert_eq!(snap_translation(Vec3::new(3.4, -2.6, 0.1), 5.0, false), Vec3::new(5.0, -5.0, 0.0));
+        // Free (Alt) or a non-positive grid leaves it untouched.
         let raw = Vec3::new(3.4, -2.6, 0.1);
-        assert_eq!(snap_translation(raw, true), raw);
+        assert_eq!(snap_translation(raw, 1.0, true), raw);
+        assert_eq!(snap_translation(raw, 0.0, false), raw);
         // Scalar push/pull distance snaps too.
-        assert!((snap_distance(7.7, false) - 8.0).abs() < 1e-4);
-        assert!((snap_distance(7.7, true) - 7.7).abs() < 1e-4);
+        assert!((snap_distance(7.7, 1.0, false) - 8.0).abs() < 1e-4);
+        assert!((snap_distance(7.7, 1.0, true) - 7.7).abs() < 1e-4);
     }
 }

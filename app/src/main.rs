@@ -1225,6 +1225,13 @@ impl Controller for Modeler {
         }
     }
 
+    fn grid(&self) -> rmf_render::GridSpec {
+        rmf_render::GridSpec {
+            size: self.ui.grid_size,
+            visible: self.ui.show_grid,
+        }
+    }
+
     fn gizmo(&self) -> Option<Gizmo> {
         if self.sketch_session.is_some() {
             return None;

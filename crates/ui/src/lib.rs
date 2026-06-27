@@ -17,7 +17,6 @@ use rmf_core::{
 const ERROR_COLOR: Color32 = Color32::from_rgb(232, 92, 92);
 
 /// Persistent UI state owned by the host across frames.
-#[derive(Default)]
 pub struct HistoryState {
     /// Currently selected feature, if any.
     pub selected: Option<FeatureId>,
@@ -29,6 +28,24 @@ pub struct HistoryState {
     /// Whether undo/redo are available, set by the host from its undo stacks.
     pub can_undo: bool,
     pub can_redo: bool,
+    /// Grid spacing (mm) — drives translation snapping and the workplane.
+    pub grid_size: f32,
+    /// Whether to draw the workplane grid.
+    pub show_grid: bool,
+}
+
+impl Default for HistoryState {
+    fn default() -> Self {
+        Self {
+            selected: None,
+            errors: Vec::new(),
+            visible: Vec::new(),
+            can_undo: false,
+            can_redo: false,
+            grid_size: 1.0,
+            show_grid: true,
+        }
+    }
 }
 
 /// What the history panel reports back to the host for one frame.
@@ -136,6 +153,19 @@ pub fn history_panel(
                 {
                     resp.export_stl = true;
                 }
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("Grid");
+                egui::ComboBox::from_id_salt("grid_size")
+                    .selected_text(format!("{} mm", state.grid_size))
+                    .show_ui(ui, |ui| {
+                        for size in [0.5_f32, 1.0, 2.0, 5.0, 10.0] {
+                            ui.selectable_value(&mut state.grid_size, size, format!("{size} mm"));
+                        }
+                    });
+                ui.checkbox(&mut state.show_grid, "Show")
+                    .on_hover_text("Show the ground-plane grid");
             });
             ui.separator();
 
