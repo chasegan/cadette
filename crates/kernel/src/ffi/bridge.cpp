@@ -251,6 +251,13 @@ std::unique_ptr<Shape> rotate(const Shape& s, double cx, double cy, double cz,
   });
 }
 
+// A shallow copy: TopoDS_Shape is a handle to a shared, ref-counted TShape, so
+// this shares the underlying geometry rather than deep-copying it — cheap, which
+// is what lets the regen cache hand out cloned bodies per frame.
+std::unique_ptr<Shape> copy_shape(const Shape& s) {
+  return std::make_unique<Shape>(s.shape);
+}
+
 // --- Booleans ---------------------------------------------------------------
 
 std::unique_ptr<Shape> fuse(const Shape& a, const Shape& b) {

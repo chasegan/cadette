@@ -12,8 +12,8 @@
 use std::collections::HashMap;
 
 use rmf_core::{
-    regenerate, BooleanOp, Constraint, Document, EdgeAnchor, FaceAnchor, FeatureId, FeatureKind, LineId,
-    PointId, Profile, RegenError, Sketch2d, SketchPlane, DVec3,
+    regenerate, BooleanOp, Constraint, Document, EdgeAnchor, FaceAnchor, FeatureId, FeatureKind,
+    LineId, PointId, Profile, RegenCache, RegenError, Sketch2d, SketchPlane, DVec3,
 };
 use rmf_interaction::Selection;
 use rmf_kernel::{KernelBackend, Solid};
@@ -203,6 +203,9 @@ fn positions_center(positions: &[f32]) -> [f64; 3] {
 struct Modeler {
     doc: Document,
     backend: KernelBackend,
+    /// Incremental-regen cache: only features whose params or inputs changed are
+    /// rebuilt, so a push/pull drag recomputes one op instead of the whole tree.
+    regen_cache: RegenCache<Solid>,
     ui: HistoryState,
     /// Snapshot stacks for undo/redo. The whole document is cloned per edit;
     /// cheap for these models and trivially correct.
@@ -240,6 +243,7 @@ impl Modeler {
         Self {
             doc: build_document(),
             backend: KernelBackend::default(),
+            regen_cache: RegenCache::new(),
             ui: HistoryState::default(),
             undo: Vec::new(),
             redo: Vec::new(),
@@ -846,7 +850,7 @@ impl Controller for Modeler {
     /// into one mesh. Records per-feature errors for the panel.
     fn mesh(&mut self) -> MeshData {
         solve_sketches(&mut self.doc);
-        let regen = regenerate(&self.doc, &mut self.backend);
+        let regen = self.regen_cache.regenerate(&self.doc, &mut self.backend);
         self.ui.errors = regen
             .errors()
             .iter()
@@ -1183,6 +1187,55 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Timing aid: the per-mouse-move cost during a drag, before vs after the
+    // incremental-regen cache.
+    if std::env::args().any(|a| a == "--bench-regen") {
+        use std::time::Instant;
+        let runs = 30;
+
+        // OLD behavior: replay the whole history through OCCT + tessellate, every
+        // frame (a fresh backend with no cache).
+        let mut fresh = KernelBackend::default();
+        let _ = regenerate(&modeler.doc, &mut fresh); // warm OCCT
+        let t0 = Instant::now();
+        for _ in 0..runs {
+            let regen = regenerate(&modeler.doc, &mut fresh);
+            for b in regen.visible_bodies() {
+                let _ = b.tessellate(DEFLECTION_MM);
+            }
+        }
+        let uncached = t0.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+
+        // NEW behavior: simulate a drag — append a Move at the tip and change its
+        // offset each frame. Only that op rebuilds; the cache reuses everything
+        // upstream. mesh() also re-tessellates the changed body.
+        let src = modeler.doc.history.features().last().unwrap().id;
+        let drag = modeler.doc.add(
+            "Drag",
+            FeatureKind::Translate { source: src, offset: DVec3::ZERO },
+        );
+        let _ = modeler.mesh(); // warm the cache
+        let t0 = Instant::now();
+        for i in 0..runs {
+            if let Some(FeatureKind::Translate { offset, .. }) =
+                modeler.doc.history.get_mut(drag).map(|f| &mut f.kind)
+            {
+                offset.x = i as f64 * 0.1;
+            }
+            let _ = modeler.mesh();
+        }
+        let cached = t0.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+
+        println!(
+            "{} features — per-frame drag cost: uncached {:.1}ms, cached {:.1}ms ({:.1}x faster)",
+            modeler.doc.history.len(),
+            uncached,
+            cached,
+            uncached / cached,
+        );
+        return Ok(());
+    }
+
     // Verification aid: highlight a face by id to confirm the shader tint path.
     if std::env::args().any(|a| a == "--highlight-demo") {
         modeler.selection.select(Some(Pick::Face(0)), false, None); // strong face
@@ -1325,6 +1378,7 @@ mod tests {
         let mut m = Modeler {
             doc,
             backend: KernelBackend::default(),
+            regen_cache: RegenCache::new(),
             ui: HistoryState::default(),
             undo: Vec::new(),
             redo: Vec::new(),
@@ -1649,6 +1703,7 @@ mod tests {
         let mut m = Modeler {
             doc,
             backend: KernelBackend::default(),
+            regen_cache: RegenCache::new(),
             ui: HistoryState::default(),
             undo: Vec::new(),
             redo: Vec::new(),

@@ -62,6 +62,8 @@ std::unique_ptr<Shape> common(const Shape& a, const Shape& b);
 std::unique_ptr<Shape> rotate(const Shape& s, double cx, double cy, double cz,
                               double ax, double ay, double az, double angle);
 
+std::unique_ptr<Shape> copy_shape(const Shape& s);
+
 std::unique_ptr<Shape> fillet_all_edges(const Shape& s, double radius);
 std::unique_ptr<Shape> fillet_edges(const Shape& s,
                                     rust::Slice<const double> coords,

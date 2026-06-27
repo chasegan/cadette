@@ -15,6 +15,15 @@ pub use crate::ffi::Mesh;
 /// An owned B-rep solid (or, generally, any OCCT topology).
 pub struct Solid(UniquePtr<ffi::Shape>);
 
+/// A `TopoDS_Shape` is a handle to shared, ref-counted geometry, so cloning is
+/// cheap (a handle copy, not a deep geometry copy). The regen cache relies on
+/// this to hand out cached bodies each frame without re-running OCCT.
+impl Clone for Solid {
+    fn clone(&self) -> Self {
+        Solid::wrap(ffi::copy_shape(&self.0))
+    }
+}
+
 impl Solid {
     fn wrap(inner: UniquePtr<ffi::Shape>) -> Self {
         Solid(inner)
