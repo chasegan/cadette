@@ -105,6 +105,9 @@ pub mod ffi {
         /// A cheap shallow copy (shares the underlying ref-counted geometry).
         fn copy_shape(shape: &Shape) -> UniquePtr<Shape>;
 
+        /// Bundle two shapes into one compound (for exporting several bodies).
+        fn compound(a: &Shape, b: &Shape) -> Result<UniquePtr<Shape>>;
+
         // --- Transforms ---------------------------------------------------
         fn translate(shape: &Shape, dx: f64, dy: f64, dz: f64) -> Result<UniquePtr<Shape>>;
 

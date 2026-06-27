@@ -16,3 +16,5 @@ rmf-interaction = { workspace = true }
 rmf-ui = { workspace = true }
 anyhow = { workspace = true }
 env_logger = { workspace = true }
+# Native file dialogs for STL export / project save-load.
+rfd = "0.15"

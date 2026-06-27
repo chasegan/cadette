@@ -24,6 +24,8 @@ use rmf_render::{
 use rmf_ui::{history_panel, HistoryState};
 
 const DEFLECTION_MM: f64 = 0.1;
+/// Finer mesh tolerance for STL export than for the on-screen preview.
+const EXPORT_DEFLECTION_MM: f64 = 0.05;
 
 /// A centered, axis-aligned rectangle defined by constraints. The corner points
 /// start deliberately rough; the solver snaps them to an exact `width x height`
@@ -206,6 +208,8 @@ struct Modeler {
     /// Incremental-regen cache: only features whose params or inputs changed are
     /// rebuilt, so a push/pull drag recomputes one op instead of the whole tree.
     regen_cache: RegenCache<Solid>,
+    /// Last transient status message (e.g. an export result), shown in the UI.
+    status: Option<String>,
     ui: HistoryState,
     /// Snapshot stacks for undo/redo. The whole document is cloned per edit;
     /// cheap for these models and trivially correct.
@@ -244,6 +248,7 @@ impl Modeler {
             doc: build_document(),
             backend: KernelBackend::default(),
             regen_cache: RegenCache::new(),
+            status: None,
             ui: HistoryState::default(),
             undo: Vec::new(),
             redo: Vec::new(),
@@ -279,6 +284,42 @@ impl Modeler {
             Pick::Edge(g) => self.locate_edge(g)?.0,
         };
         self.ui.visible.get(body_index).copied()
+    }
+
+    /// Combine the visible bodies into one shape (a compound) for export.
+    fn combined_body(&self) -> Result<Solid, String> {
+        let mut bodies = self.bodies.iter();
+        let first = bodies.next().ok_or("nothing to export")?.clone();
+        bodies
+            .try_fold(first, |acc, b| acc.compound(b))
+            .map_err(|e| e.to_string())
+    }
+
+    /// Write the visible model to `path` as a binary STL.
+    fn export_stl_to(&self, path: &str) -> Result<(), String> {
+        self.combined_body()?
+            .write_stl(path, EXPORT_DEFLECTION_MM)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Prompt for a path and export the model as STL.
+    fn export_stl(&mut self) {
+        if self.bodies.is_empty() {
+            self.status = Some("Nothing to export".into());
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("STL", &["stl"])
+            .set_file_name(format!("{}.stl", self.doc.name))
+            .save_file()
+        else {
+            return; // user cancelled
+        };
+        let path = path.to_string_lossy().to_string();
+        self.status = Some(match self.export_stl_to(&path) {
+            Ok(()) => format!("Exported {path}"),
+            Err(e) => format!("Export failed: {e}"),
+        });
     }
 
     /// A short readout for an in-progress gizmo drag (angle / distance), shown
@@ -834,6 +875,19 @@ impl Controller for Modeler {
         if resp.start_sketch && self.sketch_session.is_none() {
             self.start_sketch(SketchPlane::Xy);
         }
+        if resp.export_stl {
+            self.export_stl();
+        }
+
+        // --- Status line (export result, etc.) at the bottom of the viewport ---
+        if let Some(status) = &self.status {
+            #[allow(deprecated)]
+            egui::Panel::bottom("status_bar").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(status);
+                });
+            });
+        }
 
         // --- Sketch canvas overlay (after the side panel) ---
         if self.sketch_session.is_some() {
@@ -1236,6 +1290,21 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Verification aid: export the default model to STL without the dialog.
+    if std::env::args().any(|a| a == "--export-test") {
+        let _ = modeler.mesh(); // populate visible bodies
+        std::fs::create_dir_all("out")?;
+        let path = "out/export-test.stl";
+        match modeler.export_stl_to(path) {
+            Ok(()) => {
+                let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                println!("wrote {path} ({bytes} bytes)");
+            }
+            Err(e) => println!("export failed: {e}"),
+        }
+        return Ok(());
+    }
+
     // Verification aid: highlight a face by id to confirm the shader tint path.
     if std::env::args().any(|a| a == "--highlight-demo") {
         modeler.selection.select(Some(Pick::Face(0)), false, None); // strong face
@@ -1379,6 +1448,7 @@ mod tests {
             doc,
             backend: KernelBackend::default(),
             regen_cache: RegenCache::new(),
+            status: None,
             ui: HistoryState::default(),
             undo: Vec::new(),
             redo: Vec::new(),
@@ -1704,6 +1774,7 @@ mod tests {
             doc,
             backend: KernelBackend::default(),
             regen_cache: RegenCache::new(),
+            status: None,
             ui: HistoryState::default(),
             undo: Vec::new(),
             redo: Vec::new(),

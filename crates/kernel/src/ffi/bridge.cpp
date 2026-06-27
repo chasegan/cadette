@@ -31,6 +31,8 @@
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRep_Tool.hxx>
+#include <BRep_Builder.hxx>
+#include <TopoDS_Compound.hxx>
 #include <Poly_Triangulation.hxx>
 #include <Poly_PolygonOnTriangulation.hxx>
 #include <TColStd_Array1OfInteger.hxx>
@@ -256,6 +258,20 @@ std::unique_ptr<Shape> rotate(const Shape& s, double cx, double cy, double cz,
 // is what lets the regen cache hand out cloned bodies per frame.
 std::unique_ptr<Shape> copy_shape(const Shape& s) {
   return std::make_unique<Shape>(s.shape);
+}
+
+// Bundle two shapes into one compound (no boolean) — used to export several
+// visible bodies as a single STL. Nesting compounds is fine; the mesher and STL
+// writer walk all sub-shapes.
+std::unique_ptr<Shape> compound(const Shape& a, const Shape& b) {
+  return guard("compound", [&] {
+    TopoDS_Compound comp;
+    BRep_Builder builder;
+    builder.MakeCompound(comp);
+    builder.Add(comp, a.shape);
+    builder.Add(comp, b.shape);
+    return std::make_unique<Shape>(comp);
+  });
 }
 
 // --- Booleans ---------------------------------------------------------------

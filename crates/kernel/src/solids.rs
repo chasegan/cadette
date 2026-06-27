@@ -131,6 +131,12 @@ impl Solid {
         Ok(Self::wrap(ffi::common(&self.0, &other.0)?))
     }
 
+    /// Bundle `self` and `other` into one compound shape (no boolean) — for
+    /// exporting several visible bodies as a single STL.
+    pub fn compound(&self, other: &Solid) -> Result<Self> {
+        Ok(Self::wrap(ffi::compound(&self.0, &other.0)?))
+    }
+
     // --- Edge treatments ----------------------------------------------------
 
     /// Fillet every edge with a constant `radius`. Returns an error if the

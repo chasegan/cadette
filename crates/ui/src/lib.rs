@@ -42,6 +42,8 @@ pub struct HistoryResponse {
     pub redo: bool,
     /// The "Sketch" tool was clicked — the host should enter sketch-draw mode.
     pub start_sketch: bool,
+    /// "Export STL" was clicked — the host should write the model to a file.
+    pub export_stl: bool,
 }
 
 impl HistoryState {
@@ -117,6 +119,13 @@ pub fn history_panel(
                     .clicked()
                 {
                     resp.redo = true;
+                }
+                if ui
+                    .button("⬇ Export STL")
+                    .on_hover_text("Export the model as a binary STL for printing")
+                    .clicked()
+                {
+                    resp.export_stl = true;
                 }
             });
             ui.separator();
