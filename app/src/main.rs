@@ -288,6 +288,52 @@ impl Modeler {
         self.ui.visible.get(body_index).copied()
     }
 
+    /// Apply a boolean with the selected body as the primary operand. Subtract
+    /// carves the selected body out of every other visible body (a cut against a
+    /// body it doesn't overlap is a no-op, so this is "removed from any it
+    /// overlaps"); union/intersect fold the selection together with the others
+    /// into one body. Returns true if the document changed.
+    fn apply_boolean(&mut self, op: BooleanOp) -> bool {
+        let Some(tool) = self.ui.selected.filter(|s| self.ui.visible.contains(s)) else {
+            return false;
+        };
+        let others: Vec<FeatureId> = self
+            .ui
+            .visible
+            .iter()
+            .copied()
+            .filter(|&v| v != tool)
+            .collect();
+        if others.is_empty() {
+            return false;
+        }
+
+        self.record_undo(self.doc.clone());
+        match op {
+            BooleanOp::Subtract => {
+                // Carve the selected body out of each other body independently.
+                for target in others {
+                    self.doc
+                        .add("Subtract", FeatureKind::Boolean { op, target, tool });
+                }
+                self.ui.selected = None; // the carver is consumed
+            }
+            BooleanOp::Union | BooleanOp::Intersect => {
+                // Fold the selection together with the others into one body.
+                let name = if matches!(op, BooleanOp::Union) { "Union" } else { "Intersect" };
+                let mut acc = tool;
+                for other in others {
+                    acc = self
+                        .doc
+                        .add(name, FeatureKind::Boolean { op, target: acc, tool: other });
+                }
+                self.ui.selected = Some(acc);
+            }
+        }
+        self.selection.clear();
+        true
+    }
+
     /// Combine the visible bodies into one shape (a compound) for export.
     fn combined_body(&self) -> Result<Solid, String> {
         let mut bodies = self.bodies.iter();
@@ -974,6 +1020,9 @@ impl Controller for Modeler {
         }
         if resp.open_project {
             changed |= self.open_project();
+        }
+        if let Some(op) = resp.boolean {
+            changed |= self.apply_boolean(op);
         }
 
         // --- Status line (export result, etc.) at the bottom of the viewport ---
@@ -1825,6 +1874,80 @@ mod tests {
                 _ => None,
             });
         assert_eq!(fillet, Some(2));
+    }
+
+    #[test]
+    fn subtract_removes_the_selected_body_from_the_other() {
+        use rmf_core::BooleanOp;
+        // Box A spans x[0,10]; box B spans x[5,15] (overlapping in x[5,10]).
+        let mut m = Modeler::new();
+        m.doc = Document::new("two");
+        let a = m.doc.add("A", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let bb = m.doc.add("Bbox", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let b = m.doc.add(
+            "B",
+            FeatureKind::Translate { source: bb, offset: DVec3::new(5.0, 0.0, 0.0) },
+        );
+        let _ = m.mesh();
+        assert_eq!(m.ui.visible, vec![a, b]);
+
+        // Select A as the carver and subtract — A is removed from B (B - A),
+        // the opposite of the old "keep the selection" behavior.
+        m.ui.selected = Some(a);
+        assert!(m.apply_boolean(BooleanOp::Subtract));
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        let (min, max) = bounds(&mesh);
+        assert!((min[0] - 10.0).abs() < 0.2, "min x {} (B-A starts where A ends)", min[0]);
+        assert!((max[0] - 15.0).abs() < 0.2, "max x {}", max[0]);
+    }
+
+    #[test]
+    fn subtract_carves_the_selection_out_of_every_other_body() {
+        use rmf_core::BooleanOp;
+        // A carver at the origin overlapping two separate boxes.
+        let mut m = Modeler::new();
+        m.doc = Document::new("three");
+        let carver = m.doc.add("Carver", FeatureKind::Box { size: DVec3::splat(20.0) });
+        let l1 = m.doc.add("L1", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let b1 = m.doc.add(
+            "B1",
+            FeatureKind::Translate { source: l1, offset: DVec3::new(15.0, 0.0, 0.0) },
+        );
+        let l2 = m.doc.add("L2", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let b2 = m.doc.add(
+            "B2",
+            FeatureKind::Translate { source: l2, offset: DVec3::new(0.0, 15.0, 0.0) },
+        );
+        let _ = m.mesh();
+        assert_eq!(m.ui.visible, vec![carver, b1, b2]);
+
+        m.ui.selected = Some(carver);
+        assert!(m.apply_boolean(BooleanOp::Subtract));
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        // Both other bodies were carved -> two results remain, carver consumed.
+        assert_eq!(m.ui.visible.len(), 2, "both bodies carved");
+        assert!(!mesh.vertices.is_empty());
+    }
+
+    #[test]
+    fn union_folds_the_selection_with_the_others_into_one() {
+        use rmf_core::BooleanOp;
+        let mut m = Modeler::new();
+        m.doc = Document::new("u");
+        let a = m.doc.add("A", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let lb = m.doc.add("Lb", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let _b = m.doc.add(
+            "B",
+            FeatureKind::Translate { source: lb, offset: DVec3::new(5.0, 0.0, 0.0) },
+        );
+        let _ = m.mesh();
+        m.ui.selected = Some(a);
+        assert!(m.apply_boolean(BooleanOp::Union));
+        let _ = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        assert_eq!(m.ui.visible.len(), 1, "union leaves one body");
     }
 
     #[test]

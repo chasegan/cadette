@@ -48,6 +48,9 @@ pub struct HistoryResponse {
     pub save_project: bool,
     /// "Open" was clicked — the host should load a project from a file.
     pub open_project: bool,
+    /// A boolean op was clicked — the host combines the selected body with the
+    /// other visible bodies (subtract carves the selection out of them).
+    pub boolean: Option<BooleanOp>,
 }
 
 impl HistoryState {
@@ -69,18 +72,11 @@ impl HistoryState {
         self.visible.last().copied()
     }
 
-    /// The (target, tool) a new boolean should combine: the selection (or the
-    /// first visible body) as target, and a different visible body as tool.
-    fn binary_inputs(&self) -> Option<(FeatureId, FeatureId)> {
-        if self.visible.len() < 2 {
-            return None;
-        }
-        let target = self
-            .selected
-            .filter(|s| self.visible.contains(s))
-            .unwrap_or(self.visible[0]);
-        let tool = self.visible.iter().rev().find(|v| **v != target).copied()?;
-        Some((target, tool))
+    /// Whether a boolean is available: a body is selected, and there's at least
+    /// one other visible body to combine it with. The host uses the selection as
+    /// the primary operand (for subtract, the tool carved out of the others).
+    fn can_boolean(&self) -> bool {
+        self.selected.is_some_and(|s| self.visible.contains(&s)) && self.visible.len() >= 2
     }
 }
 
@@ -144,7 +140,7 @@ pub fn history_panel(
             ui.separator();
 
             let mut started = false;
-            resp.changed |= add_feature_toolbar(ui, doc, state, &mut started);
+            resp.changed |= add_feature_toolbar(ui, doc, state, &mut started, &mut resp.boolean);
             if started {
                 resp.start_sketch = true;
             }
@@ -177,13 +173,14 @@ fn add_feature_toolbar(
     doc: &mut Document,
     state: &mut HistoryState,
     start_sketch: &mut bool,
+    boolean: &mut Option<BooleanOp>,
 ) -> bool {
     let mut changed = false;
 
     // Pick operation inputs up front (immutable borrows of doc/state) so the
     // mutating `add` closure can take exclusive borrows afterward.
     let unary = state.unary_source();
-    let binary = state.binary_inputs();
+    let can_bool = state.can_boolean();
     let extrude_source = unary.filter(|id| {
         matches!(
             doc.history.get(*id).map(|f| &f.kind),
@@ -261,18 +258,18 @@ fn add_feature_toolbar(
                 },
             );
         }
-        for (label, op) in [
-            ("Union", BooleanOp::Union),
-            ("Subtract", BooleanOp::Subtract),
-            ("Intersect", BooleanOp::Intersect),
+        for (label, op, hint) in [
+            ("Union", BooleanOp::Union, "Merge the selected body with the others"),
+            ("Subtract", BooleanOp::Subtract, "Carve the selected body out of the others"),
+            ("Intersect", BooleanOp::Intersect, "Keep where the selected body meets the others"),
         ] {
             if ui
-                .add_enabled(binary.is_some(), egui::Button::new(label))
-                .on_hover_text("Combine two visible bodies")
+                .add_enabled(can_bool, egui::Button::new(label))
+                .on_hover_text(hint)
                 .clicked()
             {
-                let (target, tool) = binary.unwrap();
-                add(state, label, FeatureKind::Boolean { op, target, tool });
+                // The host applies it (it owns the selection + visible set).
+                *boolean = Some(op);
             }
         }
     });
@@ -610,17 +607,14 @@ mod tests {
     }
 
     #[test]
-    fn binary_needs_two_distinct_visible_bodies() {
-        assert_eq!(state(None, &[7]).binary_inputs(), None);
-        // Default: first visible is target, a different visible is tool.
-        assert_eq!(
-            state(None, &[1, 2, 3]).binary_inputs(),
-            Some((FeatureId(1), FeatureId(3)))
-        );
-        // Visible selection becomes target; tool is a different visible body.
-        assert_eq!(
-            state(Some(2), &[1, 2, 3]).binary_inputs(),
-            Some((FeatureId(2), FeatureId(3)))
-        );
+    fn boolean_needs_a_selected_body_and_another() {
+        // No selection -> not ready (which body would be the operand?).
+        assert!(!state(None, &[1, 2, 3]).can_boolean());
+        // Selection not among the visible bodies -> not ready.
+        assert!(!state(Some(9), &[1, 2, 3]).can_boolean());
+        // A visible selection with only itself visible -> nothing to combine.
+        assert!(!state(Some(1), &[1]).can_boolean());
+        // A visible selection plus another visible body -> ready.
+        assert!(state(Some(2), &[1, 2, 3]).can_boolean());
     }
 }
