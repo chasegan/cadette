@@ -110,10 +110,10 @@ pub fn history_panel(
             );
 
             ui.horizontal(|ui| {
-                if ui.button("Open…").on_hover_text("Open a .rmf project").clicked() {
+                if ui.button("Open…").on_hover_text("Open a .cdt project").clicked() {
                     resp.open_project = true;
                 }
-                if ui.button("Save…").on_hover_text("Save the project (.rmf)").clicked() {
+                if ui.button("Save…").on_hover_text("Save the project (.cdt)").clicked() {
                     resp.save_project = true;
                 }
             });

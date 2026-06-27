@@ -26,7 +26,7 @@ use rmf_ui::{history_panel, HistoryState};
 const DEFLECTION_MM: f64 = 0.1;
 /// Finer mesh tolerance for STL export than for the on-screen preview.
 const EXPORT_DEFLECTION_MM: f64 = 0.05;
-/// Version stamped into `.rmf` project files (a zip holding `document.json`).
+/// Version stamped into `.cdt` project files (a zip holding `document.json`).
 const PROJECT_FORMAT_VERSION: u64 = 1;
 
 /// A centered, axis-aligned rectangle defined by constraints. The corner points
@@ -324,7 +324,7 @@ impl Modeler {
         });
     }
 
-    /// Write the project (the parametric document) to `path` as a `.rmf` zip.
+    /// Write the project (the parametric document) to `path` as a `.cdt` zip.
     fn save_project_to(&self, path: &str) -> Result<(), String> {
         use std::io::Write;
         let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
@@ -343,7 +343,7 @@ impl Modeler {
         Ok(())
     }
 
-    /// Load a `.rmf` project from `path`, replacing the current document and
+    /// Load a `.cdt` project from `path`, replacing the current document and
     /// resetting transient state. Returns the loaded document.
     fn load_project_from(&mut self, path: &str) -> Result<(), String> {
         let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -378,8 +378,8 @@ impl Modeler {
     /// Prompt for a path and save the project.
     fn save_project(&mut self) {
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("Riemanifold project", &["rmf"])
-            .set_file_name(format!("{}.rmf", self.doc.name))
+            .add_filter("Riemanifold project", &["cdt"])
+            .set_file_name(format!("{}.cdt", self.doc.name))
             .save_file()
         else {
             return; // cancelled
@@ -395,7 +395,7 @@ impl Modeler {
     /// (so the host re-meshes).
     fn open_project(&mut self) -> bool {
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("Riemanifold project", &["rmf"])
+            .add_filter("Riemanifold project", &["cdt"])
             .pick_file()
         else {
             return false; // cancelled
@@ -1390,7 +1390,7 @@ fn main() -> anyhow::Result<()> {
     // Verification aid: save then reload the default project, no dialogs.
     if std::env::args().any(|a| a == "--project-test") {
         std::fs::create_dir_all("out")?;
-        let path = "out/project-test.rmf";
+        let path = "out/project-test.cdt";
         let before = modeler.doc.history.len();
         if let Err(e) = modeler.save_project_to(path) {
             println!("save failed: {e}");
@@ -1829,7 +1829,7 @@ mod tests {
 
     #[test]
     fn project_round_trips_through_an_rmf_file() {
-        let path = std::env::temp_dir().join("rmf-roundtrip-test.rmf");
+        let path = std::env::temp_dir().join("rmf-roundtrip-test.cdt");
         let path = path.to_str().unwrap();
         let mut m = Modeler::new();
         let (features, name) = (m.doc.history.len(), m.doc.name.clone());
