@@ -18,3 +18,6 @@ anyhow = { workspace = true }
 env_logger = { workspace = true }
 # Native file dialogs for STL export / project save-load.
 rfd = "0.15"
+# Project files (.rmf): a zip holding the serialized document (+ future imports).
+zip = { version = "2", default-features = false, features = ["deflate"] }
+serde_json = "1"

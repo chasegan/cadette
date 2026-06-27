@@ -26,6 +26,8 @@ use rmf_ui::{history_panel, HistoryState};
 const DEFLECTION_MM: f64 = 0.1;
 /// Finer mesh tolerance for STL export than for the on-screen preview.
 const EXPORT_DEFLECTION_MM: f64 = 0.05;
+/// Version stamped into `.rmf` project files (a zip holding `document.json`).
+const PROJECT_FORMAT_VERSION: u64 = 1;
 
 /// A centered, axis-aligned rectangle defined by constraints. The corner points
 /// start deliberately rough; the solver snaps them to an exact `width x height`
@@ -320,6 +322,95 @@ impl Modeler {
             Ok(()) => format!("Exported {path}"),
             Err(e) => format!("Export failed: {e}"),
         });
+    }
+
+    /// Write the project (the parametric document) to `path` as a `.rmf` zip.
+    fn save_project_to(&self, path: &str) -> Result<(), String> {
+        use std::io::Write;
+        let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+        let mut zip = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("document.json", opts).map_err(|e| e.to_string())?;
+        // Embedded STL imports (resources/) will join this archive later.
+        let wrapped = serde_json::json!({
+            "format_version": PROJECT_FORMAT_VERSION,
+            "document": &self.doc,
+        });
+        let bytes = serde_json::to_vec_pretty(&wrapped).map_err(|e| e.to_string())?;
+        zip.write_all(&bytes).map_err(|e| e.to_string())?;
+        zip.finish().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Load a `.rmf` project from `path`, replacing the current document and
+    /// resetting transient state. Returns the loaded document.
+    fn load_project_from(&mut self, path: &str) -> Result<(), String> {
+        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+        let entry = archive
+            .by_name("document.json")
+            .map_err(|e| format!("not a Riemanifold project: {e}"))?;
+        let value: serde_json::Value =
+            serde_json::from_reader(entry).map_err(|e| e.to_string())?;
+        let version = value.get("format_version").and_then(|v| v.as_u64()).unwrap_or(0);
+        if version != PROJECT_FORMAT_VERSION {
+            return Err(format!("unsupported project version {version}"));
+        }
+        let doc_value = value.get("document").cloned().ok_or("missing document")?;
+        let document: Document =
+            serde_json::from_value(doc_value).map_err(|e| e.to_string())?;
+
+        // Swap in the new document and drop all state tied to the old one.
+        self.doc = document;
+        self.regen_cache = RegenCache::new();
+        self.undo.clear();
+        self.redo.clear();
+        self.selection.clear();
+        self.edge_anchors.clear();
+        self.transform = None;
+        self.manipulation = None;
+        self.sketch_session = None;
+        self.ui.selected = None;
+        Ok(())
+    }
+
+    /// Prompt for a path and save the project.
+    fn save_project(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Riemanifold project", &["rmf"])
+            .set_file_name(format!("{}.rmf", self.doc.name))
+            .save_file()
+        else {
+            return; // cancelled
+        };
+        let path = path.to_string_lossy().to_string();
+        self.status = Some(match self.save_project_to(&path) {
+            Ok(()) => format!("Saved {path}"),
+            Err(e) => format!("Save failed: {e}"),
+        });
+    }
+
+    /// Prompt for a path and open a project. Returns true if a project loaded
+    /// (so the host re-meshes).
+    fn open_project(&mut self) -> bool {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Riemanifold project", &["rmf"])
+            .pick_file()
+        else {
+            return false; // cancelled
+        };
+        let path = path.to_string_lossy().to_string();
+        match self.load_project_from(&path) {
+            Ok(()) => {
+                self.status = Some(format!("Opened {path}"));
+                true
+            }
+            Err(e) => {
+                self.status = Some(format!("Open failed: {e}"));
+                false
+            }
+        }
     }
 
     /// A short readout for an in-progress gizmo drag (angle / distance), shown
@@ -878,6 +969,12 @@ impl Controller for Modeler {
         if resp.export_stl {
             self.export_stl();
         }
+        if resp.save_project {
+            self.save_project();
+        }
+        if resp.open_project {
+            changed |= self.open_project();
+        }
 
         // --- Status line (export result, etc.) at the bottom of the viewport ---
         if let Some(status) = &self.status {
@@ -1287,6 +1384,33 @@ fn main() -> anyhow::Result<()> {
             cached,
             uncached / cached,
         );
+        return Ok(());
+    }
+
+    // Verification aid: save then reload the default project, no dialogs.
+    if std::env::args().any(|a| a == "--project-test") {
+        std::fs::create_dir_all("out")?;
+        let path = "out/project-test.rmf";
+        let before = modeler.doc.history.len();
+        if let Err(e) = modeler.save_project_to(path) {
+            println!("save failed: {e}");
+            return Ok(());
+        }
+        // Wipe the in-memory doc, then load it back from disk.
+        modeler.doc = Document::new("scratch");
+        match modeler.load_project_from(path) {
+            Ok(()) => {
+                let after = modeler.doc.history.len();
+                let mesh = modeler.mesh();
+                println!(
+                    "round-trip ok: {before} -> {after} features, name {:?}, {} verts, errors {:?}",
+                    modeler.doc.name,
+                    mesh.vertices.len(),
+                    modeler.ui.errors,
+                );
+            }
+            Err(e) => println!("load failed: {e}"),
+        }
         return Ok(());
     }
 
@@ -1701,6 +1825,27 @@ mod tests {
                 _ => None,
             });
         assert_eq!(fillet, Some(2));
+    }
+
+    #[test]
+    fn project_round_trips_through_an_rmf_file() {
+        let path = std::env::temp_dir().join("rmf-roundtrip-test.rmf");
+        let path = path.to_str().unwrap();
+        let mut m = Modeler::new();
+        let (features, name) = (m.doc.history.len(), m.doc.name.clone());
+
+        m.save_project_to(path).unwrap();
+        // Replace the document, then load it back from disk.
+        m.doc = Document::new("scratch");
+        m.load_project_from(path).unwrap();
+
+        assert_eq!(m.doc.history.len(), features);
+        assert_eq!(m.doc.name, name);
+        // The loaded document regenerates without error.
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        assert!(!mesh.vertices.is_empty());
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

@@ -44,6 +44,10 @@ pub struct HistoryResponse {
     pub start_sketch: bool,
     /// "Export STL" was clicked — the host should write the model to a file.
     pub export_stl: bool,
+    /// "Save" was clicked — the host should write the project to a file.
+    pub save_project: bool,
+    /// "Open" was clicked — the host should load a project from a file.
+    pub open_project: bool,
 }
 
 impl HistoryState {
@@ -104,6 +108,15 @@ pub fn history_panel(
                     .small()
                     .weak(),
             );
+
+            ui.horizontal(|ui| {
+                if ui.button("Open…").on_hover_text("Open a .rmf project").clicked() {
+                    resp.open_project = true;
+                }
+                if ui.button("Save…").on_hover_text("Save the project (.rmf)").clicked() {
+                    resp.save_project = true;
+                }
+            });
 
             ui.horizontal(|ui| {
                 if ui
