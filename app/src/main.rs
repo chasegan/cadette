@@ -154,6 +154,11 @@ struct SketchSession {
     selected_lines: Vec<LineId>,
     /// Remaining degrees of freedom from the last solve (for UI feedback).
     dof: usize,
+    /// The feature being re-edited, if this session reopened an existing sketch
+    /// — `finish` writes back to it in place. `None` for a brand-new sketch.
+    editing: Option<FeatureId>,
+    /// The point currently being dragged (Select tool), if any.
+    dragging: Option<PointId>,
 }
 
 /// A deferred edit to the sketch session, collected during egui drawing and
@@ -164,6 +169,12 @@ enum SketchAction {
     CloseLoop,
     PickAt(egui::Pos2),
     Apply(Constraint),
+    /// Begin dragging an existing point (Select tool).
+    GrabPoint(PointId),
+    /// Move the grabbed point to a new plane coordinate.
+    DragPointTo([f64; 2]),
+    /// End the point drag (re-solve).
+    ReleasePoint,
     Finish,
     Cancel,
 }
@@ -954,7 +965,41 @@ impl Modeler {
             selected_points: Vec::new(),
             selected_lines: Vec::new(),
             dof: 0,
+            editing: None,
+            dragging: None,
         });
+    }
+
+    /// Re-open an existing constraint sketch for editing: load its plane and
+    /// geometry into a Select-mode session bound to the feature. Returns true if
+    /// the feature was a constraint sketch.
+    fn edit_sketch(&mut self, id: FeatureId) -> bool {
+        let (plane, sketch) = match self.doc.history.get(id).map(|f| &f.kind) {
+            Some(FeatureKind::ConstraintSketch { plane, sketch }) => (*plane, sketch.clone()),
+            _ => return false,
+        };
+        self.sketch_session = Some(SketchSession {
+            plane,
+            sketch,
+            tool: SketchTool::Select,
+            start: None,
+            last: None,
+            closed: true,
+            selected_points: Vec::new(),
+            selected_lines: Vec::new(),
+            dof: 0,
+            editing: Some(id),
+            dragging: None,
+        });
+        self.selection.clear();
+        true
+    }
+
+    /// The selected body's feature id, if it is a constraint sketch (re-editable).
+    fn editable_sketch(&self) -> Option<FeatureId> {
+        let id = self.selected_body()?;
+        matches!(self.doc.history.get(id).map(|f| &f.kind), Some(FeatureKind::ConstraintSketch { .. }))
+            .then_some(id)
     }
 
     /// Re-solve the session sketch and record its remaining DOF.
@@ -976,13 +1021,21 @@ impl Modeler {
             return false;
         }
         let before = self.doc.clone();
-        let id = self.doc.add(
-            "Sketch",
-            FeatureKind::ConstraintSketch {
-                plane: session.plane,
-                sketch: session.sketch,
-            },
-        );
+        let kind = FeatureKind::ConstraintSketch {
+            plane: session.plane,
+            sketch: session.sketch,
+        };
+        let id = match session.editing {
+            // Re-editing: overwrite the existing feature so downstream rebuilds.
+            Some(id) => {
+                let Some(feature) = self.doc.history.get_mut(id) else {
+                    return false;
+                };
+                feature.kind = kind;
+                id
+            }
+            None => self.doc.add("Sketch", kind),
+        };
         self.record_undo(before);
         self.ui.selected = Some(id);
         true
@@ -1115,8 +1168,22 @@ impl Modeler {
             .show(ctx, |ui| {
                 let rect = ui.max_rect();
                 let response =
-                    ui.interact(rect, ui.id().with("sketch_canvas"), egui::Sense::click());
+                    ui.interact(rect, ui.id().with("sketch_canvas"), egui::Sense::click_and_drag());
                 let painter = ui.painter_at(rect);
+
+                // Nearest sketch point to a screen position, within a grab radius.
+                let nearest_point = |pos: egui::Pos2| -> Option<PointId> {
+                    let mut best = (10.0_f32, None);
+                    for (i, p) in session.sketch.points.iter().enumerate() {
+                        if let Some(sp) = proj(p.x, p.y) {
+                            let d = sp.distance(pos);
+                            if d < best.0 {
+                                best = (d, Some(PointId(i)));
+                            }
+                        }
+                    }
+                    best.1
+                };
 
                 for (i, line) in session.sketch.lines.iter().enumerate() {
                     let a = session.sketch.point(line.a);
@@ -1146,6 +1213,28 @@ impl Modeler {
                         if let Some(sp) = proj(s.x, s.y) {
                             painter.circle_stroke(sp, 6.0, egui::Stroke::new(1.5, accent));
                         }
+                    }
+                }
+
+                // Select tool: drag an existing point to move it.
+                if session.tool == SketchTool::Select {
+                    if response.drag_started() {
+                        if let Some(pid) =
+                            response.interact_pointer_pos().and_then(nearest_point)
+                        {
+                            actions.push(SketchAction::GrabPoint(pid));
+                        }
+                    }
+                    if response.dragged() {
+                        if let Some(uv) = response
+                            .interact_pointer_pos()
+                            .and_then(|pos| view.cursor_on_plane(pos, o, xd, yd, nd))
+                        {
+                            actions.push(SketchAction::DragPointTo(uv));
+                        }
+                    }
+                    if response.drag_stopped() {
+                        actions.push(SketchAction::ReleasePoint);
                     }
                 }
 
@@ -1215,6 +1304,29 @@ impl Modeler {
                     self.resolve_session();
                 }
                 SketchAction::PickAt(pos) => self.pick_entity(pos, view),
+                SketchAction::GrabPoint(pid) => {
+                    if let Some(s) = self.sketch_session.as_mut() {
+                        s.dragging = Some(pid);
+                    }
+                }
+                SketchAction::DragPointTo([u, v]) => {
+                    // Move the grabbed point directly (the session is a working
+                    // copy; the doc only changes on Finish).
+                    if let Some(s) = self.sketch_session.as_mut() {
+                        if let Some(pid) = s.dragging {
+                            if let Some(p) = s.sketch.points.get_mut(pid.0) {
+                                p.x = u;
+                                p.y = v;
+                            }
+                        }
+                    }
+                }
+                SketchAction::ReleasePoint => {
+                    if let Some(s) = self.sketch_session.as_mut() {
+                        s.dragging = None;
+                    }
+                    self.resolve_session(); // settle any constraints
+                }
                 SketchAction::Apply(constraint) => {
                     if let Some(s) = self.sketch_session.as_mut() {
                         s.sketch.add_constraint(constraint);
@@ -1331,14 +1443,23 @@ impl Controller for Modeler {
             let can_mirror = self.selection.face_plane.is_some();
             let can_ungroup =
                 self.selected_body().is_some_and(|b| self.group_and_chain(b).is_some());
-            let (mut sketch, mut fillet, mut mirror, mut ungroup) = (false, false, false, false);
+            // If the selected body IS a constraint sketch, offer to re-edit it
+            // instead of starting a new sketch on its plane.
+            let edit_sketch_id = self.editable_sketch();
+            let (mut sketch, mut fillet, mut mirror, mut ungroup, mut edit) =
+                (false, false, false, false, false);
             let mut flip: Option<Axis3> = None;
             #[allow(deprecated)]
             egui::Panel::top("selection_bar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Face selected");
                     ui.separator();
-                    if can_sketch {
+                    if edit_sketch_id.is_some() {
+                        edit = ui
+                            .button("✎ Edit sketch")
+                            .on_hover_text("Re-open this sketch to move its points")
+                            .clicked();
+                    } else if can_sketch {
                         sketch = ui.button("✏ Sketch on this face").clicked();
                     }
                     fillet = ui
@@ -1369,6 +1490,11 @@ impl Controller for Modeler {
                     }
                 });
             });
+            if edit {
+                if let Some(id) = edit_sketch_id {
+                    self.edit_sketch(id);
+                }
+            }
             if sketch {
                 self.sketch_on_selected_face();
             }
@@ -2744,6 +2870,46 @@ mod tests {
         assert!((max[2] - 15.0).abs() < 0.5, "top pushed to z=15, got {}", max[2]);
         // (push/pull rebuilding at all proves the kernel re-found the scaled
         // body's now-b-spline face as planar — same path sketch-on-face uses.)
+    }
+
+    #[test]
+    fn editing_a_sketch_moves_a_point_in_place_and_rebuilds_downstream() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("sk");
+        // A right-triangle sketch on XY, extruded into a prism.
+        let mut s = Sketch2d::new();
+        let p0 = s.add_point(0.0, 0.0);
+        let p1 = s.add_point(20.0, 0.0);
+        let p2 = s.add_point(0.0, 20.0);
+        s.add_line(p0, p1);
+        s.add_line(p1, p2);
+        s.add_line(p2, p0);
+        let sk =
+            m.doc.add("Sketch", FeatureKind::ConstraintSketch { plane: SketchPlane::Xy, sketch: s });
+        m.doc.add("Extrude", FeatureKind::Extrude { source: sk, distance: 10.0 });
+        let mesh = m.mesh();
+        let (_, max0) = bounds(&mesh);
+        assert!((max0[0] - 20.0).abs() < 0.5, "prism starts 20 wide");
+
+        // Re-open the sketch for editing (loads a working copy bound to `sk`).
+        assert!(m.edit_sketch(sk));
+        assert_eq!(m.editable_sketch(), None, "selection cleared on edit");
+        assert!(m.sketch_session.is_some());
+        let n0 = m.doc.history.len();
+
+        // Move the (20,0) corner out to (40,0), as a point drag would.
+        if let Some(sess) = m.sketch_session.as_mut() {
+            sess.sketch.points[p1.0].x = 40.0;
+        }
+        assert!(m.finish_sketch());
+        assert_eq!(m.doc.history.len(), n0, "edit writes back in place — no new feature");
+        assert!(m.sketch_session.is_none(), "session ends on finish");
+
+        // The extrude downstream rebuilds wider (footprint now reaches x=40).
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        let (_, max) = bounds(&mesh);
+        assert!((max[0] - 40.0).abs() < 0.5, "moved corner widened the prism: {}", max[0]);
     }
 
     #[test]
