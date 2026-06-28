@@ -32,8 +32,12 @@ pub struct HistoryState {
     pub grid_spacing: f64,
     /// Total grid size (mm) across — the workplane's extent.
     pub grid_extent: f64,
-    /// Whether to draw the workplane grid.
+    /// Whether to draw the XY ground plane (the primary workplane).
     pub show_grid: bool,
+    /// Whether to draw the XZ origin plane (front) as a construction guide.
+    pub show_xz: bool,
+    /// Whether to draw the YZ origin plane (side) as a construction guide.
+    pub show_yz: bool,
     /// Whether moves/resizes snap to the grid.
     pub snap_to_grid: bool,
 }
@@ -49,6 +53,8 @@ impl Default for HistoryState {
             grid_spacing: 1.0,
             grid_extent: 200.0,
             show_grid: true,
+            show_xz: false,
+            show_yz: false,
             snap_to_grid: true,
         }
     }
@@ -181,8 +187,13 @@ pub fn history_panel(
                 .on_hover_text("Total grid size (extent)");
             });
             ui.horizontal(|ui| {
-                ui.checkbox(&mut state.show_grid, "Show")
-                    .on_hover_text("Show the ground-plane grid");
+                ui.label("Planes");
+                ui.checkbox(&mut state.show_grid, "XY")
+                    .on_hover_text("Ground plane (workplane)");
+                ui.checkbox(&mut state.show_xz, "XZ")
+                    .on_hover_text("Front origin plane (guide)");
+                ui.checkbox(&mut state.show_yz, "YZ")
+                    .on_hover_text("Side origin plane (guide)");
                 ui.checkbox(&mut state.snap_to_grid, "Snap")
                     .on_hover_text("Snap moves and resizes to the grid (Alt overrides)");
             });

@@ -1376,6 +1376,8 @@ impl Controller for Modeler {
             spacing: self.ui.grid_spacing as f32,
             half_extent: (self.ui.grid_extent / 2.0) as f32,
             visible: self.ui.show_grid,
+            xz: self.ui.show_xz,
+            yz: self.ui.show_yz,
             snap: self.ui.snap_to_grid,
         }
     }
@@ -1838,6 +1840,18 @@ fn main() -> anyhow::Result<()> {
     // Verification aid: an in-progress rotation, so the gizmo readout (an egui
     // overlay only shown mid-drag) renders headlessly. Uses a negative angle to
     // exercise the worst-case width.
+    if std::env::args().any(|a| a == "--planes-demo") {
+        // All three origin planes on, as construction guides.
+        modeler.ui.show_xz = true;
+        modeler.ui.show_yz = true;
+        let _ = modeler.mesh();
+        let path = "out/planes-demo.png";
+        std::fs::create_dir_all("out")?;
+        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        println!("wrote {path}");
+        return Ok(());
+    }
+
     if std::env::args().any(|a| a == "--resize-demo") {
         // The default (non-primitive) part, one face selected, so the bbox resize
         // grips show on a filleted/booleaned body alongside the move/rotate gizmo.

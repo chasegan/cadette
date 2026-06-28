@@ -129,22 +129,34 @@ pub trait Controller {
     }
 }
 
-/// The ground-plane grid configuration.
+/// The construction-grid configuration: spacing/extent shared by the three
+/// origin planes, plus which of them to draw as guides.
 #[derive(Clone, Copy)]
 pub struct GridSpec {
     /// Cell spacing (mm) — line density and snap increment. `<= 0` disables.
     pub spacing: f32,
     /// Half the total grid size (mm); the grid spans `[-half_extent, half_extent]`.
     pub half_extent: f32,
-    /// Whether to draw the workplane overlay.
+    /// Whether to draw the XY ground plane (the primary workplane).
     pub visible: bool,
+    /// Whether to draw the XZ origin plane (vertical, front) as a guide.
+    pub xz: bool,
+    /// Whether to draw the YZ origin plane (vertical, side) as a guide.
+    pub yz: bool,
     /// Whether moves/resizes snap to the grid.
     pub snap: bool,
 }
 
 impl Default for GridSpec {
     fn default() -> Self {
-        GridSpec { spacing: 0.0, half_extent: 0.0, visible: false, snap: false }
+        GridSpec {
+            spacing: 0.0,
+            half_extent: 0.0,
+            visible: false,
+            xz: false,
+            yz: false,
+            snap: false,
+        }
     }
 }
 
@@ -1772,8 +1784,8 @@ fn make_gizmo_buffer(device: &wgpu::Device) -> wgpu::Buffer {
 const GRID_Z: f32 = -0.05;
 /// Don't draw minor lines once they'd be denser than this (keeps it readable).
 const GRID_MAX_LINES: f32 = 240.0;
-/// Capacity of the persistent grid vertex buffer.
-const GRID_MAX_VERTS: u64 = 4096;
+/// Capacity of the persistent grid vertex buffer (sized for all three planes).
+const GRID_MAX_VERTS: u64 = 12288;
 
 fn make_grid_buffer(device: &wgpu::Device) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
@@ -1784,13 +1796,30 @@ fn make_grid_buffer(device: &wgpu::Device) -> wgpu::Buffer {
     })
 }
 
-/// Line geometry for the finite z=0 workplane grid: faint minor lines at the
-/// grid spacing, brighter major lines every 10, and colored X/Y axis lines.
-/// Minor lines drop out when the spacing would make them too dense to read.
+/// Line geometry for the origin-plane construction grids: each enabled plane
+/// gets faint minor lines at the grid spacing, brighter major lines every 10,
+/// and colored axis lines. The XY ground sits just below z=0 (so it doesn't
+/// z-fight a model base on the plane); the vertical guides pass through origin.
 fn grid_geometry(spec: GridSpec) -> Vec<GizmoVertex> {
-    if !spec.visible || spec.spacing <= 0.0 || spec.half_extent <= 0.0 {
+    if spec.spacing <= 0.0 || spec.half_extent <= 0.0 {
         return Vec::new();
     }
+    let mut v = Vec::new();
+    if spec.visible {
+        plane_grid(&mut v, spec, Axis3::X, Axis3::Y, Axis3::Z, GRID_Z);
+    }
+    if spec.xz {
+        plane_grid(&mut v, spec, Axis3::X, Axis3::Z, Axis3::Y, 0.0);
+    }
+    if spec.yz {
+        plane_grid(&mut v, spec, Axis3::Y, Axis3::Z, Axis3::X, 0.0);
+    }
+    v
+}
+
+/// Append one plane's grid to `v`. The plane spans world axes `ua`/`va`, sits at
+/// `offset` along its normal `na`; the in-plane axis lines take their axis color.
+fn plane_grid(v: &mut Vec<GizmoVertex>, spec: GridSpec, ua: Axis3, va: Axis3, na: Axis3, offset: f32) {
     let ext = spec.half_extent;
     // Cap the visual density: clamp the line spacing so there are never more than
     // ~GRID_MAX_LINES lines across (keeps a huge extent / tiny spacing readable
@@ -1799,10 +1828,11 @@ fn grid_geometry(spec: GridSpec) -> Vec<GizmoVertex> {
     let draw_minor = spec.spacing >= 2.0 * ext / GRID_MAX_LINES;
     let minor_c = rgba([0.58, 0.60, 0.66], 0.16);
     let major_c = rgba([0.62, 0.64, 0.70], 0.38);
-    let x_axis_c = rgba(Axis3::X.color(), 0.55);
-    let y_axis_c = rgba(Axis3::Y.color(), 0.55);
+    let ua_c = rgba(ua.color(), 0.55);
+    let va_c = rgba(va.color(), 0.55);
 
-    let mut v = Vec::new();
+    let normal = na.dir() * offset;
+    let world = |a: f32, b: f32| ua.dir() * a + va.dir() * b + normal;
     let mut line = |a: Vec3, b: Vec3, c: [f32; 4]| {
         v.push(GizmoVertex { position: a.to_array(), color: c });
         v.push(GizmoVertex { position: b.to_array(), color: c });
@@ -1815,20 +1845,11 @@ fn grid_geometry(spec: GridSpec) -> Vec<GizmoVertex> {
         }
         let p = i as f32 * minor;
         let base = if on_major { major_c } else { minor_c };
-        // Constant-x line (runs along Y); at x=0 it is the Y axis.
-        line(
-            Vec3::new(p, -ext, GRID_Z),
-            Vec3::new(p, ext, GRID_Z),
-            if i == 0 { y_axis_c } else { base },
-        );
-        // Constant-y line (runs along X); at y=0 it is the X axis.
-        line(
-            Vec3::new(-ext, p, GRID_Z),
-            Vec3::new(ext, p, GRID_Z),
-            if i == 0 { x_axis_c } else { base },
-        );
+        // Constant-`ua` line (runs along `va`); at ua=0 it is the `va` axis.
+        line(world(p, -ext), world(p, ext), if i == 0 { va_c } else { base });
+        // Constant-`va` line (runs along `ua`); at va=0 it is the `ua` axis.
+        line(world(-ext, p), world(ext, p), if i == 0 { ua_c } else { base });
     }
-    v
 }
 
 fn make_mesh_buffers(
