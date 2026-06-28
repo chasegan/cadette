@@ -15,6 +15,7 @@
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
@@ -50,6 +51,9 @@
 #include <Standard_Failure.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Trsf.hxx>
+#include <gp_GTrsf.hxx>
+#include <gp_Mat.hxx>
+#include <gp_XYZ.hxx>
 #include <gp_Vec.hxx>
 
 namespace rmf {
@@ -251,6 +255,21 @@ std::unique_ptr<Shape> rotate(const Shape& s, double cx, double cy, double cz,
     gp_Trsf t;
     t.SetRotation(gp_Ax1(gp_Pnt(cx, cy, cz), gp_Dir(ax, ay, az)), angle);
     BRepBuilderAPI_Transform xf(s.shape, t, /*copy=*/true);
+    return std::make_unique<Shape>(xf.Shape());
+  });
+}
+
+// Non-uniform scale about an anchor: p' = anchor + diag(sx,sy,sz)*(p - anchor).
+// A general (anisotropic) scale needs gp_GTrsf + BRepBuilderAPI_GTransform; the
+// uniform gp_Trsf::SetScale can't do per-axis factors. GTransform may convert
+// surfaces to b-splines, so it's the right tool for resizing arbitrary bodies.
+std::unique_ptr<Shape> scale(const Shape& s, double sx, double sy, double sz,
+                             double ax, double ay, double az) {
+  return guard("scale", [&] {
+    gp_GTrsf t;
+    t.SetVectorialPart(gp_Mat(sx, 0, 0, 0, sy, 0, 0, 0, sz));
+    t.SetTranslationPart(gp_XYZ(ax * (1.0 - sx), ay * (1.0 - sy), az * (1.0 - sz)));
+    BRepBuilderAPI_GTransform xf(s.shape, t, /*copy=*/true);
     return std::make_unique<Shape>(xf.Shape());
   });
 }

@@ -62,6 +62,9 @@ std::unique_ptr<Shape> common(const Shape& a, const Shape& b);
 std::unique_ptr<Shape> rotate(const Shape& s, double cx, double cy, double cz,
                               double ax, double ay, double az, double angle);
 
+std::unique_ptr<Shape> scale(const Shape& s, double sx, double sy, double sz,
+                             double ax, double ay, double az);
+
 std::unique_ptr<Shape> copy_shape(const Shape& s);
 std::unique_ptr<Shape> compound(const Shape& a, const Shape& b);
 

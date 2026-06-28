@@ -185,19 +185,55 @@ struct TransformDrag {
     pivot: Option<[f64; 3]>,
 }
 
-/// Active resize drag: the primitive `Box` feature being resized, its size when
-/// the drag began (to restore on cancel and detect a no-op), and whether any
-/// update has changed it yet (the first change records one undo entry).
+/// How an active resize edits the model.
+enum ResizeMode {
+    /// Edit a bare primitive `Box`'s `size` in place — parametric, no new
+    /// feature (only when the selected body's tip feature is a `Box`).
+    BoxDim,
+    /// Apply a non-uniform `Scale` feature to the body — works on any body
+    /// (extrudes, booleans, fillets, …), Tinkercad-style.
+    Scale,
+}
+
+/// Active resize drag (a bounding-box grip).
 struct ResizeDrag {
-    feature: FeatureId,
-    base_size: DVec3,
+    /// The body being resized: the `Box` (BoxDim) or the `Scale` source.
+    source: FeatureId,
+    mode: ResizeMode,
+    /// The body's bbox extents at grab — the base for the new dimension (BoxDim)
+    /// or the scale factor (Scale). For a `Box` this equals its `size`.
+    base_extent: DVec3,
+    /// Bbox-min corner (the fixed anchor) for a `Scale`.
+    anchor: DVec3,
+    /// The `Scale` feature added on the first drag (always `None` for BoxDim,
+    /// which edits the `Box` in place; `None` until the first `Scale` change).
+    feature: Option<FeatureId>,
+    /// Whether any update has changed geometry yet (the first records one undo).
     changed: bool,
 }
 
-/// Bounding-box center of a flat `[x,y,z,...]` position array.
-fn positions_center(positions: &[f32]) -> [f64; 3] {
+/// The value of `v`'s component along `axis`.
+fn axis_get(v: DVec3, axis: Axis3) -> f64 {
+    match axis {
+        Axis3::X => v.x,
+        Axis3::Y => v.y,
+        Axis3::Z => v.z,
+    }
+}
+
+/// Set `v`'s component along `axis` to `val`.
+fn axis_set(v: &mut DVec3, axis: Axis3, val: f64) {
+    match axis {
+        Axis3::X => v.x = val,
+        Axis3::Y => v.y = val,
+        Axis3::Z => v.z = val,
+    }
+}
+
+/// Axis-aligned bounds `(min, max)` of a flat `[x,y,z,...]` position array.
+fn positions_bounds(positions: &[f32]) -> ([f64; 3], [f64; 3]) {
     if positions.is_empty() {
-        return [0.0; 3];
+        return ([0.0; 3], [0.0; 3]);
     }
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
@@ -207,10 +243,19 @@ fn positions_center(positions: &[f32]) -> [f64; 3] {
             max[k] = max[k].max(p[k]);
         }
     }
+    (
+        [min[0] as f64, min[1] as f64, min[2] as f64],
+        [max[0] as f64, max[1] as f64, max[2] as f64],
+    )
+}
+
+/// Bounding-box center of a flat `[x,y,z,...]` position array.
+fn positions_center(positions: &[f32]) -> [f64; 3] {
+    let (min, max) = positions_bounds(positions);
     [
-        ((min[0] + max[0]) * 0.5) as f64,
-        ((min[1] + max[1]) * 0.5) as f64,
-        ((min[2] + max[2]) * 0.5) as f64,
+        (min[0] + max[0]) * 0.5,
+        (min[1] + max[1]) * 0.5,
+        (min[2] + max[2]) * 0.5,
     ]
 }
 
@@ -246,6 +291,9 @@ struct Modeler {
     /// Bounding-box center of each visible body (aligned with `ui.visible`), the
     /// gizmo origin for that body.
     body_centers: Vec<[f64; 3]>,
+    /// World-space AABB `(min, max)` of each visible body (aligned with
+    /// `ui.visible`) — drives the resize grips' placement and extents.
+    body_bounds: Vec<([f64; 3], [f64; 3])>,
     /// World-space anchor point for each selected edge (keyed by its global pick
     /// id), captured at click time so each edge in a multi-selection keeps its
     /// own durable fillet anchor.
@@ -275,6 +323,7 @@ impl Modeler {
             face_ranges: Vec::new(),
             edge_ranges: Vec::new(),
             body_centers: Vec::new(),
+            body_bounds: Vec::new(),
             edge_anchors: HashMap::new(),
             manipulation: None,
             transform: None,
@@ -1150,12 +1199,14 @@ impl Controller for Modeler {
         self.face_ranges.clear();
         self.edge_ranges.clear();
         self.body_centers.clear();
+        self.body_bounds.clear();
         for body in &bodies {
             self.face_ranges.push(face_offset);
             self.edge_ranges.push(edge_offset);
             match body.tessellate(DEFLECTION_MM) {
                 Ok(part) => {
                     self.body_centers.push(positions_center(&part.positions));
+                    self.body_bounds.push(positions_bounds(&part.positions));
                     let base = mesh.vertices.len() as u32;
                     let face_ids: Vec<u32> =
                         part.face_ids.iter().map(|f| f + face_offset).collect();
@@ -1181,6 +1232,7 @@ impl Controller for Modeler {
                 }
                 Err(e) => {
                     self.body_centers.push([0.0; 3]); // keep aligned with visible
+                    self.body_bounds.push(([0.0; 3], [0.0; 3]));
                     self.ui.errors.push((rmf_core::FeatureId(0), e.to_string()));
                 }
             }
@@ -1405,65 +1457,109 @@ impl Controller for Modeler {
     }
 
     fn resize_box(&self) -> Option<ResizeBox> {
-        // Only a single selected face of a primitive Box (the body's tip
-        // feature) resizes — a moved/filleted/booleaned box isn't a bare Box.
+        // Grips show on the bounding box of any single-face-selected body.
         if !matches!(self.selection.selected(), [Pick::Face(_)]) {
             return None;
         }
         let body = self.selected_body()?;
-        let size = match &self.doc.history.get(body)?.kind {
-            FeatureKind::Box { size } => *size,
-            _ => return None,
-        };
-        // A Box primitive spans [0, size] from the origin.
-        Some(ResizeBox { min: [0.0; 3], max: size.to_array() })
+        let idx = self.ui.visible.iter().position(|&f| f == body)?;
+        let (min, max) = self.body_bounds.get(idx).copied()?;
+        // Skip a degenerate (zero-thickness) body — nothing to grab.
+        let span = (max[0] - min[0]).max(max[1] - min[1]).max(max[2] - min[2]);
+        (span >= 1e-6).then_some(ResizeBox { min, max })
     }
 
     fn start_resize(&mut self, _axis: Axis3) {
-        let Some(feature) = self.selected_body() else {
+        let Some(source) = self.selected_body() else {
             return;
         };
-        let base_size = match self.doc.history.get(feature).map(|f| &f.kind) {
-            Some(FeatureKind::Box { size }) => *size,
-            _ => return,
+        let Some(idx) = self.ui.visible.iter().position(|&f| f == source) else {
+            return;
         };
-        self.resize = Some(ResizeDrag { feature, base_size, changed: false });
+        let Some((min, max)) = self.body_bounds.get(idx).copied() else {
+            return;
+        };
+        let base_extent = DVec3::new(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
+        // A bare Box edits its dimension parametrically; anything else scales.
+        let mode = match self.doc.history.get(source).map(|f| &f.kind) {
+            Some(FeatureKind::Box { .. }) => ResizeMode::BoxDim,
+            _ => ResizeMode::Scale,
+        };
+        self.resize = Some(ResizeDrag {
+            source,
+            mode,
+            base_extent,
+            anchor: DVec3::from_array(min),
+            feature: None,
+            changed: false,
+        });
     }
 
     fn update_resize(&mut self, axis: Axis3, extent: f64) -> bool {
         let Some(mut r) = self.resize.take() else {
             return false;
         };
-        let mut new_size = r.base_size;
-        let e = extent.max(MIN_DIM);
-        match axis {
-            Axis3::X => new_size.x = e,
-            Axis3::Y => new_size.y = e,
-            Axis3::Z => new_size.z = e,
-        }
-        let cur = match self.doc.history.get(r.feature).map(|f| &f.kind) {
-            Some(FeatureKind::Box { size }) => *size,
-            _ => {
-                self.resize = Some(r);
-                return false;
+        let target = extent.max(MIN_DIM);
+        let changed = match r.mode {
+            ResizeMode::BoxDim => {
+                let cur = match self.doc.history.get(r.source).map(|f| &f.kind) {
+                    Some(FeatureKind::Box { size }) => *size,
+                    _ => {
+                        self.resize = Some(r);
+                        return false;
+                    }
+                };
+                let mut new_size = cur;
+                axis_set(&mut new_size, axis, target);
+                if cur.abs_diff_eq(new_size, 1e-9) {
+                    false
+                } else {
+                    if !r.changed {
+                        self.record_undo(self.doc.clone());
+                        r.changed = true;
+                    }
+                    if let Some(FeatureKind::Box { size }) =
+                        self.doc.history.get_mut(r.source).map(|f| &mut f.kind)
+                    {
+                        *size = new_size;
+                    }
+                    true
+                }
+            }
+            ResizeMode::Scale => {
+                let base = axis_get(r.base_extent, axis);
+                if base < 1e-6 {
+                    self.resize = Some(r);
+                    return false; // can't scale a zero-thickness axis
+                }
+                let mut factors = DVec3::ONE;
+                axis_set(&mut factors, axis, (target / base).max(1e-4));
+                match r.feature {
+                    None if factors.abs_diff_eq(DVec3::ONE, 1e-9) => false, // no-op yet
+                    None => {
+                        self.record_undo(self.doc.clone());
+                        r.changed = true;
+                        let id = self.doc.add(
+                            "Resize",
+                            FeatureKind::Scale { source: r.source, factors, anchor: r.anchor },
+                        );
+                        r.feature = Some(id);
+                        self.ui.selected = Some(id);
+                        true
+                    }
+                    Some(id) => {
+                        if let Some(FeatureKind::Scale { factors: f, .. }) =
+                            self.doc.history.get_mut(id).map(|f| &mut f.kind)
+                        {
+                            *f = factors;
+                        }
+                        true
+                    }
+                }
             }
         };
-        if cur.abs_diff_eq(new_size, 1e-9) {
-            self.resize = Some(r);
-            return false;
-        }
-        if !r.changed {
-            // First real change: one undo entry covering the whole drag.
-            self.record_undo(self.doc.clone());
-            r.changed = true;
-        }
-        if let Some(FeatureKind::Box { size }) =
-            self.doc.history.get_mut(r.feature).map(|f| &mut f.kind)
-        {
-            *size = new_size;
-        }
         self.resize = Some(r);
-        true
+        changed
     }
 
     fn finish_resize(&mut self, commit: bool) {
@@ -1473,14 +1569,33 @@ impl Controller for Modeler {
         if !r.changed {
             return; // a grip click that never dragged
         }
-        if !commit {
-            // Cancel: restore the original size and drop the undo entry.
-            if let Some(FeatureKind::Box { size }) =
-                self.doc.history.get_mut(r.feature).map(|f| &mut f.kind)
-            {
-                *size = r.base_size;
+        match r.mode {
+            ResizeMode::BoxDim => {
+                if !commit {
+                    // Cancel: restore the size (== base extents) and drop the undo.
+                    if let Some(FeatureKind::Box { size }) =
+                        self.doc.history.get_mut(r.source).map(|f| &mut f.kind)
+                    {
+                        *size = r.base_extent;
+                    }
+                    self.undo.pop();
+                }
             }
-            self.undo.pop();
+            ResizeMode::Scale => {
+                if let Some(id) = r.feature {
+                    // Discard a cancelled or no-op (≈identity) scale.
+                    let noop = match self.doc.history.get(id).map(|f| &f.kind) {
+                        Some(FeatureKind::Scale { factors, .. }) => {
+                            factors.abs_diff_eq(DVec3::ONE, 1e-6)
+                        }
+                        _ => true,
+                    };
+                    if !commit || noop {
+                        self.doc.history.remove(id);
+                        self.undo.pop();
+                    }
+                }
+            }
         }
     }
 }
@@ -1667,11 +1782,8 @@ fn main() -> anyhow::Result<()> {
     // overlay only shown mid-drag) renders headlessly. Uses a negative angle to
     // exercise the worst-case width.
     if std::env::args().any(|a| a == "--resize-demo") {
-        // A clean single box, one face selected, so the bbox resize grips show
-        // alongside the move/rotate gizmo.
-        let mut doc = Document::new("resize");
-        doc.add("Box", FeatureKind::Box { size: DVec3::new(40.0, 26.0, 18.0) });
-        std::mem::swap(&mut modeler.doc, &mut doc);
+        // The default (non-primitive) part, one face selected, so the bbox resize
+        // grips show on a filleted/booleaned body alongside the move/rotate gizmo.
         let _ = modeler.mesh();
         modeler.on_pick(Some(Pick::Face(0)), None, false);
         let path = "out/resize-demo.png";
@@ -1821,6 +1933,7 @@ mod tests {
             face_ranges: Vec::new(),
             edge_ranges: Vec::new(),
             body_centers: Vec::new(),
+            body_bounds: Vec::new(),
             edge_anchors: HashMap::new(),
             manipulation: None,
             transform: None,
@@ -1985,7 +2098,7 @@ mod tests {
     }
 
     #[test]
-    fn a_moved_box_is_not_resizable() {
+    fn a_non_primitive_body_resizes_via_a_scale_feature() {
         use rmf_render::Axis3;
         let mut m = Modeler::new();
         m.doc = Document::new("one");
@@ -1994,10 +2107,52 @@ mod tests {
         m.doc.add("Move", FeatureKind::Translate { source: b, offset: DVec3::new(5.0, 0.0, 0.0) });
         let _ = m.mesh();
         m.on_pick(Some(Pick::Face(0)), None, false);
-        assert!(m.resize_box().is_none(), "only a bare Box primitive resizes");
-        // start_resize on a non-Box is a no-op (nothing to resize).
+
+        // Grips still show (on the moved body's bbox: x in [5,15]).
+        let rb = m.resize_box().expect("grips on any body's bbox");
+        assert!((rb.min[0] - 5.0).abs() < 0.1 && (rb.max[0] - 15.0).abs() < 0.1);
+
+        // A drag adds a Scale feature (not a dimension edit) and rebuilds bigger.
+        let n0 = m.doc.history.len();
         m.start_resize(Axis3::X);
-        assert!(!m.update_resize(Axis3::X, 20.0));
+        assert!(m.update_resize(Axis3::X, 20.0)); // factor 2.0 about x=5
+        assert_eq!(m.doc.history.len(), n0 + 1, "a Scale feature was added");
+        let added_scale = m
+            .doc
+            .history
+            .features()
+            .iter()
+            .any(|f| matches!(&f.kind, FeatureKind::Scale { .. }));
+        assert!(added_scale, "the new feature is a Scale");
+        m.finish_resize(true);
+
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        let (min, max) = bounds(&mesh);
+        // Anchored at x=5, factor 2 → x now spans [5,25] = 20 wide; y unchanged.
+        assert!((max[0] - min[0] - 20.0).abs() < 0.2, "x span {min:?}..{max:?}");
+        assert!((max[1] - min[1] - 10.0).abs() < 0.2, "y span unchanged");
+        assert!((min[0] - 5.0).abs() < 0.2, "anchored at the -x face");
+    }
+
+    #[test]
+    fn a_cancelled_scale_resize_is_discarded() {
+        use rmf_render::Axis3;
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        let b = m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        m.doc.add("Move", FeatureKind::Translate { source: b, offset: DVec3::new(5.0, 0.0, 0.0) });
+        let _ = m.mesh();
+        m.on_pick(Some(Pick::Face(0)), None, false);
+
+        let n0 = m.doc.history.len();
+        let undo0 = m.undo.len();
+        m.start_resize(Axis3::Z);
+        assert!(m.update_resize(Axis3::Z, 30.0));
+        m.finish_resize(false); // cancel
+
+        assert_eq!(m.doc.history.len(), n0, "the Scale feature is removed");
+        assert_eq!(m.undo.len(), undo0, "its undo entry is dropped");
     }
 
     #[test]
@@ -2367,6 +2522,7 @@ mod tests {
             face_ranges: Vec::new(),
             edge_ranges: Vec::new(),
             body_centers: Vec::new(),
+            body_bounds: Vec::new(),
             edge_anchors: HashMap::new(),
             manipulation: None,
             transform: None,

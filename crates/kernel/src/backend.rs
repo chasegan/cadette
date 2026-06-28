@@ -113,4 +113,13 @@ impl GeometryBackend for KernelBackend {
     ) -> Result<Solid, KernelError> {
         body.rotate(center.to_array(), axis.to_array(), angle)
     }
+
+    fn scale(
+        &mut self,
+        body: &Solid,
+        factors: DVec3,
+        anchor: DVec3,
+    ) -> Result<Solid, KernelError> {
+        body.scale(factors.to_array(), anchor.to_array())
+    }
 }

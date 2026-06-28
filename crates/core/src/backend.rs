@@ -78,4 +78,13 @@ pub trait GeometryBackend {
         axis: DVec3,
         angle: f64,
     ) -> Result<Self::Body, Self::Error>;
+
+    /// Non-uniformly scale `body` by per-axis `factors` about the fixed point
+    /// `anchor`: a point `p` maps to `anchor + factors * (p - anchor)`.
+    fn scale(
+        &mut self,
+        body: &Self::Body,
+        factors: DVec3,
+        anchor: DVec3,
+    ) -> Result<Self::Body, Self::Error>;
 }

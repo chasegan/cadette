@@ -86,6 +86,10 @@ impl GeometryBackend for Counting {
         self.ops += 1;
         Ok(format!("rot({b},{angle})"))
     }
+    fn scale(&mut self, b: &String, f: DVec3, _anchor: DVec3) -> Result<String, String> {
+        self.ops += 1;
+        Ok(format!("scale({b},{},{},{})", f.x, f.y, f.z))
+    }
 }
 
 /// A 3-step chain: box -> move -> fillet. Returns (doc, [box, move, fillet]).

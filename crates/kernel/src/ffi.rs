@@ -121,6 +121,15 @@ pub mod ffi {
             angle: f64,
         ) -> Result<UniquePtr<Shape>>;
 
+        /// Non-uniformly scale `shape` by `(sx,sy,sz)` about the fixed point
+        /// `(ax,ay,az)`.
+        #[allow(clippy::too_many_arguments)]
+        fn scale(
+            shape: &Shape,
+            sx: f64, sy: f64, sz: f64,
+            ax: f64, ay: f64, az: f64,
+        ) -> Result<UniquePtr<Shape>>;
+
         // --- Booleans -----------------------------------------------------
         fn fuse(a: &Shape, b: &Shape) -> Result<UniquePtr<Shape>>;
         fn cut(a: &Shape, b: &Shape) -> Result<UniquePtr<Shape>>;

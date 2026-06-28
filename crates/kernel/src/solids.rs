@@ -101,6 +101,14 @@ impl Solid {
         )?))
     }
 
+    /// A copy of this solid non-uniformly scaled by per-axis `factors` about the
+    /// fixed point `anchor`.
+    pub fn scale(&self, factors: [f64; 3], anchor: [f64; 3]) -> Result<Self> {
+        Ok(Self::wrap(ffi::scale(
+            &self.0, factors[0], factors[1], factors[2], anchor[0], anchor[1], anchor[2],
+        )?))
+    }
+
     /// Extrude this planar face along its normal by `distance` into a solid.
     pub fn extrude(&self, distance: f64) -> Result<Self> {
         Ok(Self::wrap(ffi::extrude(&self.0, distance)?))

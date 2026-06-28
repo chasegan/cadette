@@ -520,6 +520,12 @@ fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
         FeatureKind::Boolean { op, .. } => {
             changed |= boolean_op(ui, op);
         }
+        FeatureKind::Scale { factors, .. } => {
+            // Per-axis scale multipliers (1.0 = unchanged).
+            changed |= drag(ui, "Scale X", &mut factors.x);
+            changed |= drag(ui, "Scale Y", &mut factors.y);
+            changed |= drag(ui, "Scale Z", &mut factors.z);
+        }
     }
 
     changed

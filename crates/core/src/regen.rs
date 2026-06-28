@@ -326,5 +326,13 @@ where
             let body = input(*source)?;
             backend.rotate(body, *center, *axis, *angle).map_err(backend_err)
         }
+        FeatureKind::Scale {
+            source,
+            factors,
+            anchor,
+        } => {
+            let body = input(*source)?;
+            backend.scale(body, *factors, *anchor).map_err(backend_err)
+        }
     }
 }

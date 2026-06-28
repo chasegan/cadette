@@ -111,6 +111,15 @@ pub enum FeatureKind {
         angle: f64,
         center: DVec3,
     },
+
+    /// Non-uniformly scale `source` by per-axis `factors` about the fixed point
+    /// `anchor` (used by the resize grips on non-primitive bodies). A point `p`
+    /// maps to `anchor + factors * (p - anchor)`.
+    Scale {
+        source: FeatureId,
+        factors: DVec3,
+        anchor: DVec3,
+    },
 }
 
 impl FeatureKind {
@@ -129,6 +138,7 @@ impl FeatureKind {
             FeatureKind::Extrude { source, .. } => vec![*source],
             FeatureKind::PushPull { source, .. } => vec![*source],
             FeatureKind::Rotate { source, .. } => vec![*source],
+            FeatureKind::Scale { source, .. } => vec![*source],
             FeatureKind::Boolean { target, tool, .. } => vec![*target, *tool],
         }
     }
@@ -143,7 +153,8 @@ impl FeatureKind {
             | FeatureKind::Fillet { source, .. }
             | FeatureKind::Extrude { source, .. }
             | FeatureKind::PushPull { source, .. }
-            | FeatureKind::Rotate { source, .. } => Some(*source),
+            | FeatureKind::Rotate { source, .. }
+            | FeatureKind::Scale { source, .. } => Some(*source),
             // Heal to the kept body of a boolean.
             FeatureKind::Boolean { target, .. } => Some(*target),
             _ => None,
@@ -163,7 +174,8 @@ impl FeatureKind {
             | FeatureKind::Fillet { source, .. }
             | FeatureKind::Extrude { source, .. }
             | FeatureKind::PushPull { source, .. }
-            | FeatureKind::Rotate { source, .. } => swap(source),
+            | FeatureKind::Rotate { source, .. }
+            | FeatureKind::Scale { source, .. } => swap(source),
             FeatureKind::Boolean { target, tool, .. } => {
                 swap(target);
                 swap(tool);
@@ -187,6 +199,7 @@ impl FeatureKind {
             FeatureKind::Fillet { .. } => "Fillet",
             FeatureKind::PushPull { .. } => "Push/Pull",
             FeatureKind::Rotate { .. } => "Rotate",
+            FeatureKind::Scale { .. } => "Scale",
         }
     }
 }
