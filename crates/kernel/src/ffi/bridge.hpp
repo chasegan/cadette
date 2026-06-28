@@ -74,5 +74,6 @@ std::unique_ptr<Shape> fillet_edges(const Shape& s,
 Mesh tessellate(const Shape& s, double deflection);
 void write_stl(const Shape& s, rust::Str path, double deflection);
 PlaneFrame face_plane(const Shape& s, uint32_t index);
+rust::Vec<double> face_edge_midpoints(const Shape& s, uint32_t index);
 
 }  // namespace rmf

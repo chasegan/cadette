@@ -147,6 +147,10 @@ pub mod ffi {
 
         /// The plane of the face at `index` (TopExp order), for sketch-on-face.
         fn face_plane(shape: &Shape, index: u32) -> Result<PlaneFrame>;
+
+        /// Midpoints (flat x,y,z) of the edges bounding face `index`, for
+        /// filleting a whole face's edges.
+        fn face_edge_midpoints(shape: &Shape, index: u32) -> Result<Vec<f64>>;
     }
 }
 

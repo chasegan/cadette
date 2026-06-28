@@ -33,6 +33,8 @@
 #include <BRep_Tool.hxx>
 #include <BRep_Builder.hxx>
 #include <TopoDS_Compound.hxx>
+#include <TopoDS_Vertex.hxx>
+#include <Geom_Curve.hxx>
 #include <Poly_Triangulation.hxx>
 #include <Poly_PolygonOnTriangulation.hxx>
 #include <TColStd_Array1OfInteger.hxx>
@@ -508,6 +510,42 @@ PlaneFrame face_plane(const Shape& s, uint32_t index) {
       break;
     }
     return pf;
+  });
+}
+
+// Midpoints (flat x,y,z triples) of the edges bounding face `index` (TopExp
+// order, matching face_plane / picking). Used to fillet a whole face's edges:
+// the host turns each point into an edge anchor for fillet_edges.
+rust::Vec<double> face_edge_midpoints(const Shape& s, uint32_t index) {
+  return guard("face_edge_midpoints", [&] {
+    rust::Vec<double> out;
+    uint32_t i = 0;
+    for (TopExp_Explorer ex(s.shape, TopAbs_FACE); ex.More(); ex.Next(), ++i) {
+      if (i != index) continue;
+      const TopoDS_Face face = TopoDS::Face(ex.Current());
+      TopTools_IndexedMapOfShape edges;
+      TopExp::MapShapes(face, TopAbs_EDGE, edges);
+      for (int k = 1; k <= edges.Extent(); ++k) {
+        const TopoDS_Edge edge = TopoDS::Edge(edges(k));
+        gp_Pnt mid;
+        Standard_Real f, l;
+        Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, f, l);
+        if (!curve.IsNull()) {
+          mid = curve->Value(0.5 * (f + l)); // a point genuinely on the edge
+        } else {
+          TopoDS_Vertex v1, v2;
+          TopExp::Vertices(edge, v1, v2);
+          const gp_Pnt p1 = BRep_Tool::Pnt(v1), p2 = BRep_Tool::Pnt(v2);
+          mid = gp_Pnt((p1.X() + p2.X()) / 2, (p1.Y() + p2.Y()) / 2,
+                       (p1.Z() + p2.Z()) / 2);
+        }
+        out.push_back(mid.X());
+        out.push_back(mid.Y());
+        out.push_back(mid.Z());
+      }
+      break;
+    }
+    return out;
   });
 }
 

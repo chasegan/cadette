@@ -180,4 +180,11 @@ impl Solid {
             [pf.yx, pf.yy, pf.yz],
         )))
     }
+
+    /// Midpoints of the edges bounding face `index` (TopExp order) — a point on
+    /// each edge, for filleting a whole face's edges.
+    pub fn face_edge_midpoints(&self, index: u32) -> Result<Vec<[f64; 3]>> {
+        let flat = ffi::face_edge_midpoints(&self.0, index)?;
+        Ok(flat.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect())
+    }
 }

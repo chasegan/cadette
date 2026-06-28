@@ -521,6 +521,40 @@ impl Modeler {
         }
     }
 
+    /// Fillet all edges bounding the currently selected face, as one feature.
+    /// Returns true if a feature was added.
+    fn fillet_selected_face_edges(&mut self) -> bool {
+        let Some(Pick::Face(global)) = self.selection.primary() else {
+            return false;
+        };
+        let Some((body_index, local)) = self.locate_face(global) else {
+            return false;
+        };
+        let Some(source) = self.ui.visible.get(body_index).copied() else {
+            return false;
+        };
+        let Some(solid) = self.bodies.get(body_index) else {
+            return false;
+        };
+        let edges: Vec<EdgeAnchor> = match solid.face_edge_midpoints(local) {
+            Ok(points) => points
+                .into_iter()
+                .map(|p| EdgeAnchor { point: DVec3::from_array(p) })
+                .collect(),
+            Err(_) => return false,
+        };
+        if edges.is_empty() {
+            return false;
+        }
+        self.record_undo(self.doc.clone());
+        let id = self
+            .doc
+            .add("Fillet face", FeatureKind::Fillet { source, edges, radius: 2.0 });
+        self.ui.selected = Some(id);
+        self.selection.clear();
+        true
+    }
+
     /// Fillet the currently selected edges (each anchored at its clicked point),
     /// as one feature. Returns true if a feature was added.
     fn fillet_selected_edges(&mut self) -> bool {
@@ -935,18 +969,30 @@ impl Controller for Modeler {
         let mut sketch_actions: Vec<SketchAction> = Vec::new();
 
         // --- Selection action bar: contextual actions for the picked entity ---
-        if self.sketch_session.is_none() && self.selection.can_sketch_on_face() {
-            let mut start = false;
+        if self.sketch_session.is_none()
+            && matches!(self.selection.selected(), [Pick::Face(_)])
+        {
+            let can_sketch = self.selection.can_sketch_on_face();
+            let (mut sketch, mut fillet) = (false, false);
             #[allow(deprecated)]
             egui::Panel::top("selection_bar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Planar face selected");
+                    ui.label("Face selected");
                     ui.separator();
-                    start = ui.button("✏ Sketch on this face").clicked();
+                    if can_sketch {
+                        sketch = ui.button("✏ Sketch on this face").clicked();
+                    }
+                    fillet = ui
+                        .button("⌒ Fillet face edges")
+                        .on_hover_text("Round all edges bounding this face")
+                        .clicked();
                 });
             });
-            if start {
+            if sketch {
                 self.sketch_on_selected_face();
+            }
+            if fillet {
+                changed |= self.fillet_selected_face_edges();
             }
         } else if self.sketch_session.is_none() && self.selection.is_edges() {
             let n = self.selection.selected().len();
@@ -1907,6 +1953,27 @@ mod tests {
                 _ => None,
             });
         assert_eq!(fillet, Some(2));
+    }
+
+    #[test]
+    fn fillet_face_edges_rounds_the_face_perimeter() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let _ = m.mesh();
+
+        // Select a face, then fillet all its edges.
+        m.selection.select(Some(Pick::Face(0)), false, None);
+        assert!(m.fillet_selected_face_edges());
+        let edges = m.doc.history.features().iter().find_map(|f| match &f.kind {
+            FeatureKind::Fillet { edges, .. } => Some(edges.len()),
+            _ => None,
+        });
+        assert_eq!(edges, Some(4), "a box face is bounded by 4 edges");
+
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        assert!(!mesh.vertices.is_empty());
     }
 
     #[test]
