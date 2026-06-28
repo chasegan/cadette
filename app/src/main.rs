@@ -289,35 +289,36 @@ impl Modeler {
     }
 
     /// Draw measurement labels along the +X / +Y axes at major grid ticks — the
-    /// workplane's rulers. Matches the render-side grid extent.
-    fn draw_grid_rulers(&self, ctx: &egui::Context, view: &ViewContext) {
+    /// workplane's rulers. Purely graphical (painted text, not interactive) and
+    /// clipped to `viewport` so they never spill into the tool panel.
+    fn draw_grid_rulers(&self, ctx: &egui::Context, view: &ViewContext, viewport: egui::Rect) {
         if !self.ui.show_grid || self.ui.grid_size <= 0.0 {
             return;
         }
         const GRID_HALF_EXTENT: f64 = 100.0; // mirrors rmf_render
         let major = self.ui.grid_size as f64 * 10.0;
-        // The central viewport, excluding the side/top/bottom panels — so labels
-        // don't spill into the tool panel.
-        let viewport = ctx.content_rect();
+        let painter = ctx
+            .layer_painter(egui::LayerId::new(
+                egui::Order::Background,
+                egui::Id::new("grid_rulers"),
+            ))
+            .with_clip_rect(viewport);
+        let color = egui::Color32::from_white_alpha(150);
+        let font = egui::FontId::proportional(11.0);
         let n = (GRID_HALF_EXTENT / major) as i32;
         for k in 1..=n {
             let d = k as f64 * major;
-            for (axis, world) in [("x", [d, 0.0, 0.0]), ("y", [0.0, d, 0.0])] {
+            for world in [[d, 0.0, 0.0], [0.0, d, 0.0]] {
                 let Some(p) = view.project(world) else { continue };
-                if !viewport.contains(p) {
-                    continue; // outside the 3D viewport (behind a panel / off-screen)
+                if viewport.contains(p) {
+                    painter.text(
+                        p + egui::vec2(3.0, 2.0),
+                        egui::Align2::LEFT_TOP,
+                        format!("{d:.0}"),
+                        font.clone(),
+                        color,
+                    );
                 }
-                egui::Area::new(egui::Id::new(("grid_ruler", axis, k)))
-                    .order(egui::Order::Background)
-                    .fixed_pos(p + egui::vec2(2.0, 2.0))
-                    .show(ctx, |ui| {
-                        ui.label(
-                            egui::RichText::new(format!("{d:.0}"))
-                                .small()
-                                .weak()
-                                .color(egui::Color32::from_white_alpha(140)),
-                        );
-                    });
             }
         }
     }
@@ -1071,7 +1072,16 @@ impl Controller for Modeler {
 
         // --- Workplane rulers (measurement labels along the axes) ---
         if self.sketch_session.is_none() {
-            self.draw_grid_rulers(ctx, view);
+            // Clip the labels to the viewport beside the tool panel.
+            let screen = ctx.viewport_rect();
+            let viewport = match resp.panel_rect {
+                Some(r) => egui::Rect::from_min_max(
+                    egui::pos2(r.right(), screen.top()),
+                    screen.max,
+                ),
+                None => screen,
+            };
+            self.draw_grid_rulers(ctx, view, viewport);
         }
 
         // --- Sketch canvas overlay (after the side panel) ---
