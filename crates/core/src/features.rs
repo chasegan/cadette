@@ -138,6 +138,11 @@ pub enum FeatureKind {
         origin: DVec3,
         normal: DVec3,
     },
+
+    /// Bundle `members` into one body that moves/rotates/scales as a unit but
+    /// keeps each member distinct (a compound, not a fuse). Ungrouping deletes
+    /// this feature, and the members become independently visible again.
+    Group { members: Vec<FeatureId> },
 }
 
 impl FeatureKind {
@@ -160,6 +165,7 @@ impl FeatureKind {
             FeatureKind::Revolve { source, .. } => vec![*source],
             FeatureKind::Mirror { source, .. } => vec![*source],
             FeatureKind::Boolean { target, tool, .. } => vec![*target, *tool],
+            FeatureKind::Group { members } => members.clone(),
         }
     }
 
@@ -179,6 +185,9 @@ impl FeatureKind {
             | FeatureKind::Mirror { source, .. } => Some(*source),
             // Heal to the kept body of a boolean.
             FeatureKind::Boolean { target, .. } => Some(*target),
+            // Heal to the first member (ungroup proper bakes any group transform
+            // into the members — see the app's ungroup).
+            FeatureKind::Group { members } => members.first().copied(),
             _ => None,
         }
     }
@@ -204,6 +213,7 @@ impl FeatureKind {
                 swap(target);
                 swap(tool);
             }
+            FeatureKind::Group { members } => members.iter_mut().for_each(swap),
             _ => {}
         }
     }
@@ -226,6 +236,7 @@ impl FeatureKind {
             FeatureKind::Scale { .. } => "Scale",
             FeatureKind::Revolve { .. } => "Revolve",
             FeatureKind::Mirror { .. } => "Mirror",
+            FeatureKind::Group { .. } => "Group",
         }
     }
 }

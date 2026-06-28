@@ -703,6 +703,57 @@ impl Modeler {
         true
     }
 
+    /// The distinct visible bodies behind the currently selected faces, in
+    /// first-clicked order — the candidate members of a group.
+    fn selected_bodies(&self) -> Vec<FeatureId> {
+        let mut bodies = Vec::new();
+        for pick in self.selection.selected() {
+            if let Pick::Face(g) = pick {
+                if let Some((idx, _)) = self.locate_face(*g) {
+                    if let Some(&body) = self.ui.visible.get(idx) {
+                        if !bodies.contains(&body) {
+                            bodies.push(body);
+                        }
+                    }
+                }
+            }
+        }
+        bodies
+    }
+
+    /// Group the bodies behind the multi-face selection into one unit (a
+    /// compound that moves/rotates/scales together). Returns true if grouped.
+    fn group_selected(&mut self) -> bool {
+        let members = self.selected_bodies();
+        if members.len() < 2 {
+            return false;
+        }
+        self.record_undo(self.doc.clone());
+        let id = self.doc.add("Group", FeatureKind::Group { members });
+        self.ui.selected = Some(id);
+        self.selection.clear();
+        true
+    }
+
+    /// Ungroup the selected group, freeing its members back to independent
+    /// visible bodies. Only a body whose tip IS a Group ungroups for now; a
+    /// group with a transform on top would need the move baked into the members
+    /// first (TODO). Returns true if ungrouped.
+    fn ungroup_selected(&mut self) -> bool {
+        let Some(body) = self.selected_body() else {
+            return false;
+        };
+        if !matches!(self.doc.history.get(body).map(|f| &f.kind), Some(FeatureKind::Group { .. })) {
+            return false;
+        }
+        self.record_undo(self.doc.clone());
+        self.doc.history.remove(body); // members are no longer consumed → visible
+        self.doc.rollback_to_tip();
+        self.ui.selected = None;
+        self.selection.clear();
+        true
+    }
+
     /// Fillet the currently selected edges (each anchored at its clicked point),
     /// as one feature. Returns true if a feature was added.
     fn fillet_selected_edges(&mut self) -> bool {
@@ -1207,7 +1258,11 @@ impl Controller for Modeler {
             let can_sketch = self.selection.can_sketch_on_face();
             // A mirror plane needs a planar face — same condition as sketching.
             let can_mirror = self.selection.face_plane.is_some();
-            let (mut sketch, mut fillet, mut mirror) = (false, false, false);
+            let can_ungroup = matches!(
+                self.selected_body().and_then(|b| self.doc.history.get(b)).map(|f| &f.kind),
+                Some(FeatureKind::Group { .. })
+            );
+            let (mut sketch, mut fillet, mut mirror, mut ungroup) = (false, false, false, false);
             let mut flip: Option<Axis3> = None;
             #[allow(deprecated)]
             egui::Panel::top("selection_bar").show(ctx, |ui| {
@@ -1225,6 +1280,12 @@ impl Controller for Modeler {
                         mirror = ui
                             .button("⇋ Mirror across this face")
                             .on_hover_text("Reflect this body across the face — keeps the original")
+                            .clicked();
+                    }
+                    if can_ungroup {
+                        ungroup = ui
+                            .button("⊟ Ungroup")
+                            .on_hover_text("Split this group back into its members")
                             .clicked();
                     }
                     ui.separator();
@@ -1248,8 +1309,38 @@ impl Controller for Modeler {
             if mirror {
                 changed |= self.mirror_across_selected_face();
             }
+            if ungroup {
+                changed |= self.ungroup_selected();
+            }
             if let Some(axis) = flip {
                 changed |= self.flip_in_place(axis);
+            }
+        } else if self.sketch_session.is_none()
+            && self.selection.selected().len() >= 2
+            && self.selection.selected().iter().all(|p| matches!(p, Pick::Face(_)))
+        {
+            // Multiple faces selected — group the distinct bodies behind them.
+            let bodies = self.selected_bodies();
+            let n_faces = self.selection.selected().len();
+            let n_bodies = bodies.len();
+            let mut group = false;
+            #[allow(deprecated)]
+            egui::Panel::top("selection_bar").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(format!("{n_faces} faces · {n_bodies} bodies"));
+                    ui.separator();
+                    if n_bodies >= 2 {
+                        group = ui
+                            .button(format!("⊞ Group {n_bodies} bodies"))
+                            .on_hover_text("Combine into one unit that moves/rotates together")
+                            .clicked();
+                    }
+                    ui.separator();
+                    ui.weak("⇧/⌘-click a face on each body");
+                });
+            });
+            if group {
+                changed |= self.group_selected();
             }
         } else if self.sketch_session.is_none() && self.selection.is_edges() {
             let n = self.selection.selected().len();
@@ -2162,6 +2253,35 @@ fn main() -> anyhow::Result<()> {
     // Verification aid: an in-progress rotation, so the gizmo readout (an egui
     // overlay only shown mid-drag) renders headlessly. Uses a negative angle to
     // exercise the worst-case width.
+    if std::env::args().any(|a| a == "--group-demo") {
+        // Two separated boxes grouped, then the group rotated about its combined
+        // center — they turn together as one unit.
+        let mut doc = Document::new("group");
+        let a = doc.add("A", FeatureKind::Box { size: DVec3::new(20.0, 12.0, 12.0) });
+        let b0 = doc.add("B0", FeatureKind::Box { size: DVec3::new(20.0, 12.0, 12.0) });
+        let b = doc.add(
+            "B",
+            FeatureKind::Translate { source: b0, offset: DVec3::new(30.0, 0.0, 0.0) },
+        );
+        let g = doc.add("Group", FeatureKind::Group { members: vec![a, b] });
+        doc.add(
+            "Turn",
+            FeatureKind::Rotate {
+                source: g,
+                axis: DVec3::Z,
+                angle: 30.0_f64.to_radians(),
+                center: DVec3::new(25.0, 6.0, 6.0), // the combined bbox center
+            },
+        );
+        std::mem::swap(&mut modeler.doc, &mut doc);
+        let _ = modeler.mesh();
+        let path = "out/group-demo.png";
+        std::fs::create_dir_all("out")?;
+        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        println!("wrote {path}");
+        return Ok(());
+    }
+
     if std::env::args().any(|a| a == "--mirror-demo") {
         // An asymmetric bored block, mirror-copied across its +X face so the
         // reflected hole reads clearly.
@@ -2661,6 +2781,40 @@ mod tests {
             );
         }
         assert!(m.undo(), "flip is one undo entry");
+    }
+
+    #[test]
+    fn group_and_ungroup_bodies_via_multi_face_selection() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("two");
+        m.doc.add("A", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let b0 = m.doc.add("B0", FeatureKind::Box { size: DVec3::splat(10.0) });
+        // Offset B so the two are separate bodies.
+        m.doc.add("B", FeatureKind::Translate { source: b0, offset: DVec3::new(20.0, 0.0, 0.0) });
+        let _ = m.mesh();
+        assert_eq!(m.ui.visible.len(), 2, "two independent bodies");
+
+        // Shift-select a face on each body (body B's faces start at face_ranges[1]).
+        let fb = m.face_ranges[1];
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        m.on_pick(Some(Pick::Face(fb)), None, true); // additive
+        assert_eq!(m.selected_bodies().len(), 2, "two distinct bodies selected");
+
+        assert!(m.group_selected());
+        let _ = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        assert_eq!(m.ui.visible.len(), 1, "grouped into one compound body");
+
+        // The whole group still spans both boxes: x from 0 to 30.
+        let mesh = m.mesh();
+        let (min, max) = bounds(&mesh);
+        assert!(min[0].abs() < 0.2 && (max[0] - 30.0).abs() < 0.2, "group spans both: {min:?}..{max:?}");
+
+        // Ungroup (select the group's face) frees both members back to visible.
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        assert!(m.ungroup_selected());
+        let _ = m.mesh();
+        assert_eq!(m.ui.visible.len(), 2, "ungroup restores the two bodies");
     }
 
     #[test]

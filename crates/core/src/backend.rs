@@ -57,6 +57,10 @@ pub trait GeometryBackend {
         normal: DVec3,
     ) -> Result<Self::Body, Self::Error>;
 
+    /// Bundle `members` (≥1) into one compound body without fusing them — the
+    /// geometry behind a [`crate::FeatureKind::Group`].
+    fn compound(&mut self, members: &[&Self::Body]) -> Result<Self::Body, Self::Error>;
+
     fn translate(&mut self, body: &Self::Body, offset: DVec3) -> Result<Self::Body, Self::Error>;
 
     fn boolean(

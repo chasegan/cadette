@@ -350,5 +350,18 @@ where
             let body = input(*source)?;
             backend.mirror(body, *origin, *normal).map_err(backend_err)
         }
+        FeatureKind::Group { members } => {
+            if members.is_empty() {
+                return Err(RegenError::Invalid {
+                    feature,
+                    reason: "a group needs at least one member",
+                });
+            }
+            let mut bodies = Vec::with_capacity(members.len());
+            for m in members {
+                bodies.push(input(*m)?);
+            }
+            backend.compound(&bodies).map_err(backend_err)
+        }
     }
 }

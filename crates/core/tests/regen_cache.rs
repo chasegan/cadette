@@ -98,6 +98,10 @@ impl GeometryBackend for Counting {
         self.ops += 1;
         Ok(format!("mirror({b},{},{},{})", n.x, n.y, n.z))
     }
+    fn compound(&mut self, members: &[&String]) -> Result<String, String> {
+        self.ops += 1;
+        Ok(format!("group({})", members.len()))
+    }
 }
 
 /// A 3-step chain: box -> move -> fillet. Returns (doc, [box, move, fillet]).

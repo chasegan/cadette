@@ -563,6 +563,9 @@ fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
                     .weak(),
             );
         }
+        FeatureKind::Group { members } => {
+            ui.label(RichText::new(format!("{} members", members.len())).small().weak());
+        }
     }
 
     changed

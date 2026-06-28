@@ -140,4 +140,14 @@ impl GeometryBackend for KernelBackend {
     ) -> Result<Solid, KernelError> {
         body.mirror(origin.to_array(), normal.to_array())
     }
+
+    fn compound(&mut self, members: &[&Solid]) -> Result<Solid, KernelError> {
+        // Fold the members into one compound (regen guarantees ≥1).
+        let (first, rest) = members.split_first().expect("group has ≥1 member");
+        let mut acc = (*first).clone();
+        for m in rest {
+            acc = acc.compound(m)?;
+        }
+        Ok(acc)
+    }
 }

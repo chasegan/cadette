@@ -94,6 +94,10 @@ impl GeometryBackend for Recording {
     fn mirror(&mut self, body: &String, _origin: DVec3, normal: DVec3) -> Result<String, String> {
         Ok(format!("mirror({body},{:.0},{:.0},{:.0})", normal.x, normal.y, normal.z))
     }
+    fn compound(&mut self, members: &[&String]) -> Result<String, String> {
+        let parts: Vec<&str> = members.iter().map(|m| m.as_str()).collect();
+        Ok(format!("group({})", parts.join(",")))
+    }
 }
 
 /// The canonical Phase-0 part, as parametric data: a filleted box with a bored
@@ -305,4 +309,27 @@ fn clone_subtree_duplicates_a_body_independently() {
     let regen = regenerate(&doc, &mut Recording);
     assert!(regen.is_ok());
     assert_eq!(regen.visible(), &[b, b2], "two independent visible bodies");
+}
+
+#[test]
+fn grouping_merges_lanes_and_ungroup_splits_them() {
+    let mut doc = Document::new("grp");
+    let a = doc.add("A", FeatureKind::Box { size: DVec3::splat(10.0) });
+    let b = doc.add("B", FeatureKind::Box { size: DVec3::splat(10.0) });
+    let g = doc.add("Group", FeatureKind::Group { members: vec![a, b] });
+
+    let regen = regenerate(&doc, &mut Recording);
+    assert!(regen.is_ok());
+    // Two lanes merge into the one group body (a compound, not a fuse).
+    assert_eq!(regen.visible(), &[g], "group is the single visible body");
+    assert_eq!(
+        regen.body(g).unwrap(),
+        "group(box(10,10,10),box(10,10,10))"
+    );
+
+    // Ungroup = delete the Group node; its members become visible again.
+    doc.history.remove(g);
+    assert!(doc.history.validate().is_ok());
+    let regen = regenerate(&doc, &mut Recording);
+    assert_eq!(regen.visible(), &[a, b], "members independently visible after ungroup");
 }
