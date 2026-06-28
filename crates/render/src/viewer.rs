@@ -112,8 +112,9 @@ pub trait Controller {
     fn resize_box(&self) -> Option<ResizeBox> {
         None
     }
-    /// Begin a resize drag along `axis` (the whole drag is one undo entry).
-    fn start_resize(&mut self, _axis: Axis3) {}
+    /// Begin a resize drag from the `positive` (or negative) face along `axis`
+    /// (the whole drag is one undo entry).
+    fn start_resize(&mut self, _axis: Axis3, _positive: bool) {}
     /// Set the box's extent (mm) along `axis` to `extent`. Returns true if the
     /// dimension changed.
     fn update_resize(&mut self, _axis: Axis3, _extent: f64) -> bool {
@@ -1689,38 +1690,51 @@ fn gizmo_geometry(
 
 /// Half-size of a resize grip cube, as a fraction of the gizmo axis length (so
 /// the grips stay a roughly constant size on screen).
-const RESIZE_GRIP_SIZE: f32 = 0.05;
+const RESIZE_GRIP_SIZE: f32 = 0.035;
 /// Smallest dimension a resize drag may produce (mm), so a box can't collapse.
 const MIN_RESIZE_DIM: f32 = 0.1;
 
-/// World-space center of the resize grip on the `+axis` face of `rb`.
-fn resize_grip_pos(rb: &ResizeBox, axis: Axis3) -> Vec3 {
+/// The six bounding-box faces a body can be resized from: each axis on its
+/// positive (`true`) and negative (`false`) side.
+const RESIZE_FACES: [(Axis3, bool); 6] = [
+    (Axis3::X, true),
+    (Axis3::X, false),
+    (Axis3::Y, true),
+    (Axis3::Y, false),
+    (Axis3::Z, true),
+    (Axis3::Z, false),
+];
+
+/// World-space center of the resize grip on the given face of `rb` (the
+/// `positive` or negative side along `axis`).
+fn resize_grip_pos(rb: &ResizeBox, axis: Axis3, positive: bool) -> Vec3 {
     let min = Vec3::new(rb.min[0] as f32, rb.min[1] as f32, rb.min[2] as f32);
     let max = Vec3::new(rb.max[0] as f32, rb.max[1] as f32, rb.max[2] as f32);
     let c = (min + max) * 0.5;
+    let face = if positive { max } else { min };
     match axis {
-        Axis3::X => Vec3::new(max.x, c.y, c.z),
-        Axis3::Y => Vec3::new(c.x, max.y, c.z),
-        Axis3::Z => Vec3::new(c.x, c.y, max.z),
+        Axis3::X => Vec3::new(face.x, c.y, c.z),
+        Axis3::Y => Vec3::new(c.x, face.y, c.z),
+        Axis3::Z => Vec3::new(c.x, c.y, face.z),
     }
 }
 
-/// The resize axis whose grip is under `cursor`, if any (nearest within the
-/// pixel threshold).
+/// The resize face (axis + side) whose grip is under `cursor`, if any (nearest
+/// within the pixel threshold).
 fn resize_hit_test(
     rb: &ResizeBox,
     camera: &OrbitCamera,
     cursor: PhysicalPosition<f64>,
     w: u32,
     h: u32,
-) -> Option<Axis3> {
+) -> Option<(Axis3, bool)> {
     let c = (cursor.x as f32, cursor.y as f32);
     let mut best = (GIZMO_PICK_PX + 2.0, None);
-    for axis in Axis3::ALL {
-        if let Some(p) = project_point(resize_grip_pos(rb, axis), camera, w, h) {
+    for (axis, positive) in RESIZE_FACES {
+        if let Some(p) = project_point(resize_grip_pos(rb, axis, positive), camera, w, h) {
             let d = (c.0 - p.0).hypot(c.1 - p.1);
             if d < best.0 {
-                best = (d, Some(axis));
+                best = (d, Some((axis, positive)));
             }
         }
     }
@@ -1747,18 +1761,22 @@ fn push_cube(verts: &mut Vec<GizmoVertex>, c: Vec3, hs: f32, color: [f32; 4]) {
     quad(0, 3, 7, 4); // -X
 }
 
-/// Resize grips for `rb`: a small cube on each +X/+Y/+Z face, the one under the
-/// cursor (or being dragged) highlighted gold.
-fn resize_geometry(rb: &ResizeBox, camera: &OrbitCamera, active: Option<Axis3>) -> Vec<GizmoVertex> {
+/// Resize grips for `rb`: a small cube on each of the six bounding-box faces,
+/// the one under the cursor (or being dragged) highlighted gold.
+fn resize_geometry(
+    rb: &ResizeBox,
+    camera: &OrbitCamera,
+    active: Option<(Axis3, bool)>,
+) -> Vec<GizmoVertex> {
     let hs = gizmo_axis_length(camera) * RESIZE_GRIP_SIZE;
     let mut verts = Vec::new();
-    for axis in Axis3::ALL {
-        let color = if active == Some(axis) {
+    for (axis, positive) in RESIZE_FACES {
+        let color = if active == Some((axis, positive)) {
             rgba(GIZMO_HILITE, 1.0)
         } else {
             rgba([0.85, 0.85, 0.88], 0.9)
         };
-        push_cube(&mut verts, resize_grip_pos(rb, axis), hs, color);
+        push_cube(&mut verts, resize_grip_pos(rb, axis, positive), hs, color);
     }
     verts
 }
@@ -2074,8 +2092,9 @@ enum GizmoDrag {
         total: f32,
         snapped: f32,
     },
-    /// Resize a primitive along an axis: grip line `(origin, dir)`, the drag
-    /// distance at grab, and the box's extent along that axis at grab.
+    /// Resize a body from one bbox face: grip line `(origin, dir)` (dir points
+    /// outward from the grabbed face), the drag distance at grab, and the body's
+    /// extent along that axis at grab.
     Resize {
         axis: Axis3,
         origin: Vec3,
@@ -2251,7 +2270,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                             // are the most specific target, so test them first.
                             let resize_hit = self.controller.resize_box().and_then(|rb| {
                                 resize_hit_test(&rb, &self.camera, self.mouse.cursor, w, h)
-                                    .map(|axis| (rb, axis))
+                                    .map(|face| (rb, face))
                             });
                             let gizmo_hit = self.controller.gizmo().and_then(|g| {
                                 let origin = Vec3::new(
@@ -2262,9 +2281,11 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                                 gizmo_hit_test(origin, &self.camera, self.mouse.cursor, w, h)
                                     .map(|handle| (origin, handle))
                             });
-                            if let Some((rb, axis)) = resize_hit {
-                                let origin = resize_grip_pos(&rb, axis);
-                                let dir = axis.dir();
+                            if let Some((rb, (axis, positive))) = resize_hit {
+                                let origin = resize_grip_pos(&rb, axis, positive);
+                                // `dir` points outward from the grabbed face, so a
+                                // drag away from the body always grows the extent.
+                                let dir = if positive { axis.dir() } else { -axis.dir() };
                                 let start = manip_distance(
                                     &self.camera,
                                     self.mouse.cursor,
@@ -2279,7 +2300,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                                     Axis3::Z => 2,
                                 };
                                 let base_extent = rb.max[i] - rb.min[i];
-                                self.controller.start_resize(axis);
+                                self.controller.start_resize(axis, positive);
                                 self.gizmo_drag =
                                     Some(GizmoDrag::Resize { axis, origin, dir, start, base_extent });
                                 self.manip_axis = None;
@@ -2705,7 +2726,11 @@ impl<C: Controller> WindowApp<C> {
             if let Some(rb) = self.controller.resize_box() {
                 let (w, h) = (state.config.width, state.config.height);
                 let active = match self.gizmo_drag {
-                    Some(GizmoDrag::Resize { axis, .. }) => Some(axis),
+                    // `dir` points outward from the grabbed face → its sign is the
+                    // face side.
+                    Some(GizmoDrag::Resize { axis, dir, .. }) => {
+                        Some((axis, dir.dot(axis.dir()) > 0.0))
+                    }
                     _ if state.egui_ctx.is_pointer_over_egui() => None,
                     _ => resize_hit_test(&rb, &self.camera, self.mouse.cursor, w, h),
                 };

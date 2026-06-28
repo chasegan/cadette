@@ -1488,7 +1488,7 @@ impl Controller for Modeler {
         (span >= 1e-6).then_some(ResizeBox { min, max })
     }
 
-    fn start_resize(&mut self, _axis: Axis3) {
+    fn start_resize(&mut self, axis: Axis3, positive: bool) {
         let Some(source) = self.selected_body() else {
             return;
         };
@@ -1499,16 +1499,28 @@ impl Controller for Modeler {
             return;
         };
         let mesh_extent = DVec3::new(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
+        // A Scale anchors at the FIXED (opposite) face: min for a +face drag,
+        // max for a −face drag, along the dragged axis (other axes scale by 1).
+        let mut scale_anchor = DVec3::from_array(min);
+        if !positive {
+            axis_set(&mut scale_anchor, axis, axis_get(DVec3::from_array(max), axis));
+        }
+        let radial = matches!(axis, Axis3::X | Axis3::Y); // a cylinder's circular section
         // A bare primitive edits its real dimension(s) parametrically (exact base
-        // extents from the feature, so a cancel restores precisely); a body that
-        // already carries a Scale edits that Scale (never stack two); anything
-        // else gets a fresh Scale.
+        // extents, so cancel restores precisely) for the cases that keep a face
+        // anchored naturally: a Box/cylinder-height from its +face, or a centered
+        // radius (cylinder X/Y, sphere any). A body already carrying a Scale edits
+        // that Scale (never stack two). Everything else — a −face of a corner-
+        // anchored primitive, or any non-primitive — gets/extends a Scale.
         let (mode, base_extent, base_factors, anchor, feature) =
             match self.doc.history.get(source).map(|f| &f.kind) {
-                Some(FeatureKind::Box { size }) => {
+                Some(FeatureKind::Scale { factors, anchor, .. }) => {
+                    (ResizeMode::EditScale, mesh_extent, *factors, *anchor, Some(source))
+                }
+                Some(FeatureKind::Box { size }) if positive => {
                     (ResizeMode::BoxDim, *size, DVec3::ONE, DVec3::from_array(min), None)
                 }
-                Some(FeatureKind::Cylinder { radius, height }) => {
+                Some(FeatureKind::Cylinder { radius, height }) if radial || positive => {
                     let e = DVec3::new(2.0 * radius, 2.0 * radius, *height);
                     (ResizeMode::CylDim, e, DVec3::ONE, DVec3::from_array(min), None)
                 }
@@ -1516,10 +1528,7 @@ impl Controller for Modeler {
                     let e = DVec3::splat(2.0 * radius);
                     (ResizeMode::SphereDim, e, DVec3::ONE, DVec3::from_array(min), None)
                 }
-                Some(FeatureKind::Scale { factors, anchor, .. }) => {
-                    (ResizeMode::EditScale, mesh_extent, *factors, *anchor, Some(source))
-                }
-                _ => (ResizeMode::NewScale, mesh_extent, DVec3::ONE, DVec3::from_array(min), None),
+                _ => (ResizeMode::NewScale, mesh_extent, DVec3::ONE, scale_anchor, None),
             };
         self.resize = Some(ResizeDrag {
             source,
@@ -2269,7 +2278,7 @@ mod tests {
         // A drag along +X edits the Box size in place (one undo entry).
         let n0 = m.doc.history.len();
         let undo0 = m.undo.len();
-        m.start_resize(Axis3::X);
+        m.start_resize(Axis3::X, true);
         assert!(m.update_resize(Axis3::X, 25.0));
         assert!(m.update_resize(Axis3::X, 30.0)); // edits in place, same undo
         assert_eq!(m.doc.history.len(), n0, "resize edits the Box, adds no feature");
@@ -2294,7 +2303,7 @@ mod tests {
         m.on_pick(Some(Pick::Face(0)), None, false);
 
         let undo0 = m.undo.len();
-        m.start_resize(Axis3::Z);
+        m.start_resize(Axis3::Z, true);
         assert!(m.update_resize(Axis3::Z, 40.0));
         m.finish_resize(false); // cancel
 
@@ -2318,7 +2327,7 @@ mod tests {
         // Dragging the +X grip edits the radius in place — no Scale feature, and
         // the X/Y span stays equal (a circle, not an ellipse).
         let n0 = m.doc.history.len();
-        m.start_resize(Axis3::X);
+        m.start_resize(Axis3::X, true);
         // The +X grip tracks the cursor: radius = grip's new x = extent − base/2.
         // base (X span) is 2r = 20, so dragging the grip to extent 25 → radius 15.
         assert!(m.update_resize(Axis3::X, 25.0));
@@ -2338,7 +2347,7 @@ mod tests {
 
         // The +Z grip edits height (anchored at the base, 1:1).
         m.on_pick(Some(Pick::Face(0)), None, false);
-        m.start_resize(Axis3::Z);
+        m.start_resize(Axis3::Z, true);
         assert!(m.update_resize(Axis3::Z, 50.0));
         m.finish_resize(true);
         let height = match &m.doc.history.get(c).unwrap().kind {
@@ -2346,6 +2355,55 @@ mod tests {
             _ => unreachable!(),
         };
         assert!((height - 50.0).abs() < 1e-9, "height now 50, got {height}");
+    }
+
+    #[test]
+    fn resizing_a_box_from_the_negative_face_pins_the_opposite_side() {
+        use rmf_render::Axis3;
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        m.doc.add("Box", FeatureKind::Box { size: DVec3::new(10.0, 10.0, 10.0) });
+        let _ = m.mesh();
+        m.on_pick(Some(Pick::Face(0)), None, false);
+
+        // The box is [0,10] in X. Dragging the −X grip keeps the +X face (x=10)
+        // pinned and extends into −X — a corner-anchored Box can't do that
+        // parametrically, so it gets a Scale anchored at the +X face.
+        let n0 = m.doc.history.len();
+        m.start_resize(Axis3::X, false);
+        // base X span 10; widen to 16 → −X face moves to x = 10 − 16 = −6.
+        assert!(m.update_resize(Axis3::X, 16.0));
+        assert_eq!(m.doc.history.len(), n0 + 1, "a Scale was added for the −face");
+        m.finish_resize(true);
+
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        let (min, max) = bounds(&mesh);
+        assert!((max[0] - 10.0).abs() < 0.2, "+X face stays at 10, got {}", max[0]);
+        assert!((min[0] + 6.0).abs() < 0.2, "−X face now at −6, got {}", min[0]);
+    }
+
+    #[test]
+    fn resizing_a_cylinder_from_a_radial_negative_face_stays_parametric() {
+        use rmf_render::Axis3;
+        let mut m = Modeler::new();
+        m.doc = Document::new("cyl");
+        let c = m.doc.add("Cyl", FeatureKind::Cylinder { radius: 10.0, height: 20.0 });
+        let _ = m.mesh();
+        m.on_pick(Some(Pick::Face(0)), None, false);
+
+        // The −X grip of a cylinder still edits the (centered) radius in place —
+        // no Scale, no ellipse.
+        let n0 = m.doc.history.len();
+        m.start_resize(Axis3::X, false);
+        assert!(m.update_resize(Axis3::X, 25.0)); // radius 15
+        assert_eq!(m.doc.history.len(), n0, "radial −face edits radius, adds no feature");
+        m.finish_resize(true);
+        let radius = match &m.doc.history.get(c).unwrap().kind {
+            FeatureKind::Cylinder { radius, .. } => *radius,
+            _ => panic!("still a cylinder"),
+        };
+        assert!((radius - 15.0).abs() < 1e-9, "radius now 15, got {radius}");
     }
 
     #[test]
@@ -2358,7 +2416,7 @@ mod tests {
         m.on_pick(Some(Pick::Face(0)), None, false);
 
         let n0 = m.doc.history.len();
-        m.start_resize(Axis3::Y);
+        m.start_resize(Axis3::Y, true);
         // Grip tracks the cursor: radius = extent − base/2 = 25 − 10 = 15.
         assert!(m.update_resize(Axis3::Y, 25.0));
         assert_eq!(m.doc.history.len(), n0, "edits the Sphere, adds no feature");
@@ -2395,7 +2453,7 @@ mod tests {
 
         // A drag adds a Scale feature (not a dimension edit) and rebuilds bigger.
         let n0 = m.doc.history.len();
-        m.start_resize(Axis3::X);
+        m.start_resize(Axis3::X, true);
         assert!(m.update_resize(Axis3::X, 20.0)); // factor 2.0 about x=5
         assert_eq!(m.doc.history.len(), n0 + 1, "a Scale feature was added");
         let added_scale = m
@@ -2426,7 +2484,7 @@ mod tests {
         m.on_pick(Some(Pick::Face(0)), None, false);
 
         // First resize (X) adds a Scale.
-        m.start_resize(Axis3::X);
+        m.start_resize(Axis3::X, true);
         assert!(m.update_resize(Axis3::X, 60.0));
         m.finish_resize(true);
         let after_first = m.doc.history.len();
@@ -2436,7 +2494,7 @@ mod tests {
         // Second resize on a DIFFERENT axis must NOT add a feature (would stack a
         // second GTransform → OCCT segfault); it edits the existing Scale.
         m.on_pick(Some(Pick::Face(0)), None, false);
-        m.start_resize(Axis3::Y);
+        m.start_resize(Axis3::Y, true);
         assert!(m.update_resize(Axis3::Y, 70.0));
         m.finish_resize(true);
         assert_eq!(m.doc.history.len(), after_first, "no second Scale was stacked");
@@ -2469,7 +2527,7 @@ mod tests {
 
         let n0 = m.doc.history.len();
         let undo0 = m.undo.len();
-        m.start_resize(Axis3::Z);
+        m.start_resize(Axis3::Z, true);
         assert!(m.update_resize(Axis3::Z, 30.0));
         m.finish_resize(false); // cancel
 
