@@ -1354,7 +1354,7 @@ impl Controller for Modeler {
                     if can_ungroup {
                         ungroup = ui
                             .button("⊟ Ungroup")
-                            .on_hover_text("Split this group back into its members")
+                            .on_hover_text("Split this group back into its members (⇧⌘G)")
                             .clicked();
                     }
                     ui.separator();
@@ -1408,7 +1408,7 @@ impl Controller for Modeler {
                     if n_bodies >= 2 {
                         group = ui
                             .button(format!("⊞ Group {n_bodies} bodies"))
-                            .on_hover_text("Combine into one unit that moves/rotates together")
+                            .on_hover_text("Combine into one unit that moves/rotates together (⌘G)")
                             .clicked();
                     }
                     ui.separator();
@@ -1522,6 +1522,12 @@ impl Controller for Modeler {
                 i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))),
             )
         });
+        // Group ⌘G / Ungroup ⇧⌘G (plain key presses — egui only special-cases
+        // C/X/V, not G).
+        let (group_key, ungroup_key) = ctx.input(|i| {
+            let cmd_g = i.modifiers.command && i.key_pressed(Key::G);
+            (cmd_g && !i.modifiers.shift, cmd_g && i.modifiers.shift)
+        });
         if self.sketch_session.is_none() {
             if copy_key {
                 self.copy_selected();
@@ -1534,6 +1540,20 @@ impl Controller for Modeler {
             }
             if paste_key {
                 changed |= self.paste();
+            }
+            if group_key {
+                if self.group_selected() {
+                    changed = true;
+                } else {
+                    self.status = Some("Select faces on two or more bodies to group".into());
+                }
+            }
+            if ungroup_key {
+                if self.ungroup_selected() {
+                    changed = true;
+                } else {
+                    self.status = Some("Select a group to ungroup".into());
+                }
             }
         }
 
