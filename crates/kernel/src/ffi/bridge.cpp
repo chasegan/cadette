@@ -10,6 +10,7 @@
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Common.hxx>
@@ -189,6 +190,53 @@ std::unique_ptr<Shape> extrude(const Shape& s, double distance) {
     direction *= distance;
     BRepPrimAPI_MakePrism prism(s.shape, direction);
     return std::make_unique<Shape>(prism.Shape());
+  });
+}
+
+// --- Revolve ----------------------------------------------------------------
+
+// Revolve the profile `s` (a planar face — from a sketch or a model face)
+// through `angle` radians about the straight edge nearest the anchor
+// `(ax,ay,az)`. The axis edge is one of the profile's own segments (a sketch
+// centerline) or an adjacent model edge; either way it resolves the same way as
+// a fillet anchor. A full revolution is `angle = 2π`.
+std::unique_ptr<Shape> revolve(const Shape& s, double ax, double ay, double az,
+                               double angle) {
+  return guard("revolve", [&] {
+    const gp_Pnt anchor(ax, ay, az);
+    const TopoDS_Vertex probe_vertex = BRepBuilderAPI_MakeVertex(anchor).Vertex();
+
+    // Find the edge nearest the anchor — the durable axis reference (same scheme
+    // as fillet_edges: the picked point lies on the chosen edge).
+    TopTools_IndexedMapOfShape edges;
+    TopExp::MapShapes(s.shape, TopAbs_EDGE, edges);
+    TopoDS_Edge target;
+    double best = 1e30;
+    for (int i = 1; i <= edges.Extent(); ++i) {
+      const TopoDS_Edge edge = TopoDS::Edge(edges(i));
+      BRepExtrema_DistShapeShape probe(probe_vertex, edge);
+      if (!probe.IsDone()) continue;
+      if (probe.Value() < best) {
+        best = probe.Value();
+        target = edge;
+      }
+    }
+    if (target.IsNull() || best > 1.0) {
+      throw std::runtime_error("revolve: no matching axis edge");
+    }
+
+    // The axis is the edge's straight line, taken from its two endpoints.
+    TopoDS_Vertex v1, v2;
+    TopExp::Vertices(target, v1, v2);
+    const gp_Pnt p1 = BRep_Tool::Pnt(v1);
+    const gp_Pnt p2 = BRep_Tool::Pnt(v2);
+    const gp_Vec dir(p1, p2);
+    if (dir.Magnitude() < 1e-9) {
+      throw std::runtime_error("revolve: degenerate axis edge");
+    }
+    const gp_Ax1 axis(p1, gp_Dir(dir));
+    const TopoDS_Shape solid = BRepPrimAPI_MakeRevol(s.shape, axis, angle).Shape();
+    return std::make_unique<Shape>(solid);
   });
 }
 

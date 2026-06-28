@@ -90,6 +90,15 @@ pub mod ffi {
         /// Extrude a planar face along its normal by `distance` into a solid.
         fn extrude(shape: &Shape, distance: f64) -> Result<UniquePtr<Shape>>;
 
+        // --- Revolve ------------------------------------------------------
+        /// Revolve the planar profile `shape` by `angle` radians about the
+        /// straight edge nearest `(ax,ay,az)` (a full turn is `2π`).
+        fn revolve(
+            shape: &Shape,
+            ax: f64, ay: f64, az: f64,
+            angle: f64,
+        ) -> Result<UniquePtr<Shape>>;
+
         // --- Push/pull -----------------------------------------------------
         /// Offset the planar face of `shape` anchored at `(px,py,pz)` with
         /// normal `(nx,ny,nz)` along that normal by `distance` (fuse if

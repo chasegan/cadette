@@ -114,6 +114,15 @@ impl Solid {
         Ok(Self::wrap(ffi::extrude(&self.0, distance)?))
     }
 
+    /// Revolve this planar profile by `angle` radians about the straight edge
+    /// nearest `axis_point` (a full turn is `2π`). The axis edge is one of the
+    /// profile's own segments or an adjacent model edge.
+    pub fn revolve(&self, axis_point: [f64; 3], angle: f64) -> Result<Self> {
+        Ok(Self::wrap(ffi::revolve(
+            &self.0, axis_point[0], axis_point[1], axis_point[2], angle,
+        )?))
+    }
+
     /// Push/pull the planar face anchored at `point` with `normal` along that
     /// normal by `distance` (positive fuses material, negative cuts).
     pub fn push_pull(&self, point: [f64; 3], normal: [f64; 3], distance: f64) -> Result<Self> {

@@ -176,3 +176,48 @@ fn fillet_edges_rounds_several_at_once() {
     let n: BTreeSet<u32> = f.face_ids.iter().copied().collect();
     assert_eq!(n.len(), 7, "a deduped single fillet adds one face, got {n:?}");
 }
+
+#[test]
+fn revolve_a_rectangle_about_its_edge_makes_a_cylinder() {
+    use std::f64::consts::TAU;
+    // A 10(radius) x 20(height) rectangle in the XZ plane (y=0), spanning
+    // x in [0,10], z in [0,20] — so its left edge (x=0) lies on the Z axis.
+    let rect = Solid::rectangle_face(
+        [5.0, 0.0, 10.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        10.0,
+        20.0,
+    )
+    .unwrap();
+
+    // A full turn about that left edge (anchor: its midpoint) → a solid cylinder
+    // of radius 10, height 20: x,y in [-10,10], z in [0,20].
+    let solid = rect.revolve([0.0, 0.0, 10.0], TAU).unwrap();
+    let mesh = solid.tessellate(0.2).unwrap();
+    assert!(!mesh.indices.is_empty(), "revolve produced a meshable solid");
+
+    let (mut min, mut max) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for p in mesh.positions.chunks_exact(3) {
+        for k in 0..3 {
+            min[k] = min[k].min(p[k]);
+            max[k] = max[k].max(p[k]);
+        }
+    }
+    assert!((min[0] + 10.0).abs() < 0.3 && (max[0] - 10.0).abs() < 0.3, "x {}..{}", min[0], max[0]);
+    assert!((min[1] + 10.0).abs() < 0.3 && (max[1] - 10.0).abs() < 0.3, "y {}..{}", min[1], max[1]);
+    assert!(min[2].abs() < 0.3 && (max[2] - 20.0).abs() < 0.3, "z {}..{}", min[2], max[2]);
+
+    // A partial turn (90°) sweeps only one quadrant: the profile (at +X) reaches
+    // ±Y on one side, so the Y extent is a single 10mm quadrant touching y=0.
+    // (Which side depends on the axis edge's orientation — not fixed here.)
+    let quarter = rect.revolve([0.0, 0.0, 10.0], TAU / 4.0).unwrap();
+    let qmesh = quarter.tessellate(0.2).unwrap();
+    let (mut qymin, mut qymax) = (f32::MAX, f32::MIN);
+    for p in qmesh.positions.chunks_exact(3) {
+        qymin = qymin.min(p[1]);
+        qymax = qymax.max(p[1]);
+    }
+    assert!((qymax - qymin - 10.0).abs() < 0.3, "quarter y span {}", qymax - qymin);
+    assert!(qymin.abs() < 0.3 || qymax.abs() < 0.3, "quadrant touches y=0: {qymin}..{qymax}");
+}
