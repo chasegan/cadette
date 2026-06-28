@@ -40,6 +40,8 @@ pub struct HistoryState {
     pub show_yz: bool,
     /// Whether moves/resizes snap to the grid.
     pub snap_to_grid: bool,
+    /// The plane a new toolbar sketch is started on.
+    pub sketch_plane: SketchPlane,
 }
 
 impl Default for HistoryState {
@@ -56,6 +58,7 @@ impl Default for HistoryState {
             show_xz: false,
             show_yz: false,
             snap_to_grid: true,
+            sketch_plane: SketchPlane::Xy,
         }
     }
 }
@@ -69,8 +72,9 @@ pub struct HistoryResponse {
     pub undo: bool,
     /// The redo button was clicked.
     pub redo: bool,
-    /// The "Sketch" tool was clicked — the host should enter sketch-draw mode.
-    pub start_sketch: bool,
+    /// The "Sketch" tool was clicked — the host should enter sketch-draw mode
+    /// on this plane.
+    pub start_sketch: Option<SketchPlane>,
     /// "Export STL" was clicked — the host should write the model to a file.
     pub export_stl: bool,
     /// "Save" was clicked — the host should write the project to a file.
@@ -209,7 +213,7 @@ pub fn history_panel(
                 &mut resp.extrude,
             );
             if started {
-                resp.start_sketch = true;
+                resp.start_sketch = Some(state.sketch_plane);
             }
             ui.separator();
 
@@ -276,11 +280,13 @@ fn add_feature_toolbar(
         }
         if ui
             .button("Sketch")
-            .on_hover_text("Draw a 2D profile on the XY plane")
+            .on_hover_text("Draw a 2D profile on the chosen plane")
             .clicked()
         {
             *start_sketch = true;
         }
+        // Which origin plane the sketch starts on (XY/XZ/YZ).
+        plane_picker(ui, &mut state.sketch_plane);
     });
 
     ui.horizontal_wrapped(|ui| {
@@ -586,6 +592,20 @@ fn drag_ranged(
         .changed()
     })
     .inner
+}
+
+/// Compact origin-plane chooser (no label) for the Sketch toolbar button.
+fn plane_picker(ui: &mut Ui, plane: &mut SketchPlane) {
+    egui::ComboBox::from_id_salt("sketch-plane")
+        .selected_text(plane.label())
+        .width(46.0)
+        .show_ui(ui, |ui| {
+            for option in [SketchPlane::Xy, SketchPlane::Xz, SketchPlane::Yz] {
+                ui.selectable_value(plane, option, option.label());
+            }
+        })
+        .response
+        .on_hover_text("Plane the next sketch starts on");
 }
 
 fn plane_combo(ui: &mut Ui, plane: &mut SketchPlane) -> bool {

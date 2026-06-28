@@ -1148,9 +1148,12 @@ impl Controller for Modeler {
             changed |= self.redo();
         }
 
-        // The "Sketch" tool in the Add panel enters interactive draw mode.
-        if resp.start_sketch && self.sketch_session.is_none() {
-            self.start_sketch(SketchPlane::Xy);
+        // The "Sketch" tool in the Add panel enters interactive draw mode on
+        // the chosen origin plane.
+        if let Some(plane) = resp.start_sketch {
+            if self.sketch_session.is_none() {
+                self.start_sketch(plane);
+            }
         }
         if resp.export_stl {
             self.export_stl();
