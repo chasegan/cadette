@@ -743,19 +743,82 @@ impl Modeler {
         true
     }
 
+    /// Walk down from `tip` through any world-space transforms to the Group that
+    /// feeds them. Returns `(group_id, chain)` where `chain` is the transforms
+    /// above the group in bottom-up order (`chain[0].source == group`, the last
+    /// is `tip`); empty if `tip` is the group itself. `None` if `tip` isn't a
+    /// (possibly transformed) group, or sits under a non-transform (e.g. a
+    /// boolean) we can't cleanly bake through.
+    fn group_and_chain(&self, tip: FeatureId) -> Option<(FeatureId, Vec<FeatureId>)> {
+        let mut chain = Vec::new();
+        let mut cur = tip;
+        loop {
+            match &self.doc.history.get(cur)?.kind {
+                FeatureKind::Group { .. } => {
+                    chain.reverse(); // collected top-down; want bottom-up
+                    return Some((cur, chain));
+                }
+                FeatureKind::Translate { source, .. }
+                | FeatureKind::Rotate { source, .. }
+                | FeatureKind::Scale { source, .. }
+                | FeatureKind::Mirror { source, .. } => {
+                    chain.push(cur);
+                    cur = *source;
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// Clone the transform `chain` (each step's `source` rewired to the previous
+    /// clone, the first from `group` to `base`) onto `base`, returning the new
+    /// tip. Bakes the group's accumulated transform onto one member.
+    fn bake_chain_onto(
+        &mut self,
+        group: FeatureId,
+        chain: &[FeatureId],
+        base: FeatureId,
+    ) -> Option<FeatureId> {
+        let mut prev = base;
+        let mut prev_old = group;
+        for &t in chain {
+            let feature = self.doc.history.get(t)?;
+            let name = feature.name.clone();
+            let mut kind = feature.kind.clone();
+            kind.remap_input(prev_old, prev);
+            let id = self.doc.add(name, kind);
+            prev_old = t;
+            prev = id;
+        }
+        Some(prev)
+    }
+
     /// Ungroup the selected group, freeing its members back to independent
-    /// visible bodies. Only a body whose tip IS a Group ungroups for now; a
-    /// group with a transform on top would need the move baked into the members
-    /// first (TODO). Returns true if ungrouped.
+    /// visible bodies. Any transform applied to the group (move/rotate/scale/
+    /// mirror) is BAKED onto each member first, so they keep their places.
+    /// Returns true if ungrouped.
     fn ungroup_selected(&mut self) -> bool {
-        let Some(body) = self.selected_body() else {
+        let Some(tip) = self.selected_body() else {
             return false;
         };
-        if !matches!(self.doc.history.get(body).map(|f| &f.kind), Some(FeatureKind::Group { .. })) {
+        let Some((group, chain)) = self.group_and_chain(tip) else {
             return false;
-        }
+        };
+        let members = match self.doc.history.get(group).map(|f| &f.kind) {
+            Some(FeatureKind::Group { members }) => members.clone(),
+            _ => return false,
+        };
         self.record_undo(self.doc.clone());
-        self.doc.history.remove(body); // members are no longer consumed → visible
+        // Give each member its own copy of the group's transform chain (consumes
+        // the member, so only the transformed copy stays visible).
+        for m in &members {
+            self.bake_chain_onto(group, &chain, *m);
+        }
+        // Drop the original chain (top-down, so each is a tip) and the group.
+        for &t in chain.iter().rev() {
+            self.doc.history.remove(t);
+        }
+        self.doc.history.remove(group);
         self.doc.rollback_to_tip();
         self.ui.selected = None;
         self.selection.clear();
@@ -1266,10 +1329,8 @@ impl Controller for Modeler {
             let can_sketch = self.selection.can_sketch_on_face();
             // A mirror plane needs a planar face — same condition as sketching.
             let can_mirror = self.selection.face_plane.is_some();
-            let can_ungroup = matches!(
-                self.selected_body().and_then(|b| self.doc.history.get(b)).map(|f| &f.kind),
-                Some(FeatureKind::Group { .. })
-            );
+            let can_ungroup =
+                self.selected_body().is_some_and(|b| self.group_and_chain(b).is_some());
             let (mut sketch, mut fillet, mut mirror, mut ungroup) = (false, false, false, false);
             let mut flip: Option<Axis3> = None;
             #[allow(deprecated)]
@@ -2875,6 +2936,37 @@ mod tests {
         assert!(m.ungroup_selected());
         let _ = m.mesh();
         assert_eq!(m.ui.visible.len(), 2, "ungroup restores the two bodies");
+    }
+
+    #[test]
+    fn ungrouping_a_moved_group_bakes_the_move_into_every_member() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("two");
+        let a = m.doc.add("A", FeatureKind::Box { size: DVec3::splat(10.0) }); // [0,10]
+        let b0 = m.doc.add("B0", FeatureKind::Box { size: DVec3::splat(10.0) });
+        // B at x[20,30].
+        m.doc.add("B", FeatureKind::Translate { source: b0, offset: DVec3::new(20.0, 0.0, 0.0) });
+        let b = m.doc.history.features().last().unwrap().id;
+        let g = m.doc.add("Group", FeatureKind::Group { members: vec![a, b] });
+        // Move the whole group +5 in Z.
+        m.doc.add("Move", FeatureKind::Translate { source: g, offset: DVec3::new(0.0, 0.0, 5.0) });
+        let _ = m.mesh();
+        assert_eq!(m.ui.visible.len(), 1, "one (moved) group body");
+
+        // Ungroup the moved group.
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        assert!(m.ungroup_selected());
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        assert_eq!(m.ui.visible.len(), 2, "two members after ungroup");
+
+        // The +5 Z move is baked into BOTH members — combined z stays [5,15] (it
+        // would be [0,15] if the move only landed on the first member), and both
+        // members are present (x spans the full [0,30]).
+        let (min, max) = bounds(&mesh);
+        assert!((min[2] - 5.0).abs() < 0.2, "both kept the baked move: z min {}", min[2]);
+        assert!((max[2] - 15.0).abs() < 0.2, "z max {}", max[2]);
+        assert!(min[0].abs() < 0.2 && (max[0] - 30.0).abs() < 0.2, "both members present: {min:?}..{max:?}");
     }
 
     #[test]
