@@ -116,15 +116,30 @@ pub trait Controller {
 /// The ground-plane grid configuration.
 #[derive(Clone, Copy)]
 pub struct GridSpec {
-    /// Snap/line spacing in mm. `<= 0` means no grid and no snapping.
-    pub size: f32,
+    /// Cell spacing (mm) — line density and snap increment. `<= 0` disables.
+    pub spacing: f32,
+    /// Half the total grid size (mm); the grid spans `[-half_extent, half_extent]`.
+    pub half_extent: f32,
     /// Whether to draw the workplane overlay.
     pub visible: bool,
+    /// Whether moves/resizes snap to the grid.
+    pub snap: bool,
 }
 
 impl Default for GridSpec {
     fn default() -> Self {
-        GridSpec { size: 0.0, visible: false }
+        GridSpec { spacing: 0.0, half_extent: 0.0, visible: false, snap: false }
+    }
+}
+
+impl GridSpec {
+    /// The effective snap increment: the spacing if snapping is on, else 0 (off).
+    fn snap_step(&self) -> f32 {
+        if self.snap {
+            self.spacing
+        } else {
+            0.0
+        }
     }
 }
 
@@ -1651,8 +1666,6 @@ fn make_gizmo_buffer(device: &wgpu::Device) -> wgpu::Buffer {
 
 // --- Workplane grid --------------------------------------------------------
 
-/// Half-extent of the finite ground-plane grid (mm); it spans `[-E, E]^2`.
-const GRID_HALF_EXTENT: f32 = 100.0;
 /// Drop the grid just below z=0 so it doesn't z-fight a model base sitting there.
 const GRID_Z: f32 = -0.05;
 /// Don't draw minor lines once they'd be denser than this (keeps it readable).
@@ -1673,12 +1686,15 @@ fn make_grid_buffer(device: &wgpu::Device) -> wgpu::Buffer {
 /// grid spacing, brighter major lines every 10, and colored X/Y axis lines.
 /// Minor lines drop out when the spacing would make them too dense to read.
 fn grid_geometry(spec: GridSpec) -> Vec<GizmoVertex> {
-    if !spec.visible || spec.size <= 0.0 {
+    if !spec.visible || spec.spacing <= 0.0 || spec.half_extent <= 0.0 {
         return Vec::new();
     }
-    let ext = GRID_HALF_EXTENT;
-    let minor = spec.size;
-    let draw_minor = 2.0 * ext / minor <= GRID_MAX_LINES;
+    let ext = spec.half_extent;
+    // Cap the visual density: clamp the line spacing so there are never more than
+    // ~GRID_MAX_LINES lines across (keeps a huge extent / tiny spacing readable
+    // and the vertex count bounded). Snapping still uses the real spacing.
+    let minor = spec.spacing.max(2.0 * ext / GRID_MAX_LINES);
+    let draw_minor = spec.spacing >= 2.0 * ext / GRID_MAX_LINES;
     let minor_c = rgba([0.58, 0.60, 0.66], 0.16);
     let major_c = rgba([0.62, 0.64, 0.70], 0.38);
     let x_axis_c = rgba(Axis3::X.color(), 0.55);
@@ -2257,7 +2273,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                         if self.mouse.dragged {
                             let (w, h) = (state.config.width, state.config.height);
                             let free = self.modifiers.alt_key();
-                            let grid = self.controller.grid().size;
+                            let grid = self.controller.grid().snap_step();
                             let cursor = self.mouse.cursor;
                             let delta = match drag {
                                 GizmoDrag::Axis { origin, dir, start, .. } => {
@@ -2308,7 +2324,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                             state.config.width,
                             state.config.height,
                         );
-                        let dist = snap_distance(dist, self.controller.grid().size, self.modifiers.alt_key());
+                        let dist = snap_distance(dist, self.controller.grid().snap_step(), self.modifiers.alt_key());
                         if self.controller.update_manipulation(dist as f64) {
                             self.mesh_dirty = true;
                         }

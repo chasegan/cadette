@@ -1228,8 +1228,10 @@ impl Controller for Modeler {
 
     fn grid(&self) -> rmf_render::GridSpec {
         rmf_render::GridSpec {
-            size: self.ui.grid_size,
+            spacing: self.ui.grid_spacing as f32,
+            half_extent: (self.ui.grid_extent / 2.0) as f32,
             visible: self.ui.show_grid,
+            snap: self.ui.snap_to_grid,
         }
     }
 

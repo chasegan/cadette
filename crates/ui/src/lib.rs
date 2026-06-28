@@ -28,10 +28,14 @@ pub struct HistoryState {
     /// Whether undo/redo are available, set by the host from its undo stacks.
     pub can_undo: bool,
     pub can_redo: bool,
-    /// Grid spacing (mm) — drives translation snapping and the workplane.
-    pub grid_size: f32,
+    /// Grid cell spacing (mm) — the line density and snap increment.
+    pub grid_spacing: f64,
+    /// Total grid size (mm) across — the workplane's extent.
+    pub grid_extent: f64,
     /// Whether to draw the workplane grid.
     pub show_grid: bool,
+    /// Whether moves/resizes snap to the grid.
+    pub snap_to_grid: bool,
 }
 
 impl Default for HistoryState {
@@ -42,8 +46,10 @@ impl Default for HistoryState {
             visible: Vec::new(),
             can_undo: false,
             can_redo: false,
-            grid_size: 1.0,
+            grid_spacing: 1.0,
+            grid_extent: 200.0,
             show_grid: true,
+            snap_to_grid: true,
         }
     }
 }
@@ -157,15 +163,26 @@ pub fn history_panel(
 
             ui.horizontal(|ui| {
                 ui.label("Grid");
-                egui::ComboBox::from_id_salt("grid_size")
-                    .selected_text(format!("{} mm", state.grid_size))
-                    .show_ui(ui, |ui| {
-                        for size in [0.5_f32, 1.0, 2.0, 5.0, 10.0] {
-                            ui.selectable_value(&mut state.grid_size, size, format!("{size} mm"));
-                        }
-                    });
+                ui.add(
+                    egui::DragValue::new(&mut state.grid_spacing)
+                        .speed(0.1)
+                        .range(0.05..=1000.0)
+                        .suffix(" mm"),
+                )
+                .on_hover_text("Cell spacing (snap increment)");
+                ui.add(
+                    egui::DragValue::new(&mut state.grid_extent)
+                        .speed(5.0)
+                        .range(10.0..=5000.0)
+                        .suffix(" mm"),
+                )
+                .on_hover_text("Total grid size (extent)");
+            });
+            ui.horizontal(|ui| {
                 ui.checkbox(&mut state.show_grid, "Show")
                     .on_hover_text("Show the ground-plane grid");
+                ui.checkbox(&mut state.snap_to_grid, "Snap")
+                    .on_hover_text("Snap moves and resizes to the grid (Alt overrides)");
             });
             ui.separator();
 
