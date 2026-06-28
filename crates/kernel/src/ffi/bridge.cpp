@@ -17,6 +17,7 @@
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
@@ -462,8 +463,13 @@ Mesh tessellate(const Shape& s, double deflection) {
   return guard("tessellate", [&] {
     Mesh m;
 
-    // Mesh in place on a copy so we don't mutate the caller's shape state.
-    BRepMesh_IncrementalMesh mesher(s.shape, deflection, /*isRelative=*/false,
+    // Mesh a COPY, never the caller's shape: BRepMesh stores its triangulation
+    // inside the TShape, and the regen cache hands out shallow Solid clones that
+    // share one TShape. Meshing the original would bake a stale triangulation
+    // into the shared shape, which then corrupts downstream transforms (e.g. a
+    // resize's GTransform reuses it → a "floating" top face).
+    const TopoDS_Shape shape = BRepBuilderAPI_Copy(s.shape).Shape();
+    BRepMesh_IncrementalMesh mesher(shape, deflection, /*isRelative=*/false,
                                     /*angDeflection=*/0.5,
                                     /*isInParallel=*/true);
     mesher.Perform();
@@ -472,7 +478,7 @@ Mesh tessellate(const Shape& s, double deflection) {
     // Face id = TopExp face index, incremented for every face so it matches
     // face_plane()'s indexing even if some face lacks a triangulation.
     uint32_t face_index = 0;
-    for (TopExp_Explorer ex(s.shape, TopAbs_FACE); ex.More();
+    for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More();
          ex.Next(), ++face_index) {
       const TopoDS_Face face = TopoDS::Face(ex.Current());
       TopLoc_Location loc;
@@ -543,9 +549,9 @@ Mesh tessellate(const Shape& s, double deflection) {
     // Crisp feature edges: one 3D polyline per unique edge, taken from the
     // edge's tessellation on an adjacent face. Edge ids match exploration order.
     TopTools_IndexedMapOfShape edge_map;
-    TopExp::MapShapes(s.shape, TopAbs_EDGE, edge_map);
+    TopExp::MapShapes(shape, TopAbs_EDGE, edge_map);
     std::vector<bool> emitted(edge_map.Extent() + 1, false);
-    for (TopExp_Explorer fex(s.shape, TopAbs_FACE); fex.More(); fex.Next()) {
+    for (TopExp_Explorer fex(shape, TopAbs_FACE); fex.More(); fex.Next()) {
       const TopoDS_Face face = TopoDS::Face(fex.Current());
       TopLoc_Location loc;
       Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
@@ -650,12 +656,16 @@ rust::Vec<double> face_edge_midpoints(const Shape& s, uint32_t index) {
 
 void write_stl(const Shape& s, rust::Str path, double deflection) {
   guard("write_stl", [&] {
-    BRepMesh_IncrementalMesh mesher(s.shape, deflection, false, 0.5, true);
+    // Mesh a copy (like tessellate): the export compound shares its sub-shapes'
+    // TShapes with the cached bodies, so meshing in place would bake a stale
+    // triangulation into them and corrupt a later resize.
+    const TopoDS_Shape shape = BRepBuilderAPI_Copy(s.shape).Shape();
+    BRepMesh_IncrementalMesh mesher(shape, deflection, false, 0.5, true);
     mesher.Perform();
     StlAPI_Writer writer;
     writer.ASCIIMode() = false;  // compact binary STL
     std::string p(path);
-    if (!writer.Write(s.shape, p.c_str())) {
+    if (!writer.Write(shape, p.c_str())) {
       throw std::runtime_error("write_stl: writer reported failure for " + p);
     }
     return 0;  // guard<F> needs a value; ignored by the void wrapper

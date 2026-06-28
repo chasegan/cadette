@@ -3977,3 +3977,60 @@ mod tests {
         assert!(!m.ui.errors.is_empty());
     }
 }
+
+#[cfg(test)]
+mod resize_cache {
+    use super::*;
+    use rmf_render::Axis3;
+
+    /// Regression: resizing an extruded body (which goes through a Scale on a
+    /// CACHED extrude) must not "float" the top face off the walls. The cause
+    /// was tessellation meshing the shared TShape in place, baking a stale
+    /// triangulation the downstream GTransform then reused.
+    #[test]
+    fn resizing_an_extruded_body_keeps_a_consistent_mesh() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("ext");
+        let mut s = Sketch2d::new();
+        let p: Vec<_> = [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]
+            .iter()
+            .map(|&(x, y)| s.add_point(x, y))
+            .collect();
+        for i in 0..4 {
+            s.add_line(p[i], p[(i + 1) % 4]);
+        }
+        let sk =
+            m.doc.add("Sketch", FeatureKind::ConstraintSketch { plane: SketchPlane::Xy, sketch: s });
+        m.doc.add("Extrude", FeatureKind::Extrude { source: sk, distance: 20.0 });
+        let _ = m.mesh();
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        m.start_resize(Axis3::Z, true);
+
+        // Drag the top up through several heights; each rebuild must be a clean
+        // prism — every wall face reaches the body's top z.
+        for target in [22.0, 25.0, 28.0, 30.0] {
+            assert!(m.update_resize(Axis3::Z, target));
+            let mesh = m.mesh();
+            assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+            use std::collections::BTreeMap;
+            let mut face_z: BTreeMap<u32, (f32, f32)> = BTreeMap::new();
+            for v in &mesh.vertices {
+                let e = face_z.entry(v.face_id).or_insert((f32::MAX, f32::MIN));
+                e.0 = e.0.min(v.position[2]);
+                e.1 = e.1.max(v.position[2]);
+            }
+            let zmax = mesh.vertices.iter().map(|v| v.position[2]).fold(f32::MIN, f32::max);
+            // Wall/bottom faces start at z≈0; their highest point must equal the
+            // body's top (it was 42 vs 22 with the bug — top floating).
+            let wall_top = face_z
+                .values()
+                .filter(|(lo, _)| *lo < 1.0)
+                .map(|(_, hi)| *hi)
+                .fold(f32::MIN, f32::max);
+            assert!(
+                (wall_top - zmax).abs() < 0.5,
+                "floating top at target {target}: walls reach {wall_top}, body top {zmax}"
+            );
+        }
+    }
+}
