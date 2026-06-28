@@ -675,6 +675,34 @@ impl Modeler {
         true
     }
 
+    /// Flip (mirror) the selected body in place across the plane through its own
+    /// bbox center, perpendicular to `axis` — reverses handedness without moving
+    /// it. No copy. Returns true if a feature was added.
+    fn flip_in_place(&mut self, axis: Axis3) -> bool {
+        let Some(body) = self.selected_body() else {
+            return false;
+        };
+        let Some(idx) = self.ui.visible.iter().position(|&f| f == body) else {
+            return false;
+        };
+        let Some(center) = self.body_centers.get(idx).copied() else {
+            return false;
+        };
+        let normal = match axis {
+            Axis3::X => DVec3::X,
+            Axis3::Y => DVec3::Y,
+            Axis3::Z => DVec3::Z,
+        };
+        self.record_undo(self.doc.clone());
+        let id = self.doc.add(
+            "Flip",
+            FeatureKind::Mirror { source: body, origin: DVec3::from_array(center), normal },
+        );
+        self.ui.selected = Some(id);
+        self.selection.clear();
+        true
+    }
+
     /// Fillet the currently selected edges (each anchored at its clicked point),
     /// as one feature. Returns true if a feature was added.
     fn fillet_selected_edges(&mut self) -> bool {
@@ -1180,6 +1208,7 @@ impl Controller for Modeler {
             // A mirror plane needs a planar face — same condition as sketching.
             let can_mirror = self.selection.face_plane.is_some();
             let (mut sketch, mut fillet, mut mirror) = (false, false, false);
+            let mut flip: Option<Axis3> = None;
             #[allow(deprecated)]
             egui::Panel::top("selection_bar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -1198,6 +1227,16 @@ impl Controller for Modeler {
                             .on_hover_text("Reflect this body across the face — keeps the original")
                             .clicked();
                     }
+                    ui.separator();
+                    ui.label("Flip")
+                        .on_hover_text("Mirror this body in place about its center");
+                    for (label, axis) in
+                        [("X", Axis3::X), ("Y", Axis3::Y), ("Z", Axis3::Z)]
+                    {
+                        if ui.small_button(label).clicked() {
+                            flip = Some(axis);
+                        }
+                    }
                 });
             });
             if sketch {
@@ -1208,6 +1247,9 @@ impl Controller for Modeler {
             }
             if mirror {
                 changed |= self.mirror_across_selected_face();
+            }
+            if let Some(axis) = flip {
+                changed |= self.flip_in_place(axis);
             }
         } else if self.sketch_session.is_none() && self.selection.is_edges() {
             let n = self.selection.selected().len();
@@ -2577,6 +2619,48 @@ mod tests {
         assert!(m.undo());
         let _ = m.mesh();
         assert_eq!(m.ui.visible.len(), 1, "undo removes the whole mirror");
+    }
+
+    #[test]
+    fn flip_mirrors_a_body_in_place_keeping_its_bounds() {
+        use rmf_render::Axis3;
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        // A stepped (asymmetric) block: a small box on top of one end of a big one.
+        let big = m.doc.add("Big", FeatureKind::Box { size: DVec3::new(20.0, 10.0, 10.0) });
+        let small = m.doc.add("Small", FeatureKind::Box { size: DVec3::new(6.0, 10.0, 6.0) });
+        let small = m.doc.add(
+            "Lift",
+            FeatureKind::Translate { source: small, offset: DVec3::new(0.0, 0.0, 10.0) },
+        );
+        m.doc.add(
+            "Step",
+            FeatureKind::Boolean { op: BooleanOp::Union, target: big, tool: small },
+        );
+        let mesh = m.mesh();
+        let (min0, max0) = bounds(&mesh);
+
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        let n0 = m.doc.history.len();
+        assert!(m.flip_in_place(Axis3::X));
+        assert_eq!(m.doc.history.len(), n0 + 1, "flip added one Mirror feature (no copy)");
+
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        assert_eq!(m.ui.visible.len(), 1, "flip is in place — still one body");
+        // Mirroring about the body's own center preserves its bounding box.
+        let (min1, max1) = bounds(&mesh);
+        for k in 0..3 {
+            assert!(
+                (min1[k] - min0[k]).abs() < 0.2 && (max1[k] - max0[k]).abs() < 0.2,
+                "bounds preserved on axis {k}: {:?}..{:?} vs {:?}..{:?}",
+                min0,
+                max0,
+                min1,
+                max1
+            );
+        }
+        assert!(m.undo(), "flip is one undo entry");
     }
 
     #[test]
