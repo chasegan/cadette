@@ -240,4 +240,116 @@ impl Sketch2d {
         // A single closed loop returns to its start after visiting every line.
         (current == start).then_some(loop_points)
     }
+
+    /// The point ids of the single closed loop in traversal order (`None` unless
+    /// the lines form exactly one closed loop). Like [`Self::profile_loop`] but
+    /// returns the ids, for editing the loop's topology.
+    pub fn loop_order(&self) -> Option<Vec<PointId>> {
+        let n = self.lines.len();
+        if n < 3 {
+            return None;
+        }
+        let start = self.lines[0].a;
+        let mut current = start;
+        let mut visited = vec![false; n];
+        let mut order = Vec::with_capacity(n);
+        for _ in 0..n {
+            order.push(current);
+            let (line_index, line) = self
+                .lines
+                .iter()
+                .enumerate()
+                .find(|(i, l)| !visited[*i] && (l.a == current || l.b == current))?;
+            visited[line_index] = true;
+            current = if line.a == current { line.b } else { line.a };
+        }
+        (current == start).then_some(order)
+    }
+
+    /// Insert a new point at `(x, y)` partway along `line`, splitting it into
+    /// two segments (`a→new`, `new→b`). Point/line ids stay stable (the split
+    /// line keeps its id as the first half; the second half is appended), so
+    /// existing constraints are preserved. Returns the new point.
+    pub fn split_line(&mut self, line: LineId, x: f64, y: f64) -> Option<PointId> {
+        let l = *self.lines.get(line.0)?;
+        let p = self.add_point(x, y);
+        self.lines[line.0] = SketchLine { a: l.a, b: p };
+        self.lines.push(SketchLine { a: p, b: l.b });
+        Some(p)
+    }
+
+    /// Delete `remove`d points from the closed loop, reconnecting the survivors
+    /// into a clean loop. Requires a single closed loop and at least 3 points
+    /// left (a profile needs a triangle). Rebuilds the geometry, so constraints
+    /// and circles are dropped. Returns false (unchanged) if not applicable.
+    pub fn delete_points(&mut self, remove: &[PointId]) -> bool {
+        let Some(order) = self.loop_order() else {
+            return false;
+        };
+        let kept: Vec<SketchPoint> = order
+            .iter()
+            .filter(|id| !remove.contains(id))
+            .map(|&id| self.point(id))
+            .collect();
+        if kept.len() < 3 || kept.len() == order.len() {
+            return false; // nothing removed, or too few points left
+        }
+        let n = kept.len();
+        self.points = kept;
+        self.lines = (0..n)
+            .map(|i| SketchLine { a: PointId(i), b: PointId((i + 1) % n) })
+            .collect();
+        self.circles.clear();
+        self.constraints.clear();
+        true
+    }
+}
+
+#[cfg(test)]
+mod edit_tests {
+    use super::*;
+
+    /// A closed square loop of 4 points.
+    fn square() -> Sketch2d {
+        let mut s = Sketch2d::new();
+        let p: Vec<_> = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+            .iter()
+            .map(|&(x, y)| s.add_point(x, y))
+            .collect();
+        for i in 0..4 {
+            s.add_line(p[i], p[(i + 1) % 4]);
+        }
+        s
+    }
+
+    #[test]
+    fn split_line_inserts_a_vertex_keeping_the_loop_closed() {
+        let mut s = square();
+        let n_pts = s.points.len();
+        let new = s.split_line(LineId(0), 5.0, 0.0).unwrap();
+        assert_eq!(new.0, n_pts, "new point appended");
+        assert_eq!(s.points.len(), 5);
+        assert_eq!(s.lines.len(), 5, "one line became two");
+        // Still a single closed loop, now of 5 points.
+        assert_eq!(s.loop_order().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn delete_points_reconnects_the_loop() {
+        let mut s = square();
+        let to_remove = s.loop_order().unwrap()[1]; // one corner
+        assert!(s.delete_points(&[to_remove]));
+        assert_eq!(s.points.len(), 3, "a triangle remains");
+        assert_eq!(s.lines.len(), 3);
+        assert!(s.loop_order().is_some(), "still one closed loop");
+    }
+
+    #[test]
+    fn delete_keeps_at_least_a_triangle() {
+        let mut s = square();
+        let order = s.loop_order().unwrap();
+        // Removing two of four points would leave only two — refused.
+        assert!(!s.delete_points(&[order[0], order[1]]));
+        assert_eq!(s.points.len(), 4, "unchanged");
+    }
 }

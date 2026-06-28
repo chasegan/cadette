@@ -133,8 +133,10 @@ const UNDO_LIMIT: usize = 200;
 enum SketchTool {
     /// Place points, chaining line segments.
     Line,
-    /// Pick points and lines to constrain.
+    /// Pick points and lines to constrain; drag points to move them.
     Select,
+    /// Click a segment to insert a vertex (split it).
+    Insert,
 }
 
 /// An in-progress interactive sketch. Kept out of the document until finished,
@@ -175,6 +177,10 @@ enum SketchAction {
     DragPointTo([f64; 2]),
     /// End the point drag (re-solve).
     ReleasePoint,
+    /// Insert a vertex at the given plane coordinate on `line`, splitting it.
+    InsertOnLine(LineId, [f64; 2]),
+    /// Delete the selected points, healing the loop.
+    DeleteSelected,
     Finish,
     Cancel,
 }
@@ -1081,6 +1087,13 @@ impl Modeler {
         let np = session.selected_points.len();
         let nl = session.selected_lines.len();
 
+        // Delete/Backspace removes selected points.
+        if np >= 1
+            && ctx.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
+        {
+            actions.push(SketchAction::DeleteSelected);
+        }
+
         #[allow(deprecated)]
         egui::Panel::top("sketch_toolbar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -1091,12 +1104,21 @@ impl Modeler {
                     actions.push(SketchAction::Cancel);
                 }
                 ui.separator();
-                let line = session.tool == SketchTool::Line;
-                if ui.selectable_label(line, "✏ Line").clicked() {
-                    actions.push(SketchAction::SetTool(SketchTool::Line));
+                for (tool, label) in [
+                    (SketchTool::Line, "✏ Line"),
+                    (SketchTool::Select, "◉ Select"),
+                    (SketchTool::Insert, "✚ Insert"),
+                ] {
+                    if ui.selectable_label(session.tool == tool, label).clicked() {
+                        actions.push(SketchAction::SetTool(tool));
+                    }
                 }
-                if ui.selectable_label(!line, "◉ Select").clicked() {
-                    actions.push(SketchAction::SetTool(SketchTool::Select));
+                if ui
+                    .add_enabled(np >= 1, egui::Button::new("🗑 Delete"))
+                    .on_hover_text("Delete the selected point(s) and reconnect the loop")
+                    .clicked()
+                {
+                    actions.push(SketchAction::DeleteSelected);
                 }
                 ui.separator();
                 let dof = session.dof;
@@ -1134,7 +1156,10 @@ impl Modeler {
                     SketchTool::Line => {
                         "Line: click the plane to add points; click the first point to close."
                     }
-                    SketchTool::Select => "Select: click points/lines, then apply a constraint.",
+                    SketchTool::Select => {
+                        "Select: click points/lines to constrain; drag a point to move it."
+                    }
+                    SketchTool::Insert => "Insert: click a segment to add a vertex on it.",
                 })
                 .small()
                 .weak(),
@@ -1179,6 +1204,21 @@ impl Modeler {
                             let d = sp.distance(pos);
                             if d < best.0 {
                                 best = (d, Some(PointId(i)));
+                            }
+                        }
+                    }
+                    best.1
+                };
+                // Nearest line segment to a screen position, within a pick band.
+                let nearest_line = |pos: egui::Pos2| -> Option<LineId> {
+                    let mut best = (8.0_f32, None);
+                    for (i, l) in session.sketch.lines.iter().enumerate() {
+                        let a = session.sketch.point(l.a);
+                        let b = session.sketch.point(l.b);
+                        if let (Some(pa), Some(pb)) = (proj(a.x, a.y), proj(b.x, b.y)) {
+                            let d = dist_to_segment(pos, pa, pb);
+                            if d < best.0 {
+                                best = (d, Some(LineId(i)));
                             }
                         }
                     }
@@ -1255,6 +1295,14 @@ impl Modeler {
                                 }
                             }
                             SketchTool::Select => actions.push(SketchAction::PickAt(pos)),
+                            SketchTool::Insert => {
+                                // Click a segment to split it at the click point.
+                                if let (Some(line), Some(uv)) =
+                                    (nearest_line(pos), view.cursor_on_plane(pos, o, xd, yd, nd))
+                                {
+                                    actions.push(SketchAction::InsertOnLine(line, uv));
+                                }
+                            }
                         }
                     }
                 }
@@ -1326,6 +1374,21 @@ impl Modeler {
                         s.dragging = None;
                     }
                     self.resolve_session(); // settle any constraints
+                }
+                SketchAction::InsertOnLine(line, [u, v]) => {
+                    if let Some(s) = self.sketch_session.as_mut() {
+                        s.sketch.split_line(line, u, v);
+                        s.selected_points.clear();
+                        s.selected_lines.clear();
+                    }
+                }
+                SketchAction::DeleteSelected => {
+                    if let Some(s) = self.sketch_session.as_mut() {
+                        let remove = std::mem::take(&mut s.selected_points);
+                        s.sketch.delete_points(&remove);
+                        s.selected_lines.clear();
+                    }
+                    self.resolve_session();
                 }
                 SketchAction::Apply(constraint) => {
                     if let Some(s) = self.sketch_session.as_mut() {
@@ -2910,6 +2973,50 @@ mod tests {
         assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
         let (_, max) = bounds(&mesh);
         assert!((max[0] - 40.0).abs() < 0.5, "moved corner widened the prism: {}", max[0]);
+    }
+
+    #[test]
+    fn editing_a_sketch_inserts_and_deletes_points() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("sk");
+        // A 20×20 square, extruded.
+        let mut s = Sketch2d::new();
+        let p: Vec<_> = [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]
+            .iter()
+            .map(|&(x, y)| s.add_point(x, y))
+            .collect();
+        for i in 0..4 {
+            s.add_line(p[i], p[(i + 1) % 4]);
+        }
+        let sk =
+            m.doc.add("Sketch", FeatureKind::ConstraintSketch { plane: SketchPlane::Xy, sketch: s });
+        m.doc.add("Extrude", FeatureKind::Extrude { source: sk, distance: 10.0 });
+        let _ = m.mesh();
+
+        // Insert a vertex on the bottom edge and pull it down into a notch.
+        assert!(m.edit_sketch(sk));
+        {
+            let sess = m.sketch_session.as_mut().unwrap();
+            let new = sess.sketch.split_line(LineId(0), 10.0, 0.0).unwrap();
+            sess.sketch.points[new.0].y = -5.0;
+        }
+        assert!(m.finish_sketch());
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "insert rebuild: {:?}", m.ui.errors);
+        let (min, _) = bounds(&mesh);
+        assert!((min[1] + 5.0).abs() < 0.5, "inserted vertex extends y to −5: {}", min[1]);
+
+        // Re-open and delete a corner — still a valid loop that rebuilds.
+        assert!(m.edit_sketch(sk));
+        {
+            let sess = m.sketch_session.as_mut().unwrap();
+            let order = sess.sketch.loop_order().unwrap();
+            assert_eq!(order.len(), 5, "the inserted vertex persisted");
+            assert!(sess.sketch.delete_points(&[order[2]]));
+        }
+        assert!(m.finish_sketch());
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "delete rebuild: {:?}", m.ui.errors);
     }
 
     #[test]
