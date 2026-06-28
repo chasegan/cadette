@@ -723,9 +723,10 @@ impl Modeler {
     /// Copy the selected body to the clipboard.
     fn copy_selected(&mut self) {
         self.clipboard = self.copy_target();
-        if let Some(name) = self.clipboard.and_then(|id| self.doc.history.get(id)).map(|f| &f.name) {
-            self.status = Some(format!("Copied '{name}'"));
-        }
+        self.status = Some(match self.clipboard.and_then(|id| self.doc.history.get(id)) {
+            Some(f) => format!("Copied '{}'", f.name),
+            None => "Select a body to copy".into(),
+        });
     }
 
     /// Paste the clipboard body as an independent parametric duplicate, offset
@@ -1255,9 +1256,13 @@ impl Controller for Modeler {
         }
 
         // Copy/paste a body (not while sketching — those keys are the sketch's).
+        // egui-winit turns Cmd/Ctrl+C/V into Copy/Paste *events* (not Key presses
+        // like Cmd+Z), so detect those.
         let (copy_key, paste_key) = ctx.input(|i| {
-            let cmd = i.modifiers.command;
-            (cmd && i.key_pressed(Key::C), cmd && i.key_pressed(Key::V))
+            (
+                i.events.iter().any(|e| matches!(e, egui::Event::Copy)),
+                i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))),
+            )
         });
         if self.sketch_session.is_none() {
             if copy_key {
