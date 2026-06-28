@@ -1267,6 +1267,12 @@ impl Controller for Modeler {
         if self.sketch_session.is_none() {
             if copy_key {
                 self.copy_selected();
+                // Seed the OS clipboard so the NEXT Cmd/Ctrl+V produces an egui
+                // Paste event — egui only emits one when the OS clipboard isn't
+                // empty, and copying a shape otherwise leaves it untouched.
+                if self.clipboard.is_some() {
+                    ctx.copy_text("cadette:body".to_owned());
+                }
             }
             if paste_key {
                 changed |= self.paste();
