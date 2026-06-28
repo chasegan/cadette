@@ -190,6 +190,11 @@ enum ResizeMode {
     /// Edit a bare primitive `Box`'s `size` in place — parametric, no new
     /// feature (only when the selected body's tip feature is a `Box`).
     BoxDim,
+    /// Edit a bare `Cylinder`'s `radius` (X/Y grips) or `height` (Z grip) in
+    /// place — keeps it circular, instead of scaling it elliptical.
+    CylDim,
+    /// Edit a bare `Sphere`'s `radius` in place (any grip) — stays a sphere.
+    SphereDim,
     /// Add a non-uniform `Scale` feature to a body with no existing one —
     /// works on any body (extrudes, booleans, fillets, …), Tinkercad-style.
     NewScale,
@@ -1493,19 +1498,29 @@ impl Controller for Modeler {
         let Some((min, max)) = self.body_bounds.get(idx).copied() else {
             return;
         };
-        let base_extent = DVec3::new(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
-        // A bare Box edits its dimension parametrically; a body already carrying
-        // a Scale edits that Scale (never stack two); anything else gets a Scale.
-        let (mode, base_factors, anchor, feature) = match self.doc.history.get(source).map(|f| &f.kind)
-        {
-            Some(FeatureKind::Box { .. }) => {
-                (ResizeMode::BoxDim, DVec3::ONE, DVec3::from_array(min), None)
-            }
-            Some(FeatureKind::Scale { factors, anchor, .. }) => {
-                (ResizeMode::EditScale, *factors, *anchor, Some(source))
-            }
-            _ => (ResizeMode::NewScale, DVec3::ONE, DVec3::from_array(min), None),
-        };
+        let mesh_extent = DVec3::new(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
+        // A bare primitive edits its real dimension(s) parametrically (exact base
+        // extents from the feature, so a cancel restores precisely); a body that
+        // already carries a Scale edits that Scale (never stack two); anything
+        // else gets a fresh Scale.
+        let (mode, base_extent, base_factors, anchor, feature) =
+            match self.doc.history.get(source).map(|f| &f.kind) {
+                Some(FeatureKind::Box { size }) => {
+                    (ResizeMode::BoxDim, *size, DVec3::ONE, DVec3::from_array(min), None)
+                }
+                Some(FeatureKind::Cylinder { radius, height }) => {
+                    let e = DVec3::new(2.0 * radius, 2.0 * radius, *height);
+                    (ResizeMode::CylDim, e, DVec3::ONE, DVec3::from_array(min), None)
+                }
+                Some(FeatureKind::Sphere { radius }) => {
+                    let e = DVec3::splat(2.0 * radius);
+                    (ResizeMode::SphereDim, e, DVec3::ONE, DVec3::from_array(min), None)
+                }
+                Some(FeatureKind::Scale { factors, anchor, .. }) => {
+                    (ResizeMode::EditScale, mesh_extent, *factors, *anchor, Some(source))
+                }
+                _ => (ResizeMode::NewScale, mesh_extent, DVec3::ONE, DVec3::from_array(min), None),
+            };
         self.resize = Some(ResizeDrag {
             source,
             mode,
@@ -1544,6 +1559,65 @@ impl Controller for Modeler {
                         self.doc.history.get_mut(r.source).map(|f| &mut f.kind)
                     {
                         *size = new_size;
+                    }
+                    true
+                }
+            }
+            ResizeMode::CylDim => {
+                let (cur_r, cur_h) = match self.doc.history.get(r.source).map(|f| &f.kind) {
+                    Some(FeatureKind::Cylinder { radius, height }) => (*radius, *height),
+                    _ => {
+                        self.resize = Some(r);
+                        return false;
+                    }
+                };
+                // X/Y grip → radius (grip tracks the cursor: the +face sits at
+                // the radius, half the bbox span); Z grip → height (anchored at
+                // the base, 1:1 like a box).
+                let base = axis_get(r.base_extent, axis);
+                let (mut new_r, mut new_h) = (cur_r, cur_h);
+                match axis {
+                    Axis3::X | Axis3::Y => new_r = (target - base / 2.0).max(MIN_DIM),
+                    Axis3::Z => new_h = target,
+                }
+                if (new_r - cur_r).abs() < 1e-9 && (new_h - cur_h).abs() < 1e-9 {
+                    false
+                } else {
+                    if !r.changed {
+                        self.record_undo(self.doc.clone());
+                        r.changed = true;
+                    }
+                    if let Some(FeatureKind::Cylinder { radius, height }) =
+                        self.doc.history.get_mut(r.source).map(|f| &mut f.kind)
+                    {
+                        *radius = new_r;
+                        *height = new_h;
+                    }
+                    true
+                }
+            }
+            ResizeMode::SphereDim => {
+                let cur_r = match self.doc.history.get(r.source).map(|f| &f.kind) {
+                    Some(FeatureKind::Sphere { radius }) => *radius,
+                    _ => {
+                        self.resize = Some(r);
+                        return false;
+                    }
+                };
+                // Any grip sets the one radius (the +face sits at the radius).
+                let base = axis_get(r.base_extent, axis);
+                let new_r = (target - base / 2.0).max(MIN_DIM);
+                if (new_r - cur_r).abs() < 1e-9 {
+                    false
+                } else {
+                    if !r.changed {
+                        self.record_undo(self.doc.clone());
+                        r.changed = true;
+                    }
+                    if let Some(FeatureKind::Sphere { radius }) =
+                        self.doc.history.get_mut(r.source).map(|f| &mut f.kind)
+                    {
+                        *radius = new_r;
                     }
                     true
                 }
@@ -1626,6 +1700,28 @@ impl Controller for Modeler {
                         self.doc.history.get_mut(r.source).map(|f| &mut f.kind)
                     {
                         *size = r.base_extent;
+                    }
+                    self.undo.pop();
+                }
+            }
+            ResizeMode::CylDim => {
+                if !commit {
+                    // Restore radius/height from the exact base extents.
+                    if let Some(FeatureKind::Cylinder { radius, height }) =
+                        self.doc.history.get_mut(r.source).map(|f| &mut f.kind)
+                    {
+                        *radius = r.base_extent.x / 2.0;
+                        *height = r.base_extent.z;
+                    }
+                    self.undo.pop();
+                }
+            }
+            ResizeMode::SphereDim => {
+                if !commit {
+                    if let Some(FeatureKind::Sphere { radius }) =
+                        self.doc.history.get_mut(r.source).map(|f| &mut f.kind)
+                    {
+                        *radius = r.base_extent.x / 2.0;
                     }
                     self.undo.pop();
                 }
@@ -2208,6 +2304,78 @@ mod tests {
             FeatureKind::Box { size } if (size.z - 10.0).abs() < 1e-9
         );
         assert!(restored, "Z restored to its pre-drag value");
+    }
+
+    #[test]
+    fn resizing_a_cylinder_edits_radius_and_height_staying_circular() {
+        use rmf_render::Axis3;
+        let mut m = Modeler::new();
+        m.doc = Document::new("cyl");
+        let c = m.doc.add("Cyl", FeatureKind::Cylinder { radius: 10.0, height: 20.0 });
+        let _ = m.mesh();
+        m.on_pick(Some(Pick::Face(0)), None, false);
+
+        // Dragging the +X grip edits the radius in place — no Scale feature, and
+        // the X/Y span stays equal (a circle, not an ellipse).
+        let n0 = m.doc.history.len();
+        m.start_resize(Axis3::X);
+        // The +X grip tracks the cursor: radius = grip's new x = extent − base/2.
+        // base (X span) is 2r = 20, so dragging the grip to extent 25 → radius 15.
+        assert!(m.update_resize(Axis3::X, 25.0));
+        assert_eq!(m.doc.history.len(), n0, "edits the Cylinder, adds no feature");
+        m.finish_resize(true);
+        let radius = match &m.doc.history.get(c).unwrap().kind {
+            FeatureKind::Cylinder { radius, .. } => *radius,
+            _ => panic!("still a cylinder"),
+        };
+        assert!((radius - 15.0).abs() < 1e-9, "radius now 15, got {radius}");
+
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        let (min, max) = bounds(&mesh);
+        let (sx, sy) = (max[0] - min[0], max[1] - min[1]);
+        assert!((sx - 30.0).abs() < 0.3 && (sx - sy).abs() < 0.3, "stays circular: {sx} vs {sy}");
+
+        // The +Z grip edits height (anchored at the base, 1:1).
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        m.start_resize(Axis3::Z);
+        assert!(m.update_resize(Axis3::Z, 50.0));
+        m.finish_resize(true);
+        let height = match &m.doc.history.get(c).unwrap().kind {
+            FeatureKind::Cylinder { height, .. } => *height,
+            _ => unreachable!(),
+        };
+        assert!((height - 50.0).abs() < 1e-9, "height now 50, got {height}");
+    }
+
+    #[test]
+    fn resizing_a_sphere_edits_its_one_radius() {
+        use rmf_render::Axis3;
+        let mut m = Modeler::new();
+        m.doc = Document::new("sph");
+        let s = m.doc.add("Sph", FeatureKind::Sphere { radius: 10.0 });
+        let _ = m.mesh();
+        m.on_pick(Some(Pick::Face(0)), None, false);
+
+        let n0 = m.doc.history.len();
+        m.start_resize(Axis3::Y);
+        // Grip tracks the cursor: radius = extent − base/2 = 25 − 10 = 15.
+        assert!(m.update_resize(Axis3::Y, 25.0));
+        assert_eq!(m.doc.history.len(), n0, "edits the Sphere, adds no feature");
+        m.finish_resize(true);
+        let radius = match &m.doc.history.get(s).unwrap().kind {
+            FeatureKind::Sphere { radius } => *radius,
+            _ => panic!("still a sphere"),
+        };
+        assert!((radius - 15.0).abs() < 1e-9, "radius now 15, got {radius}");
+
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        let (min, max) = bounds(&mesh);
+        // A sphere: all three spans grow together to ~30.
+        for k in 0..3 {
+            assert!((max[k] - min[k] - 30.0).abs() < 0.5, "axis {k} span {}", max[k] - min[k]);
+        }
     }
 
     #[test]
