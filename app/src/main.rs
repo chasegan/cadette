@@ -296,14 +296,16 @@ impl Modeler {
         }
         const GRID_HALF_EXTENT: f64 = 100.0; // mirrors rmf_render
         let major = self.ui.grid_size as f64 * 10.0;
-        let size = view.size();
+        // The central viewport, excluding the side/top/bottom panels — so labels
+        // don't spill into the tool panel.
+        let viewport = ctx.content_rect();
         let n = (GRID_HALF_EXTENT / major) as i32;
         for k in 1..=n {
             let d = k as f64 * major;
             for (axis, world) in [("x", [d, 0.0, 0.0]), ("y", [0.0, d, 0.0])] {
                 let Some(p) = view.project(world) else { continue };
-                if p.x < 0.0 || p.x > size.x || p.y < 0.0 || p.y > size.y {
-                    continue; // off-screen
+                if !viewport.contains(p) {
+                    continue; // outside the 3D viewport (behind a panel / off-screen)
                 }
                 egui::Area::new(egui::Id::new(("grid_ruler", axis, k)))
                     .order(egui::Order::Background)
