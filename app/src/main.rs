@@ -190,23 +190,32 @@ enum ResizeMode {
     /// Edit a bare primitive `Box`'s `size` in place — parametric, no new
     /// feature (only when the selected body's tip feature is a `Box`).
     BoxDim,
-    /// Apply a non-uniform `Scale` feature to the body — works on any body
-    /// (extrudes, booleans, fillets, …), Tinkercad-style.
-    Scale,
+    /// Add a non-uniform `Scale` feature to a body with no existing one —
+    /// works on any body (extrudes, booleans, fillets, …), Tinkercad-style.
+    NewScale,
+    /// Edit the factors of an existing tip `Scale` feature. Resizing again
+    /// reuses the one `Scale` rather than stacking a second — two GTransforms
+    /// in a row segfault OCCT on complex (filleted/NURBS) bodies.
+    EditScale,
 }
 
 /// Active resize drag (a bounding-box grip).
 struct ResizeDrag {
-    /// The body being resized: the `Box` (BoxDim) or the `Scale` source.
+    /// BoxDim: the `Box` feature (edited in place). NewScale: the body to scale
+    /// (the new `Scale`'s input). EditScale: unused (`feature` holds the Scale).
     source: FeatureId,
     mode: ResizeMode,
     /// The body's bbox extents at grab — the base for the new dimension (BoxDim)
-    /// or the scale factor (Scale). For a `Box` this equals its `size`.
+    /// or the scale factor. For a `Box` this equals its `size`.
     base_extent: DVec3,
-    /// Bbox-min corner (the fixed anchor) for a `Scale`.
+    /// The existing `Scale`'s factors at grab (`ONE` if none) — EditScale
+    /// multiplies onto these.
+    base_factors: DVec3,
+    /// The fixed scale anchor: the existing `Scale`'s anchor, or the bbox-min
+    /// corner for a fresh one.
     anchor: DVec3,
-    /// The `Scale` feature added on the first drag (always `None` for BoxDim,
-    /// which edits the `Box` in place; `None` until the first `Scale` change).
+    /// The `Scale` feature being edited: `Some` from the start for EditScale,
+    /// `None` until the first change for NewScale, always `None` for BoxDim.
     feature: Option<FeatureId>,
     /// Whether any update has changed geometry yet (the first records one undo).
     changed: bool,
@@ -1480,17 +1489,25 @@ impl Controller for Modeler {
             return;
         };
         let base_extent = DVec3::new(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
-        // A bare Box edits its dimension parametrically; anything else scales.
-        let mode = match self.doc.history.get(source).map(|f| &f.kind) {
-            Some(FeatureKind::Box { .. }) => ResizeMode::BoxDim,
-            _ => ResizeMode::Scale,
+        // A bare Box edits its dimension parametrically; a body already carrying
+        // a Scale edits that Scale (never stack two); anything else gets a Scale.
+        let (mode, base_factors, anchor, feature) = match self.doc.history.get(source).map(|f| &f.kind)
+        {
+            Some(FeatureKind::Box { .. }) => {
+                (ResizeMode::BoxDim, DVec3::ONE, DVec3::from_array(min), None)
+            }
+            Some(FeatureKind::Scale { factors, anchor, .. }) => {
+                (ResizeMode::EditScale, *factors, *anchor, Some(source))
+            }
+            _ => (ResizeMode::NewScale, DVec3::ONE, DVec3::from_array(min), None),
         };
         self.resize = Some(ResizeDrag {
             source,
             mode,
             base_extent,
-            anchor: DVec3::from_array(min),
-            feature: None,
+            base_factors,
+            anchor,
+            feature,
             changed: false,
         });
     }
@@ -1526,7 +1543,7 @@ impl Controller for Modeler {
                     true
                 }
             }
-            ResizeMode::Scale => {
+            ResizeMode::NewScale => {
                 let base = axis_get(r.base_extent, axis);
                 if base < 1e-6 {
                     self.resize = Some(r);
@@ -1557,6 +1574,33 @@ impl Controller for Modeler {
                     }
                 }
             }
+            ResizeMode::EditScale => {
+                let base = axis_get(r.base_extent, axis);
+                let id = r.feature.expect("EditScale has its Scale feature");
+                if base < 1e-6 {
+                    self.resize = Some(r);
+                    return false;
+                }
+                // Multiply the additional scale this drag onto the grab factors,
+                // so we edit the one Scale rather than stacking another.
+                let add = target / base;
+                let mut factors = r.base_factors;
+                axis_set(&mut factors, axis, axis_get(r.base_factors, axis) * add.max(1e-4));
+                if factors.abs_diff_eq(r.base_factors, 1e-9) {
+                    false
+                } else {
+                    if !r.changed {
+                        self.record_undo(self.doc.clone());
+                        r.changed = true;
+                    }
+                    if let Some(FeatureKind::Scale { factors: f, .. }) =
+                        self.doc.history.get_mut(id).map(|f| &mut f.kind)
+                    {
+                        *f = factors;
+                    }
+                    true
+                }
+            }
         };
         self.resize = Some(r);
         changed
@@ -1581,9 +1625,9 @@ impl Controller for Modeler {
                     self.undo.pop();
                 }
             }
-            ResizeMode::Scale => {
+            ResizeMode::NewScale => {
                 if let Some(id) = r.feature {
-                    // Discard a cancelled or no-op (≈identity) scale.
+                    // Discard a cancelled or no-op (≈identity) freshly-added scale.
                     let noop = match self.doc.history.get(id).map(|f| &f.kind) {
                         Some(FeatureKind::Scale { factors, .. }) => {
                             factors.abs_diff_eq(DVec3::ONE, 1e-6)
@@ -1594,6 +1638,19 @@ impl Controller for Modeler {
                         self.doc.history.remove(id);
                         self.undo.pop();
                     }
+                }
+            }
+            ResizeMode::EditScale => {
+                if !commit {
+                    // Cancel: restore the existing Scale's factors and drop undo.
+                    if let Some(id) = r.feature {
+                        if let Some(FeatureKind::Scale { factors, .. }) =
+                            self.doc.history.get_mut(id).map(|f| &mut f.kind)
+                        {
+                            *factors = r.base_factors;
+                        }
+                    }
+                    self.undo.pop();
                 }
             }
         }
@@ -2133,6 +2190,47 @@ mod tests {
         assert!((max[0] - min[0] - 20.0).abs() < 0.2, "x span {min:?}..{max:?}");
         assert!((max[1] - min[1] - 10.0).abs() < 0.2, "y span unchanged");
         assert!((min[0] - 5.0).abs() < 0.2, "anchored at the -x face");
+    }
+
+    #[test]
+    fn a_second_resize_edits_the_one_scale_instead_of_stacking() {
+        // Regression: two GTransforms in a row segfault OCCT on complex bodies,
+        // so a second resize must reuse the existing Scale, not add another.
+        use rmf_render::Axis3;
+        let mut m = Modeler::new(); // the default filleted + bored part
+        let _ = m.mesh();
+        m.on_pick(Some(Pick::Face(0)), None, false);
+
+        // First resize (X) adds a Scale.
+        m.start_resize(Axis3::X);
+        assert!(m.update_resize(Axis3::X, 60.0));
+        m.finish_resize(true);
+        let after_first = m.doc.history.len();
+        let _ = m.mesh(); // tip is now the Scale
+        assert!(m.ui.errors.is_empty(), "errors after first: {:?}", m.ui.errors);
+
+        // Second resize on a DIFFERENT axis must NOT add a feature (would stack a
+        // second GTransform → OCCT segfault); it edits the existing Scale.
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        m.start_resize(Axis3::Y);
+        assert!(m.update_resize(Axis3::Y, 70.0));
+        m.finish_resize(true);
+        assert_eq!(m.doc.history.len(), after_first, "no second Scale was stacked");
+        let scale_count = m
+            .doc
+            .history
+            .features()
+            .iter()
+            .filter(|f| matches!(&f.kind, FeatureKind::Scale { .. }))
+            .count();
+        assert_eq!(scale_count, 1, "exactly one Scale feature");
+
+        // And it rebuilds (through real OCCT) without crashing, both axes grown.
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors after second: {:?}", m.ui.errors);
+        let (min, max) = bounds(&mesh);
+        assert!((max[0] - min[0] - 60.0).abs() < 0.5, "x grown {min:?}..{max:?}");
+        assert!((max[1] - min[1] - 70.0).abs() < 0.5, "y grown {min:?}..{max:?}");
     }
 
     #[test]
