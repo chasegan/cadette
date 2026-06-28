@@ -1961,6 +1961,10 @@ struct WindowApp<C: Controller> {
     mesh_dirty: bool,
     /// Latest keyboard modifier state, for ⇧/⌘-click additive selection.
     modifiers: winit::keyboard::ModifiersState,
+    /// True while the window is hidden (another Space, minimized, fully covered).
+    /// We stop redrawing then — vsync no longer paces the loop, so a continuous
+    /// redraw would spin unthrottled and balloon GPU memory.
+    occluded: bool,
     state: Option<WindowState>,
 }
 
@@ -1985,6 +1989,7 @@ impl<C: Controller> WindowApp<C> {
             gizmo_drag: None,
             mesh_dirty: false,
             modifiers: winit::keyboard::ModifiersState::empty(),
+            occluded: false,
             state: None,
         }
     }
@@ -2064,6 +2069,15 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+
+            // Hidden (another Space / minimized / fully covered): stop the
+            // continuous redraw; resume — and refresh once — when shown again.
+            WindowEvent::Occluded(occluded) => {
+                self.occluded = occluded;
+                if !occluded {
+                    state.window.request_redraw();
+                }
+            }
 
             WindowEvent::Resized(size) if size.width > 0 && size.height > 0 => {
                 state.config.width = size.width;
@@ -2363,8 +2377,13 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
 
     /// Drive continuous redraws. Without this, `ControlFlow::Wait` can present a
     /// single frame and then idle forever if the user never interacts — which
-    /// left the egui panels unpainted after the first frame.
+    /// left the egui panels unpainted after the first frame. Skipped while the
+    /// window is hidden: vsync no longer paces presentation there, so a
+    /// continuous redraw spins unthrottled and balloons GPU memory.
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if self.occluded {
+            return;
+        }
         if let Some(state) = self.state.as_ref() {
             state.window.request_redraw();
         }
