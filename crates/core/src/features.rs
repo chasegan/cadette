@@ -129,6 +129,15 @@ pub enum FeatureKind {
         axis: EdgeAnchor,
         angle: f64,
     },
+
+    /// Reflect `source` across the plane through `origin` with unit `normal`
+    /// (a face's plane, an origin plane, or a body-center plane). Mirror-copy
+    /// is a [`FeatureKind::Mirror`] of a duplicated body.
+    Mirror {
+        source: FeatureId,
+        origin: DVec3,
+        normal: DVec3,
+    },
 }
 
 impl FeatureKind {
@@ -149,6 +158,7 @@ impl FeatureKind {
             FeatureKind::Rotate { source, .. } => vec![*source],
             FeatureKind::Scale { source, .. } => vec![*source],
             FeatureKind::Revolve { source, .. } => vec![*source],
+            FeatureKind::Mirror { source, .. } => vec![*source],
             FeatureKind::Boolean { target, tool, .. } => vec![*target, *tool],
         }
     }
@@ -165,7 +175,8 @@ impl FeatureKind {
             | FeatureKind::PushPull { source, .. }
             | FeatureKind::Rotate { source, .. }
             | FeatureKind::Scale { source, .. }
-            | FeatureKind::Revolve { source, .. } => Some(*source),
+            | FeatureKind::Revolve { source, .. }
+            | FeatureKind::Mirror { source, .. } => Some(*source),
             // Heal to the kept body of a boolean.
             FeatureKind::Boolean { target, .. } => Some(*target),
             _ => None,
@@ -187,7 +198,8 @@ impl FeatureKind {
             | FeatureKind::PushPull { source, .. }
             | FeatureKind::Rotate { source, .. }
             | FeatureKind::Scale { source, .. }
-            | FeatureKind::Revolve { source, .. } => swap(source),
+            | FeatureKind::Revolve { source, .. }
+            | FeatureKind::Mirror { source, .. } => swap(source),
             FeatureKind::Boolean { target, tool, .. } => {
                 swap(target);
                 swap(tool);
@@ -213,6 +225,7 @@ impl FeatureKind {
             FeatureKind::Rotate { .. } => "Rotate",
             FeatureKind::Scale { .. } => "Scale",
             FeatureKind::Revolve { .. } => "Revolve",
+            FeatureKind::Mirror { .. } => "Mirror",
         }
     }
 }

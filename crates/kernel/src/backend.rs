@@ -131,4 +131,13 @@ impl GeometryBackend for KernelBackend {
     ) -> Result<Solid, KernelError> {
         profile.revolve(axis_point.to_array(), angle)
     }
+
+    fn mirror(
+        &mut self,
+        body: &Solid,
+        origin: DVec3,
+        normal: DVec3,
+    ) -> Result<Solid, KernelError> {
+        body.mirror(origin.to_array(), normal.to_array())
+    }
 }

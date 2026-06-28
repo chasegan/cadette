@@ -139,6 +139,15 @@ pub mod ffi {
             ax: f64, ay: f64, az: f64,
         ) -> Result<UniquePtr<Shape>>;
 
+        /// Reflect `shape` across the plane through `(ox,oy,oz)` with normal
+        /// `(nx,ny,nz)`.
+        #[allow(clippy::too_many_arguments)]
+        fn mirror(
+            shape: &Shape,
+            ox: f64, oy: f64, oz: f64,
+            nx: f64, ny: f64, nz: f64,
+        ) -> Result<UniquePtr<Shape>>;
+
         // --- Booleans -----------------------------------------------------
         fn fuse(a: &Shape, b: &Shape) -> Result<UniquePtr<Shape>>;
         fn cut(a: &Shape, b: &Shape) -> Result<UniquePtr<Shape>>;

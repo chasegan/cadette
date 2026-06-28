@@ -109,6 +109,14 @@ impl Solid {
         )?))
     }
 
+    /// A copy of this solid reflected across the plane through `origin` with
+    /// unit `normal`.
+    pub fn mirror(&self, origin: [f64; 3], normal: [f64; 3]) -> Result<Self> {
+        Ok(Self::wrap(ffi::mirror(
+            &self.0, origin[0], origin[1], origin[2], normal[0], normal[1], normal[2],
+        )?))
+    }
+
     /// Extrude this planar face along its normal by `distance` into a solid.
     pub fn extrude(&self, distance: f64) -> Result<Self> {
         Ok(Self::wrap(ffi::extrude(&self.0, distance)?))

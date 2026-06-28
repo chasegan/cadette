@@ -342,6 +342,19 @@ std::unique_ptr<Shape> scale(const Shape& s, double sx, double sy, double sz,
   });
 }
 
+// Reflect across the plane through `(ox,oy,oz)` with normal `(nx,ny,nz)`. A
+// mirror gp_Trsf has negative determinant; BRepBuilderAPI_Transform reverses the
+// shape's faces so the result stays a properly-oriented (outward-normal) solid.
+std::unique_ptr<Shape> mirror(const Shape& s, double ox, double oy, double oz,
+                              double nx, double ny, double nz) {
+  return guard("mirror", [&] {
+    gp_Trsf t;
+    t.SetMirror(gp_Ax2(gp_Pnt(ox, oy, oz), gp_Dir(nx, ny, nz)));
+    BRepBuilderAPI_Transform xf(s.shape, t, /*copy=*/true);
+    return std::make_unique<Shape>(xf.Shape());
+  });
+}
+
 // A shallow copy: TopoDS_Shape is a handle to a shared, ref-counted TShape, so
 // this shares the underlying geometry rather than deep-copying it — cheap, which
 // is what lets the regen cache hand out cloned bodies per frame.

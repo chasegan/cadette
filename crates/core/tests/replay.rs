@@ -91,6 +91,9 @@ impl GeometryBackend for Recording {
     fn revolve(&mut self, profile: &String, _axis: DVec3, angle: f64) -> Result<String, String> {
         Ok(format!("revolve({profile},{angle:.2})"))
     }
+    fn mirror(&mut self, body: &String, _origin: DVec3, normal: DVec3) -> Result<String, String> {
+        Ok(format!("mirror({body},{:.0},{:.0},{:.0})", normal.x, normal.y, normal.z))
+    }
 }
 
 /// The canonical Phase-0 part, as parametric data: a filleted box with a bored

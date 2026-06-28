@@ -640,6 +640,41 @@ impl Modeler {
         true
     }
 
+    /// Mirror the selected face's body across that face's plane, keeping the
+    /// original (a mirror-copy of a duplicated body). Returns true if added.
+    fn mirror_across_selected_face(&mut self) -> bool {
+        let Some(Pick::Face(global)) = self.selection.primary() else {
+            return false;
+        };
+        let Some(plane) = self.selection.face_plane else {
+            return false; // only a planar face defines a mirror plane
+        };
+        let Some((body_index, _)) = self.locate_face(global) else {
+            return false;
+        };
+        let Some(source) = self.ui.visible.get(body_index).copied() else {
+            return false;
+        };
+        self.record_undo(self.doc.clone());
+        // Duplicate the body, reflect the clone across the face plane, keep the
+        // original — so a half becomes a symmetric whole.
+        let Some(clone_tip) = self.doc.duplicate(source) else {
+            self.undo.pop();
+            return false;
+        };
+        let id = self.doc.add(
+            "Mirror",
+            FeatureKind::Mirror {
+                source: clone_tip,
+                origin: plane.origin(),
+                normal: plane.normal(),
+            },
+        );
+        self.ui.selected = Some(id);
+        self.selection.clear();
+        true
+    }
+
     /// Fillet the currently selected edges (each anchored at its clicked point),
     /// as one feature. Returns true if a feature was added.
     fn fillet_selected_edges(&mut self) -> bool {
@@ -1142,7 +1177,9 @@ impl Controller for Modeler {
             && matches!(self.selection.selected(), [Pick::Face(_)])
         {
             let can_sketch = self.selection.can_sketch_on_face();
-            let (mut sketch, mut fillet) = (false, false);
+            // A mirror plane needs a planar face — same condition as sketching.
+            let can_mirror = self.selection.face_plane.is_some();
+            let (mut sketch, mut fillet, mut mirror) = (false, false, false);
             #[allow(deprecated)]
             egui::Panel::top("selection_bar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -1155,6 +1192,12 @@ impl Controller for Modeler {
                         .button("⌒ Fillet face edges")
                         .on_hover_text("Round all edges bounding this face")
                         .clicked();
+                    if can_mirror {
+                        mirror = ui
+                            .button("⇋ Mirror across this face")
+                            .on_hover_text("Reflect this body across the face — keeps the original")
+                            .clicked();
+                    }
                 });
             });
             if sketch {
@@ -1162,6 +1205,9 @@ impl Controller for Modeler {
             }
             if fillet {
                 changed |= self.fillet_selected_face_edges();
+            }
+            if mirror {
+                changed |= self.mirror_across_selected_face();
             }
         } else if self.sketch_session.is_none() && self.selection.is_edges() {
             let n = self.selection.selected().len();
@@ -2074,6 +2120,38 @@ fn main() -> anyhow::Result<()> {
     // Verification aid: an in-progress rotation, so the gizmo readout (an egui
     // overlay only shown mid-drag) renders headlessly. Uses a negative angle to
     // exercise the worst-case width.
+    if std::env::args().any(|a| a == "--mirror-demo") {
+        // An asymmetric bored block, mirror-copied across its +X face so the
+        // reflected hole reads clearly.
+        let mut doc = Document::new("mirror");
+        let b = doc.add("Box", FeatureKind::Box { size: DVec3::new(20.0, 14.0, 12.0) });
+        let pin = doc.add("Pin", FeatureKind::Cylinder { radius: 3.0, height: 40.0 });
+        let pin = doc.add(
+            "Position",
+            FeatureKind::Translate { source: pin, offset: DVec3::new(6.0, 7.0, -10.0) },
+        );
+        let body = doc.add(
+            "Bore",
+            FeatureKind::Boolean { op: BooleanOp::Subtract, target: b, tool: pin },
+        );
+        let clone = doc.duplicate(body).expect("duplicate");
+        doc.add(
+            "Mirror",
+            FeatureKind::Mirror {
+                source: clone,
+                origin: DVec3::new(20.0, 0.0, 0.0),
+                normal: DVec3::X,
+            },
+        );
+        std::mem::swap(&mut modeler.doc, &mut doc);
+        let _ = modeler.mesh();
+        let path = "out/mirror-demo.png";
+        std::fs::create_dir_all("out")?;
+        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        println!("wrote {path}");
+        return Ok(());
+    }
+
     if std::env::args().any(|a| a == "--revolve-demo") {
         // An L-shaped profile on XZ, its left edge on the Z axis, revolved 270°
         // so the swept cross-section reads clearly as a solid of revolution.
@@ -2468,6 +2546,37 @@ mod tests {
         assert!(m.undo());
         let _ = m.mesh();
         assert_eq!(m.ui.visible.len(), 1, "undo removes the whole paste");
+    }
+
+    #[test]
+    fn mirror_across_a_face_reflects_a_copy_keeping_the_original() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let _ = m.mesh();
+
+        // Select a (planar) face; mirror the body across it.
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        assert!(m.selection.face_plane.is_some(), "face 0 is planar");
+        let n0 = m.doc.history.len();
+        assert!(m.mirror_across_selected_face());
+        assert!(m.doc.history.len() > n0, "mirror added the clone + Mirror feature");
+
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        assert_eq!(m.ui.visible.len(), 2, "original + mirrored copy");
+
+        // Reflecting across one of the box's own (axis-aligned) faces doubles
+        // exactly one axis to 20mm; the other two stay 10mm.
+        let (min, max) = bounds(&mesh);
+        let spans = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+        let doubled = spans.iter().filter(|&&s| (s - 20.0).abs() < 0.5).count();
+        assert_eq!(doubled, 1, "exactly one axis doubled by the mirror: {spans:?}");
+
+        // One undo entry: undo restores the lone original.
+        assert!(m.undo());
+        let _ = m.mesh();
+        assert_eq!(m.ui.visible.len(), 1, "undo removes the whole mirror");
     }
 
     #[test]

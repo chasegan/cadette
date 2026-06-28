@@ -69,6 +69,9 @@ std::unique_ptr<Shape> rotate(const Shape& s, double cx, double cy, double cz,
 std::unique_ptr<Shape> scale(const Shape& s, double sx, double sy, double sz,
                              double ax, double ay, double az);
 
+std::unique_ptr<Shape> mirror(const Shape& s, double ox, double oy, double oz,
+                              double nx, double ny, double nz);
+
 std::unique_ptr<Shape> copy_shape(const Shape& s);
 std::unique_ptr<Shape> compound(const Shape& a, const Shape& b);
 

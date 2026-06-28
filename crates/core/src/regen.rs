@@ -342,5 +342,13 @@ where
             let body = input(*source)?;
             backend.revolve(body, axis.point, *angle).map_err(backend_err)
         }
+        FeatureKind::Mirror {
+            source,
+            origin,
+            normal,
+        } => {
+            let body = input(*source)?;
+            backend.mirror(body, *origin, *normal).map_err(backend_err)
+        }
     }
 }

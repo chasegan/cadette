@@ -178,6 +178,42 @@ fn fillet_edges_rounds_several_at_once() {
 }
 
 #[test]
+fn mirror_reflects_a_box_into_a_valid_oriented_solid() {
+    let cube = Solid::cuboid(10.0, 10.0, 10.0).unwrap(); // [0,10]^3
+    // Reflect across the x=10 plane.
+    let mirrored = cube.mirror([10.0, 0.0, 0.0], [1.0, 0.0, 0.0]).unwrap();
+
+    let mesh = mirrored.tessellate(0.5).unwrap();
+    assert!(!mesh.indices.is_empty());
+    let (mut min, mut max) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for p in mesh.positions.chunks_exact(3) {
+        for k in 0..3 {
+            min[k] = min[k].min(p[k]);
+            max[k] = max[k].max(p[k]);
+        }
+    }
+    // The reflected box occupies [10,20] in X, unchanged in Y/Z.
+    assert!((min[0] - 10.0).abs() < 0.1 && (max[0] - 20.0).abs() < 0.1, "x {}..{}", min[0], max[0]);
+    assert!(min[1].abs() < 0.1 && (max[1] - 10.0).abs() < 0.1, "y unchanged");
+
+    // The mirror is properly oriented (outward normals): fusing it with the
+    // original yields one connected 20-wide solid — an inside-out reflection
+    // would fail or carve a void here. (OCCT leaves the coplanar seam faces
+    // unmerged, so we check the bounds, not the face count.)
+    let joined = cube.fuse(&mirrored).unwrap();
+    let jmesh = joined.tessellate(0.5).unwrap();
+    let (mut jmin, mut jmax) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for p in jmesh.positions.chunks_exact(3) {
+        for k in 0..3 {
+            jmin[k] = jmin[k].min(p[k]);
+            jmax[k] = jmax[k].max(p[k]);
+        }
+    }
+    assert!((jmin[0]).abs() < 0.1 && (jmax[0] - 20.0).abs() < 0.1, "fused x {}..{}", jmin[0], jmax[0]);
+    assert!((jmax[1] - 10.0).abs() < 0.1 && (jmax[2] - 10.0).abs() < 0.1, "fused y/z unchanged");
+}
+
+#[test]
 fn revolve_a_rectangle_about_its_edge_makes_a_cylinder() {
     use std::f64::consts::TAU;
     // A 10(radius) x 20(height) rectangle in the XZ plane (y=0), spanning

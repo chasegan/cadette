@@ -49,6 +49,14 @@ pub trait GeometryBackend {
         angle: f64,
     ) -> Result<Self::Body, Self::Error>;
 
+    /// Reflect `body` across the plane through `origin` with unit `normal`.
+    fn mirror(
+        &mut self,
+        body: &Self::Body,
+        origin: DVec3,
+        normal: DVec3,
+    ) -> Result<Self::Body, Self::Error>;
+
     fn translate(&mut self, body: &Self::Body, offset: DVec3) -> Result<Self::Body, Self::Error>;
 
     fn boolean(

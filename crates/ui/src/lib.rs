@@ -554,6 +554,15 @@ fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
                 changed = true;
             }
         }
+        FeatureKind::Mirror { normal, .. } => {
+            // The mirror plane is fixed at creation (from a face/plane); show its
+            // normal for reference.
+            ui.label(
+                RichText::new(format!("plane ⊥ ({:.2}, {:.2}, {:.2})", normal.x, normal.y, normal.z))
+                    .small()
+                    .weak(),
+            );
+        }
     }
 
     changed

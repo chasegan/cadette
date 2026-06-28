@@ -94,6 +94,10 @@ impl GeometryBackend for Counting {
         self.ops += 1;
         Ok(format!("revolve({p},{angle})"))
     }
+    fn mirror(&mut self, b: &String, _origin: DVec3, n: DVec3) -> Result<String, String> {
+        self.ops += 1;
+        Ok(format!("mirror({b},{},{},{})", n.x, n.y, n.z))
+    }
 }
 
 /// A 3-step chain: box -> move -> fillet. Returns (doc, [box, move, fillet]).
