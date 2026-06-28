@@ -306,6 +306,9 @@ const PICK_DEPTH_TOL: f32 = 0.005;
 /// Max selected edges the shader can highlight at once (4 ids per `vec4`).
 const SEL_EDGE_CAP: usize = 64;
 const SEL_EDGE_VEC4: usize = SEL_EDGE_CAP / 4;
+/// Max selected faces the shader can highlight at once (4 ids per `vec4`).
+const SEL_FACE_CAP: usize = 64;
+const SEL_FACE_VEC4: usize = SEL_FACE_CAP / 4;
 
 /// GPU uniform block, mirrored by `Globals` in the shaders.
 #[repr(C)]
@@ -314,29 +317,32 @@ struct Globals {
     view_proj: [[f32; 4]; 4],
     camera_pos: [f32; 4],
     light_dir: [f32; 4],
-    /// `[selected_face, has_sel, hovered_face, has_hov]` (face select is single).
+    /// `[selected_face_count, 0, hovered_face, has_hov]`.
     faces: [u32; 4],
     /// `[selected_edge_count, 0, hovered_edge, has_hov]`.
     edges: [u32; 4],
     /// The selected edge ids, packed 4 per `vec4`, `edges[0]` of them valid.
     sel_edges: [[u32; 4]; SEL_EDGE_VEC4],
+    /// The selected face ids, packed 4 per `vec4`, `faces[0]` of them valid.
+    sel_faces: [[u32; 4]; SEL_FACE_VEC4],
 }
 
 impl Globals {
     fn for_view(camera: &OrbitCamera, aspect: f32, highlights: &Highlights) -> Self {
         let eye = camera.eye();
 
-        // Selection: one face highlight (sketch-on-face is single) + an edge set.
+        // Selection: a face set + an edge set (both multi-select).
         let mut faces = [0u32; 4];
         let mut edges = [0u32; 4];
         let mut sel_edges = [[0u32; 4]; SEL_EDGE_VEC4];
-        let mut n_edges = 0usize;
+        let mut sel_faces = [[0u32; 4]; SEL_FACE_VEC4];
+        let (mut n_edges, mut n_faces) = (0usize, 0usize);
         for pick in &highlights.selected {
             match pick {
                 Pick::Face(id) => {
-                    if faces[1] == 0 {
-                        faces[0] = *id;
-                        faces[1] = 1;
+                    if n_faces < SEL_FACE_CAP {
+                        sel_faces[n_faces / 4][n_faces % 4] = *id;
+                        n_faces += 1;
                     }
                 }
                 Pick::Edge(id) => {
@@ -347,6 +353,7 @@ impl Globals {
                 }
             }
         }
+        faces[0] = n_faces as u32;
         edges[0] = n_edges as u32;
 
         // Hover is always a single entity.
@@ -369,13 +376,14 @@ impl Globals {
             faces,
             edges,
             sel_edges,
+            sel_faces,
         }
     }
 }
 
 /// Entities to emphasize this frame: a clicked selection set (strong) and a
-/// single hover pre-highlight (subtle). Faces highlight one at a time; edges
-/// highlight as a set (for multi-edge fillet).
+/// single hover pre-highlight (subtle). Faces and edges both highlight as a
+/// set (for multi-face fillet/group and multi-edge fillet).
 #[derive(Clone, Default)]
 pub struct Highlights {
     pub selected: Vec<Pick>,

@@ -606,35 +606,43 @@ impl Modeler {
         }
     }
 
-    /// Fillet all edges bounding the currently selected face, as one feature.
+    /// Fillet all edges bounding the selected face(s), as one feature. Every
+    /// selected face must be on the same body (the kernel dedupes shared edges).
     /// Returns true if a feature was added.
     fn fillet_selected_face_edges(&mut self) -> bool {
-        let Some(Pick::Face(global)) = self.selection.primary() else {
+        // All selected faces must belong to one body.
+        let bodies = self.selected_bodies();
+        if bodies.len() != 1 {
             return false;
-        };
-        let Some((body_index, local)) = self.locate_face(global) else {
-            return false;
-        };
-        let Some(source) = self.ui.visible.get(body_index).copied() else {
+        }
+        let source = bodies[0];
+        let Some(body_index) = self.ui.visible.iter().position(|&f| f == source) else {
             return false;
         };
         let Some(solid) = self.bodies.get(body_index) else {
             return false;
         };
-        let edges: Vec<EdgeAnchor> = match solid.face_edge_midpoints(local) {
-            Ok(points) => points
-                .into_iter()
-                .map(|p| EdgeAnchor { point: DVec3::from_array(p) })
-                .collect(),
-            Err(_) => return false,
-        };
+        // Gather a point on every edge of every selected face on this body.
+        let mut edges: Vec<EdgeAnchor> = Vec::new();
+        for pick in self.selection.selected() {
+            if let Pick::Face(g) = pick {
+                if let Some((idx, local)) = self.locate_face(*g) {
+                    if idx == body_index {
+                        if let Ok(points) = solid.face_edge_midpoints(local) {
+                            edges.extend(
+                                points.into_iter().map(|p| EdgeAnchor { point: DVec3::from_array(p) }),
+                            );
+                        }
+                    }
+                }
+            }
+        }
         if edges.is_empty() {
             return false;
         }
         self.record_undo(self.doc.clone());
-        let id = self
-            .doc
-            .add("Fillet face", FeatureKind::Fillet { source, edges, radius: 2.0 });
+        let name = if self.selection.selected().len() > 1 { "Fillet faces" } else { "Fillet face" };
+        let id = self.doc.add(name, FeatureKind::Fillet { source, edges, radius: 2.0 });
         self.ui.selected = Some(id);
         self.selection.clear();
         true
@@ -1319,16 +1327,23 @@ impl Controller for Modeler {
             && self.selection.selected().len() >= 2
             && self.selection.selected().iter().all(|p| matches!(p, Pick::Face(_)))
         {
-            // Multiple faces selected — group the distinct bodies behind them.
+            // Multiple faces selected: fillet them (one body) or group the
+            // distinct bodies behind them (≥2 bodies).
             let bodies = self.selected_bodies();
             let n_faces = self.selection.selected().len();
             let n_bodies = bodies.len();
-            let mut group = false;
+            let (mut fillet, mut group) = (false, false);
             #[allow(deprecated)]
             egui::Panel::top("selection_bar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(format!("{n_faces} faces · {n_bodies} bodies"));
                     ui.separator();
+                    if n_bodies == 1 {
+                        fillet = ui
+                            .button("⌒ Fillet face edges")
+                            .on_hover_text("Round all edges of the selected faces")
+                            .clicked();
+                    }
                     if n_bodies >= 2 {
                         group = ui
                             .button(format!("⊞ Group {n_bodies} bodies"))
@@ -1336,9 +1351,12 @@ impl Controller for Modeler {
                             .clicked();
                     }
                     ui.separator();
-                    ui.weak("⇧/⌘-click a face on each body");
+                    ui.weak("⇧/⌘-click to add faces");
                 });
             });
+            if fillet {
+                changed |= self.fillet_selected_face_edges();
+            }
             if group {
                 changed |= self.group_selected();
             }
@@ -2253,6 +2271,22 @@ fn main() -> anyhow::Result<()> {
     // Verification aid: an in-progress rotation, so the gizmo readout (an egui
     // overlay only shown mid-drag) renders headlessly. Uses a negative angle to
     // exercise the worst-case width.
+    if std::env::args().any(|a| a == "--multiface-demo") {
+        // Select several faces of one box; all should highlight (multi-select).
+        let mut doc = Document::new("multiface");
+        doc.add("Box", FeatureKind::Box { size: DVec3::new(24.0, 18.0, 14.0) });
+        std::mem::swap(&mut modeler.doc, &mut doc);
+        let _ = modeler.mesh();
+        modeler.on_pick(Some(Pick::Face(0)), None, false);
+        modeler.on_pick(Some(Pick::Face(2)), None, true); // additive
+        modeler.on_pick(Some(Pick::Face(4)), None, true);
+        let path = "out/multiface-demo.png";
+        std::fs::create_dir_all("out")?;
+        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        println!("wrote {path}");
+        return Ok(());
+    }
+
     if std::env::args().any(|a| a == "--group-demo") {
         // Two separated boxes grouped, then the group rotated about its combined
         // center — they turn together as one unit.
@@ -2781,6 +2815,32 @@ mod tests {
             );
         }
         assert!(m.undo(), "flip is one undo entry");
+    }
+
+    #[test]
+    fn fillet_multiple_selected_faces_in_one_feature() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("box");
+        m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(20.0) });
+        let _ = m.mesh();
+
+        // Select two faces of the one box.
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        m.on_pick(Some(Pick::Face(1)), None, true); // additive
+        assert_eq!(m.selected_bodies().len(), 1, "both faces on one body");
+
+        let n0 = m.doc.history.len();
+        assert!(m.fillet_selected_face_edges());
+        assert_eq!(m.doc.history.len(), n0 + 1, "one Fillet feature for all the faces");
+
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "multi-face fillet rebuilds: {:?}", m.ui.errors);
+        let faces: std::collections::BTreeSet<u32> = mesh
+            .vertices
+            .iter()
+            .map(|v| v.face_id)
+            .collect();
+        assert!(faces.len() > 6, "filleting two faces adds rounded faces: {}", faces.len());
     }
 
     #[test]
