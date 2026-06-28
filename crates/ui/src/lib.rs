@@ -74,6 +74,8 @@ pub struct HistoryResponse {
     /// A boolean op was clicked — the host combines the selected body with the
     /// other visible bodies (subtract carves the selection out of them).
     pub boolean: Option<BooleanOp>,
+    /// "Extrude" was clicked — the host extrudes this sketch (toward the camera).
+    pub extrude: Option<FeatureId>,
 }
 
 impl HistoryState {
@@ -187,7 +189,14 @@ pub fn history_panel(
             ui.separator();
 
             let mut started = false;
-            resp.changed |= add_feature_toolbar(ui, doc, state, &mut started, &mut resp.boolean);
+            resp.changed |= add_feature_toolbar(
+                ui,
+                doc,
+                state,
+                &mut started,
+                &mut resp.boolean,
+                &mut resp.extrude,
+            );
             if started {
                 resp.start_sketch = true;
             }
@@ -221,6 +230,7 @@ fn add_feature_toolbar(
     state: &mut HistoryState,
     start_sketch: &mut bool,
     boolean: &mut Option<BooleanOp>,
+    extrude: &mut Option<FeatureId>,
 ) -> bool {
     let mut changed = false;
 
@@ -268,14 +278,8 @@ fn add_feature_toolbar(
             .on_hover_text("Extrude the selected/last sketch into a solid")
             .clicked()
         {
-            add(
-                state,
-                "Extrude",
-                FeatureKind::Extrude {
-                    source: extrude_source.unwrap(),
-                    distance: 20.0,
-                },
-            );
+            // The host builds it (it knows the view, to extrude toward the camera).
+            *extrude = extrude_source;
         }
         if ui
             .add_enabled(unary.is_some(), egui::Button::new("Move"))

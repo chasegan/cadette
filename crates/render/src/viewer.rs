@@ -2445,7 +2445,7 @@ impl<C: Controller> WindowApp<C> {
             state.config.height as f32 / ppp,
         );
         let aspect = state.config.width as f32 / state.config.height.max(1) as f32;
-        let view = ViewContext::new(self.camera.view_proj(aspect), size);
+        let view = ViewContext::new(self.camera.view_proj(aspect), size, self.camera.eye());
 
         let raw_input = state.egui_state.take_egui_input(&state.window);
         state.egui_ctx.begin_pass(raw_input);
@@ -2623,6 +2623,7 @@ pub fn screenshot(
     let view = ViewContext::new(
         camera.view_proj(width as f32 / height as f32),
         egui::vec2(width as f32 / PPP, height as f32 / PPP),
+        camera.eye(),
     );
     // Warm-up pass: auto-sized egui Areas (e.g. the gizmo readout) need a prior
     // frame to know their size before they paint. Keep its texture deltas — the

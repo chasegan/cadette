@@ -335,6 +335,26 @@ impl Modeler {
         true
     }
 
+    /// Extrude the sketch `source` into a solid, toward the camera: the extrude
+    /// is along the sketch plane's normal, so flip the sign when that normal
+    /// points away from the eye. Returns true if a feature was added.
+    fn extrude_sketch(&mut self, source: FeatureId, eye: [f64; 3]) -> bool {
+        let plane = match self.doc.history.get(source).map(|f| &f.kind) {
+            Some(FeatureKind::Sketch { plane, .. })
+            | Some(FeatureKind::ConstraintSketch { plane, .. }) => *plane,
+            _ => return false,
+        };
+        let eye = DVec3::from_array(eye);
+        let toward_eye = plane.normal().dot(eye - plane.origin()) >= 0.0;
+        let distance = if toward_eye { 20.0 } else { -20.0 };
+        self.record_undo(self.doc.clone());
+        let id = self
+            .doc
+            .add("Extrude", FeatureKind::Extrude { source, distance });
+        self.ui.selected = Some(id);
+        true
+    }
+
     /// Combine the visible bodies into one shape (a compound) for export.
     fn combined_body(&self) -> Result<Solid, String> {
         let mut bodies = self.bodies.iter();
@@ -1024,6 +1044,9 @@ impl Controller for Modeler {
         }
         if let Some(op) = resp.boolean {
             changed |= self.apply_boolean(op);
+        }
+        if let Some(source) = resp.extrude {
+            changed |= self.extrude_sketch(source, view.eye());
         }
 
         // --- Status line (export result, etc.) at the bottom of the viewport ---
@@ -1884,6 +1907,38 @@ mod tests {
                 _ => None,
             });
         assert_eq!(fillet, Some(2));
+    }
+
+    #[test]
+    fn extrude_goes_toward_the_camera() {
+        // A rectangle sketch on XY (normal +Z). The extrude sign should follow
+        // which side the eye is on.
+        let mut m = Modeler::new();
+        m.doc = Document::new("sk");
+        let s = m.doc.add(
+            "Sketch",
+            FeatureKind::Sketch {
+                plane: SketchPlane::Xy,
+                profile: Profile::Rectangle { width: 10.0, height: 10.0 },
+            },
+        );
+
+        // Eye above (+Z): extrude upward, toward the eye → positive distance.
+        assert!(m.extrude_sketch(s, [0.0, 0.0, 100.0]));
+        let dist = m.doc.history.features().iter().find_map(|f| match f.kind {
+            FeatureKind::Extrude { distance, .. } => Some(distance),
+            _ => None,
+        });
+        assert_eq!(dist, Some(20.0));
+
+        // Undo, then extrude from below (-Z): toward the eye is now -Z → negative.
+        m.undo();
+        assert!(m.extrude_sketch(s, [0.0, 0.0, -100.0]));
+        let dist = m.doc.history.features().iter().find_map(|f| match f.kind {
+            FeatureKind::Extrude { distance, .. } => Some(distance),
+            _ => None,
+        });
+        assert_eq!(dist, Some(-20.0));
     }
 
     #[test]

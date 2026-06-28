@@ -16,15 +16,23 @@ pub struct ViewContext {
     inv_view_proj: Mat4,
     /// Viewport size in egui points (matches egui pointer coordinates).
     size: Vec2,
+    /// World-space camera position.
+    eye: Vec3,
 }
 
 impl ViewContext {
-    pub(crate) fn new(view_proj: Mat4, size: Vec2) -> Self {
+    pub(crate) fn new(view_proj: Mat4, size: Vec2, eye: Vec3) -> Self {
         Self {
             view_proj,
             inv_view_proj: view_proj.inverse(),
             size,
+            eye,
         }
+    }
+
+    /// World-space camera position — e.g. to extrude toward the viewer.
+    pub fn eye(&self) -> [f64; 3] {
+        [self.eye.x as f64, self.eye.y as f64, self.eye.z as f64]
     }
 
     /// Project a world point to a screen position (egui points), or `None` if it
@@ -114,7 +122,7 @@ mod tests {
         // back onto the same plane coordinates — the invariant the interactive
         // sketcher relies on for both drawing and picking.
         let cam = OrbitCamera::framing(Vec3::ZERO, 50.0);
-        let view = ViewContext::new(cam.view_proj(1280.0 / 820.0), Vec2::new(1280.0, 820.0));
+        let view = ViewContext::new(cam.view_proj(1280.0 / 820.0), Vec2::new(1280.0, 820.0), cam.eye());
 
         let (origin, x_dir, y_dir, normal) =
             ([0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]);
