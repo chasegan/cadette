@@ -16,7 +16,7 @@ pub use camera::OrbitCamera;
 pub use view::ViewContext;
 pub use viewer::{
     run, screenshot, Axis3, Controller, Gizmo, GizmoHandle, GridSpec, Highlights, MeshData, Pick,
-    Plane3, TransformDelta,
+    Plane3, ResizeBox, TransformDelta,
 };
 
 use bytemuck::{Pod, Zeroable};

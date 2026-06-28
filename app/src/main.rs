@@ -19,7 +19,8 @@ use rmf_interaction::Selection;
 use rmf_kernel::{KernelBackend, Solid};
 use rmf_render::egui;
 use rmf_render::{
-    Controller, Gizmo, GizmoHandle, Highlights, MeshData, Pick, TransformDelta, ViewContext,
+    Axis3, Controller, Gizmo, GizmoHandle, Highlights, MeshData, Pick, ResizeBox, TransformDelta,
+    ViewContext,
 };
 use rmf_ui::{history_panel, HistoryState};
 
@@ -28,6 +29,8 @@ const DEFLECTION_MM: f64 = 0.1;
 const EXPORT_DEFLECTION_MM: f64 = 0.05;
 /// Version stamped into `.cdt` project files (a zip holding `document.json`).
 const PROJECT_FORMAT_VERSION: u64 = 1;
+/// Smallest box dimension (mm) a resize drag may produce, so it can't collapse.
+const MIN_DIM: f64 = 0.1;
 
 /// A centered, axis-aligned rectangle defined by constraints. The corner points
 /// start deliberately rough; the solver snaps them to an exact `width x height`
@@ -182,6 +185,15 @@ struct TransformDrag {
     pivot: Option<[f64; 3]>,
 }
 
+/// Active resize drag: the primitive `Box` feature being resized, its size when
+/// the drag began (to restore on cancel and detect a no-op), and whether any
+/// update has changed it yet (the first change records one undo entry).
+struct ResizeDrag {
+    feature: FeatureId,
+    base_size: DVec3,
+    changed: bool,
+}
+
 /// Bounding-box center of a flat `[x,y,z,...]` position array.
 fn positions_center(positions: &[f32]) -> [f64; 3] {
     if positions.is_empty() {
@@ -242,6 +254,8 @@ struct Modeler {
     manipulation: Option<Manipulation>,
     /// Active gizmo move drag, if any.
     transform: Option<TransformDrag>,
+    /// Active resize drag (bounding-box grip), if any.
+    resize: Option<ResizeDrag>,
 }
 
 impl Modeler {
@@ -264,6 +278,7 @@ impl Modeler {
             edge_anchors: HashMap::new(),
             manipulation: None,
             transform: None,
+            resize: None,
         }
     }
 
@@ -1388,6 +1403,86 @@ impl Controller for Modeler {
             self.undo.pop();
         }
     }
+
+    fn resize_box(&self) -> Option<ResizeBox> {
+        // Only a single selected face of a primitive Box (the body's tip
+        // feature) resizes — a moved/filleted/booleaned box isn't a bare Box.
+        if !matches!(self.selection.selected(), [Pick::Face(_)]) {
+            return None;
+        }
+        let body = self.selected_body()?;
+        let size = match &self.doc.history.get(body)?.kind {
+            FeatureKind::Box { size } => *size,
+            _ => return None,
+        };
+        // A Box primitive spans [0, size] from the origin.
+        Some(ResizeBox { min: [0.0; 3], max: size.to_array() })
+    }
+
+    fn start_resize(&mut self, _axis: Axis3) {
+        let Some(feature) = self.selected_body() else {
+            return;
+        };
+        let base_size = match self.doc.history.get(feature).map(|f| &f.kind) {
+            Some(FeatureKind::Box { size }) => *size,
+            _ => return,
+        };
+        self.resize = Some(ResizeDrag { feature, base_size, changed: false });
+    }
+
+    fn update_resize(&mut self, axis: Axis3, extent: f64) -> bool {
+        let Some(mut r) = self.resize.take() else {
+            return false;
+        };
+        let mut new_size = r.base_size;
+        let e = extent.max(MIN_DIM);
+        match axis {
+            Axis3::X => new_size.x = e,
+            Axis3::Y => new_size.y = e,
+            Axis3::Z => new_size.z = e,
+        }
+        let cur = match self.doc.history.get(r.feature).map(|f| &f.kind) {
+            Some(FeatureKind::Box { size }) => *size,
+            _ => {
+                self.resize = Some(r);
+                return false;
+            }
+        };
+        if cur.abs_diff_eq(new_size, 1e-9) {
+            self.resize = Some(r);
+            return false;
+        }
+        if !r.changed {
+            // First real change: one undo entry covering the whole drag.
+            self.record_undo(self.doc.clone());
+            r.changed = true;
+        }
+        if let Some(FeatureKind::Box { size }) =
+            self.doc.history.get_mut(r.feature).map(|f| &mut f.kind)
+        {
+            *size = new_size;
+        }
+        self.resize = Some(r);
+        true
+    }
+
+    fn finish_resize(&mut self, commit: bool) {
+        let Some(r) = self.resize.take() else {
+            return;
+        };
+        if !r.changed {
+            return; // a grip click that never dragged
+        }
+        if !commit {
+            // Cancel: restore the original size and drop the undo entry.
+            if let Some(FeatureKind::Box { size }) =
+                self.doc.history.get_mut(r.feature).map(|f| &mut f.kind)
+            {
+                *size = r.base_size;
+            }
+            self.undo.pop();
+        }
+    }
 }
 
 fn error_message(err: &RegenError<rmf_kernel::KernelError>, doc: &Document) -> String {
@@ -1571,6 +1666,21 @@ fn main() -> anyhow::Result<()> {
     // Verification aid: an in-progress rotation, so the gizmo readout (an egui
     // overlay only shown mid-drag) renders headlessly. Uses a negative angle to
     // exercise the worst-case width.
+    if std::env::args().any(|a| a == "--resize-demo") {
+        // A clean single box, one face selected, so the bbox resize grips show
+        // alongside the move/rotate gizmo.
+        let mut doc = Document::new("resize");
+        doc.add("Box", FeatureKind::Box { size: DVec3::new(40.0, 26.0, 18.0) });
+        std::mem::swap(&mut modeler.doc, &mut doc);
+        let _ = modeler.mesh();
+        modeler.on_pick(Some(Pick::Face(0)), None, false);
+        let path = "out/resize-demo.png";
+        std::fs::create_dir_all("out")?;
+        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        println!("wrote {path}");
+        return Ok(());
+    }
+
     if std::env::args().any(|a| a == "--gizmo-readout-demo") {
         let _ = modeler.mesh(); // populate visible + body_centers
         modeler.on_pick(Some(Pick::Face(0)), None, false); // select a face → gizmo
@@ -1714,6 +1824,7 @@ mod tests {
             edge_anchors: HashMap::new(),
             manipulation: None,
             transform: None,
+            resize: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());
@@ -1816,6 +1927,77 @@ mod tests {
         assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
         let (min, max) = bounds(&mesh);
         assert!((min[0] - 8.0).abs() < 0.1 && (max[0] - 18.0).abs() < 0.1, "x {min:?}..{max:?}");
+    }
+
+    #[test]
+    fn resize_grips_show_on_a_box_and_a_drag_grows_one_dimension() {
+        use rmf_render::Axis3;
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        m.doc.add("Box", FeatureKind::Box { size: DVec3::new(10.0, 10.0, 10.0) });
+        let _ = m.mesh();
+
+        // No grips with nothing selected; selecting a face exposes the AABB.
+        assert!(m.resize_box().is_none());
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        let rb = m.resize_box().expect("resize box on a primitive face");
+        assert_eq!(rb.min, [0.0; 3]);
+        assert!((rb.max[0] - 10.0).abs() < 1e-9);
+
+        // A drag along +X edits the Box size in place (one undo entry).
+        let n0 = m.doc.history.len();
+        let undo0 = m.undo.len();
+        m.start_resize(Axis3::X);
+        assert!(m.update_resize(Axis3::X, 25.0));
+        assert!(m.update_resize(Axis3::X, 30.0)); // edits in place, same undo
+        assert_eq!(m.doc.history.len(), n0, "resize edits the Box, adds no feature");
+        assert_eq!(m.undo.len(), undo0 + 1, "the whole drag is one undo entry");
+        m.finish_resize(true);
+
+        // X grew to 30; Y/Z untouched; the rebuilt body spans 30 along X.
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        let (min, max) = bounds(&mesh);
+        assert!((max[0] - min[0] - 30.0).abs() < 0.1, "x span {min:?}..{max:?}");
+        assert!((max[1] - min[1] - 10.0).abs() < 0.1, "y span unchanged");
+    }
+
+    #[test]
+    fn cancelled_resize_restores_the_original_size_and_undo() {
+        use rmf_render::Axis3;
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        let id = m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let _ = m.mesh();
+        m.on_pick(Some(Pick::Face(0)), None, false);
+
+        let undo0 = m.undo.len();
+        m.start_resize(Axis3::Z);
+        assert!(m.update_resize(Axis3::Z, 40.0));
+        m.finish_resize(false); // cancel
+
+        assert_eq!(m.undo.len(), undo0, "the cancelled drag's undo entry is dropped");
+        let restored = matches!(
+            &m.doc.history.get(id).unwrap().kind,
+            FeatureKind::Box { size } if (size.z - 10.0).abs() < 1e-9
+        );
+        assert!(restored, "Z restored to its pre-drag value");
+    }
+
+    #[test]
+    fn a_moved_box_is_not_resizable() {
+        use rmf_render::Axis3;
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        let b = m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        // Wrap it in a Move so the tip feature is a Translate, not a bare Box.
+        m.doc.add("Move", FeatureKind::Translate { source: b, offset: DVec3::new(5.0, 0.0, 0.0) });
+        let _ = m.mesh();
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        assert!(m.resize_box().is_none(), "only a bare Box primitive resizes");
+        // start_resize on a non-Box is a no-op (nothing to resize).
+        m.start_resize(Axis3::X);
+        assert!(!m.update_resize(Axis3::X, 20.0));
     }
 
     #[test]
@@ -2188,6 +2370,7 @@ mod tests {
             edge_anchors: HashMap::new(),
             manipulation: None,
             transform: None,
+            resize: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());

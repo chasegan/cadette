@@ -106,6 +106,22 @@ pub trait Controller {
     /// Finish the active transform: commit it, or cancel and discard.
     fn finish_transform(&mut self, _commit: bool) {}
 
+    /// If the selection is a resizable primitive, its world-space axis-aligned
+    /// bounds. The gizmo then shows resize grips on the +X/+Y/+Z faces, edited
+    /// by dragging. Default: not resizable.
+    fn resize_box(&self) -> Option<ResizeBox> {
+        None
+    }
+    /// Begin a resize drag along `axis` (the whole drag is one undo entry).
+    fn start_resize(&mut self, _axis: Axis3) {}
+    /// Set the box's extent (mm) along `axis` to `extent`. Returns true if the
+    /// dimension changed.
+    fn update_resize(&mut self, _axis: Axis3, _extent: f64) -> bool {
+        false
+    }
+    /// Finish the active resize: commit it, or cancel and restore the size.
+    fn finish_resize(&mut self, _commit: bool) {}
+
     /// The ground-plane grid: its spacing (mm) drives translation snapping and,
     /// when visible, the workplane overlay. Default = no grid / no snap.
     fn grid(&self) -> GridSpec {
@@ -149,6 +165,14 @@ pub struct Gizmo {
     pub origin: [f64; 3],
 }
 
+/// The world-space bounds of a resizable primitive. The gizmo draws a small
+/// grip at the center of each +X/+Y/+Z face; dragging one edits that dimension.
+#[derive(Clone, Copy)]
+pub struct ResizeBox {
+    pub min: [f64; 3],
+    pub max: [f64; 3],
+}
+
 /// A draggable gizmo handle.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum GizmoHandle {
@@ -158,6 +182,8 @@ pub enum GizmoHandle {
     TranslatePlane(Plane3),
     /// Rotate about a world axis (a ring).
     RotateAxis(Axis3),
+    /// Resize a primitive along a world axis (a bounding-box grip).
+    Resize(Axis3),
 }
 
 /// An absolute transform from the grab point, applied by the controller.
@@ -1649,6 +1675,82 @@ fn gizmo_geometry(
     verts
 }
 
+/// Half-size of a resize grip cube, as a fraction of the gizmo axis length (so
+/// the grips stay a roughly constant size on screen).
+const RESIZE_GRIP_SIZE: f32 = 0.05;
+/// Smallest dimension a resize drag may produce (mm), so a box can't collapse.
+const MIN_RESIZE_DIM: f32 = 0.1;
+
+/// World-space center of the resize grip on the `+axis` face of `rb`.
+fn resize_grip_pos(rb: &ResizeBox, axis: Axis3) -> Vec3 {
+    let min = Vec3::new(rb.min[0] as f32, rb.min[1] as f32, rb.min[2] as f32);
+    let max = Vec3::new(rb.max[0] as f32, rb.max[1] as f32, rb.max[2] as f32);
+    let c = (min + max) * 0.5;
+    match axis {
+        Axis3::X => Vec3::new(max.x, c.y, c.z),
+        Axis3::Y => Vec3::new(c.x, max.y, c.z),
+        Axis3::Z => Vec3::new(c.x, c.y, max.z),
+    }
+}
+
+/// The resize axis whose grip is under `cursor`, if any (nearest within the
+/// pixel threshold).
+fn resize_hit_test(
+    rb: &ResizeBox,
+    camera: &OrbitCamera,
+    cursor: PhysicalPosition<f64>,
+    w: u32,
+    h: u32,
+) -> Option<Axis3> {
+    let c = (cursor.x as f32, cursor.y as f32);
+    let mut best = (GIZMO_PICK_PX + 2.0, None);
+    for axis in Axis3::ALL {
+        if let Some(p) = project_point(resize_grip_pos(rb, axis), camera, w, h) {
+            let d = (c.0 - p.0).hypot(c.1 - p.1);
+            if d < best.0 {
+                best = (d, Some(axis));
+            }
+        }
+    }
+    best.1
+}
+
+/// Push an axis-aligned cube (12 triangles) centered at `c` with half-size `hs`.
+fn push_cube(verts: &mut Vec<GizmoVertex>, c: Vec3, hs: f32, color: [f32; 4]) {
+    let v = |dx: f32, dy: f32, dz: f32| (c + Vec3::new(dx, dy, dz) * hs).to_array();
+    let p = [
+        v(-1.0, -1.0, -1.0), v(1.0, -1.0, -1.0), v(1.0, 1.0, -1.0), v(-1.0, 1.0, -1.0),
+        v(-1.0, -1.0, 1.0), v(1.0, -1.0, 1.0), v(1.0, 1.0, 1.0), v(-1.0, 1.0, 1.0),
+    ];
+    let mut quad = |a: usize, b: usize, cc: usize, d: usize| {
+        for &i in &[a, b, cc, a, cc, d] {
+            verts.push(GizmoVertex { position: p[i], color });
+        }
+    };
+    quad(0, 1, 2, 3); // -Z
+    quad(4, 5, 6, 7); // +Z
+    quad(0, 1, 5, 4); // -Y
+    quad(2, 3, 7, 6); // +Y
+    quad(1, 2, 6, 5); // +X
+    quad(0, 3, 7, 4); // -X
+}
+
+/// Resize grips for `rb`: a small cube on each +X/+Y/+Z face, the one under the
+/// cursor (or being dragged) highlighted gold.
+fn resize_geometry(rb: &ResizeBox, camera: &OrbitCamera, active: Option<Axis3>) -> Vec<GizmoVertex> {
+    let hs = gizmo_axis_length(camera) * RESIZE_GRIP_SIZE;
+    let mut verts = Vec::new();
+    for axis in Axis3::ALL {
+        let color = if active == Some(axis) {
+            rgba(GIZMO_HILITE, 1.0)
+        } else {
+            rgba([0.85, 0.85, 0.88], 0.9)
+        };
+        push_cube(&mut verts, resize_grip_pos(rb, axis), hs, color);
+    }
+    verts
+}
+
 /// Capacity of the persistent gizmo vertex buffer. The full gumball (arrows +
 /// planes + three rings) and the rotation protractor are both well under this.
 const GIZMO_MAX_VERTS: u64 = 8192;
@@ -1951,6 +2053,15 @@ enum GizmoDrag {
         total: f32,
         snapped: f32,
     },
+    /// Resize a primitive along an axis: grip line `(origin, dir)`, the drag
+    /// distance at grab, and the box's extent along that axis at grab.
+    Resize {
+        axis: Axis3,
+        origin: Vec3,
+        dir: Vec3,
+        start: f32,
+        base_extent: f64,
+    },
 }
 
 impl GizmoDrag {
@@ -1960,6 +2071,7 @@ impl GizmoDrag {
             GizmoDrag::Axis { axis, .. } => GizmoHandle::TranslateAxis(*axis),
             GizmoDrag::Plane { plane, .. } => GizmoHandle::TranslatePlane(*plane),
             GizmoDrag::Rotate { axis, .. } => GizmoHandle::RotateAxis(*axis),
+            GizmoDrag::Resize { axis, .. } => GizmoHandle::Resize(*axis),
         }
     }
 }
@@ -2113,7 +2225,13 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                                 .as_ref()
                                 .map(|s| (s.config.width, s.config.height))
                                 .unwrap_or((1, 1));
-                            // A gizmo handle grab takes priority over everything.
+                            // A resize grip or gizmo handle grab takes priority
+                            // over picking/orbit. Resize grips (bbox handles)
+                            // are the most specific target, so test them first.
+                            let resize_hit = self.controller.resize_box().and_then(|rb| {
+                                resize_hit_test(&rb, &self.camera, self.mouse.cursor, w, h)
+                                    .map(|axis| (rb, axis))
+                            });
                             let gizmo_hit = self.controller.gizmo().and_then(|g| {
                                 let origin = Vec3::new(
                                     g.origin[0] as f32,
@@ -2123,7 +2241,29 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                                 gizmo_hit_test(origin, &self.camera, self.mouse.cursor, w, h)
                                     .map(|handle| (origin, handle))
                             });
-                            if let Some((origin, handle)) = gizmo_hit {
+                            if let Some((rb, axis)) = resize_hit {
+                                let origin = resize_grip_pos(&rb, axis);
+                                let dir = axis.dir();
+                                let start = manip_distance(
+                                    &self.camera,
+                                    self.mouse.cursor,
+                                    origin,
+                                    dir,
+                                    w,
+                                    h,
+                                );
+                                let i = match axis {
+                                    Axis3::X => 0,
+                                    Axis3::Y => 1,
+                                    Axis3::Z => 2,
+                                };
+                                let base_extent = rb.max[i] - rb.min[i];
+                                self.controller.start_resize(axis);
+                                self.gizmo_drag =
+                                    Some(GizmoDrag::Resize { axis, origin, dir, start, base_extent });
+                                self.manip_axis = None;
+                                self.mouse.orbiting = false;
+                            } else if let Some((origin, handle)) = gizmo_hit {
                                 let drag = match handle {
                                     GizmoHandle::TranslateAxis(axis) => {
                                         let dir = axis.dir();
@@ -2162,6 +2302,9 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                                             snapped: 0.0,
                                         }
                                     }
+                                    // gizmo_hit_test only returns the center
+                                    // handles; resize grips are handled above.
+                                    GizmoHandle::Resize(_) => unreachable!(),
                                 };
                                 self.controller.start_transform(handle);
                                 self.gizmo_drag = Some(drag);
@@ -2205,10 +2348,15 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                             self.mouse.orbiting = false;
                             self.mouse.last = None;
                             self.mouse.hover_dirty = true;
-                            if self.gizmo_drag.take().is_some() {
-                                // Commit only if it actually moved (a click on the
-                                // arrow without a drag discards the no-op feature).
-                                self.controller.finish_transform(self.mouse.dragged);
+                            if let Some(drag) = self.gizmo_drag.take() {
+                                // Commit only if it actually moved (a click on a
+                                // handle without a drag discards the no-op edit).
+                                match drag {
+                                    GizmoDrag::Resize { .. } => {
+                                        self.controller.finish_resize(self.mouse.dragged)
+                                    }
+                                    _ => self.controller.finish_transform(self.mouse.dragged),
+                                }
                                 if self.mouse.dragged {
                                     self.mesh_dirty = true;
                                     if let Some(s) = self.state.as_ref() {
@@ -2275,11 +2423,17 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                             let free = self.modifiers.alt_key();
                             let grid = self.controller.grid().snap_step();
                             let cursor = self.mouse.cursor;
-                            let delta = match drag {
+                            // Each arm drives the matching controller edit and
+                            // reports whether geometry changed.
+                            let changed = match drag {
                                 GizmoDrag::Axis { origin, dir, start, .. } => {
                                     let cur = manip_distance(&self.camera, cursor, *origin, *dir, w, h);
                                     let off = snap_translation(*dir * (cur - *start), grid, free);
-                                    TransformDelta::Translate([off.x as f64, off.y as f64, off.z as f64])
+                                    self.controller.update_transform(TransformDelta::Translate([
+                                        off.x as f64,
+                                        off.y as f64,
+                                        off.z as f64,
+                                    ]))
                                 }
                                 GizmoDrag::Plane { point, normal, grab, .. } => {
                                     let (ro, rd) = cursor_ray(&self.camera, cursor, w, h);
@@ -2287,7 +2441,11 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                                         .map(|p| p - *grab)
                                         .unwrap_or(Vec3::ZERO);
                                     let off = snap_translation(off, grid, free);
-                                    TransformDelta::Translate([off.x as f64, off.y as f64, off.z as f64])
+                                    self.controller.update_transform(TransformDelta::Translate([
+                                        off.x as f64,
+                                        off.y as f64,
+                                        off.z as f64,
+                                    ]))
                                 }
                                 GizmoDrag::Rotate { axis, center, normal, last, total, snapped, .. } => {
                                     let (ro, rd) = cursor_ray(&self.camera, cursor, w, h);
@@ -2300,13 +2458,19 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                                         gizmo_ring_ratio(*center, *axis, &self.camera, cursor, w, h);
                                     *snapped = snap_rotation(*total, ratio, free);
                                     let n = normal.normalize_or_zero();
-                                    TransformDelta::Rotate {
+                                    self.controller.update_transform(TransformDelta::Rotate {
                                         axis: [n.x as f64, n.y as f64, n.z as f64],
                                         angle: *snapped as f64,
-                                    }
+                                    })
+                                }
+                                GizmoDrag::Resize { axis, origin, dir, start, base_extent } => {
+                                    let cur = manip_distance(&self.camera, cursor, *origin, *dir, w, h);
+                                    let raw = *base_extent as f32 + (cur - *start);
+                                    let extent = snap_distance(raw, grid, free).max(MIN_RESIZE_DIM);
+                                    self.controller.update_resize(*axis, extent as f64)
                                 }
                             };
-                            if self.controller.update_transform(delta) {
+                            if changed {
                                 self.mesh_dirty = true;
                             }
                             state.window.request_redraw();
@@ -2485,7 +2649,7 @@ impl<C: Controller> WindowApp<C> {
 
         // Build the transform gizmo for this frame, highlighting the axis under
         // the cursor (or the one being dragged).
-        let gizmo_verts = if let Some(g) = self.controller.gizmo() {
+        let mut gizmo_verts = if let Some(g) = self.controller.gizmo() {
             let origin = Vec3::new(g.origin[0] as f32, g.origin[1] as f32, g.origin[2] as f32);
             let (w, h) = (state.config.width, state.config.height);
             let active = if let Some(drag) = self.gizmo_drag {
@@ -2513,6 +2677,20 @@ impl<C: Controller> WindowApp<C> {
         } else {
             Vec::new()
         };
+        // Resize grips on the selected primitive's bounding box. They sit with
+        // the move/rotate gizmo, except mid-rotation (gizmo_geometry focuses the
+        // view on the active ring, so grips would just be clutter).
+        if !matches!(self.gizmo_drag, Some(GizmoDrag::Rotate { .. })) {
+            if let Some(rb) = self.controller.resize_box() {
+                let (w, h) = (state.config.width, state.config.height);
+                let active = match self.gizmo_drag {
+                    Some(GizmoDrag::Resize { axis, .. }) => Some(axis),
+                    _ if state.egui_ctx.is_pointer_over_egui() => None,
+                    _ => resize_hit_test(&rb, &self.camera, self.mouse.cursor, w, h),
+                };
+                gizmo_verts.append(&mut resize_geometry(&rb, &self.camera, active));
+            }
+        }
         state.scene.upload_gizmo(&gizmo_verts);
         state
             .scene
@@ -2670,10 +2848,17 @@ pub fn screenshot(
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     let egui_cmds = egui_renderer.update_buffers(&device, &queue, &mut encoder, &jobs, &screen);
     let highlights = controller.highlights();
-    if let Some(g) = controller.gizmo() {
-        let origin = Vec3::new(g.origin[0] as f32, g.origin[1] as f32, g.origin[2] as f32);
-        scene.upload_gizmo(&gizmo_geometry(origin, &camera, None, None));
+    let mut gizmo_verts = match controller.gizmo() {
+        Some(g) => {
+            let origin = Vec3::new(g.origin[0] as f32, g.origin[1] as f32, g.origin[2] as f32);
+            gizmo_geometry(origin, &camera, None, None)
+        }
+        None => Vec::new(),
+    };
+    if let Some(rb) = controller.resize_box() {
+        gizmo_verts.append(&mut resize_geometry(&rb, &camera, None));
     }
+    scene.upload_gizmo(&gizmo_verts);
     scene.upload_grid(&grid_geometry(controller.grid()));
     scene.encode(&mut encoder, &color_view, &depth_view, &camera, width, height, &highlights);
     encode_egui(&mut encoder, &egui_renderer, &color_view, &jobs, &screen);
