@@ -666,6 +666,47 @@ impl Modeler {
         true
     }
 
+    /// If a single edge of a planar sketch profile is selected, the profile
+    /// feature to revolve about that edge. (Model-face profiles come later.)
+    fn revolvable_profile(&self) -> Option<FeatureId> {
+        if self.selection.selected().len() != 1 {
+            return None;
+        }
+        let source = self.selected_body()?;
+        matches!(
+            self.doc.history.get(source).map(|f| &f.kind),
+            Some(FeatureKind::Sketch { .. }) | Some(FeatureKind::ConstraintSketch { .. })
+        )
+        .then_some(source)
+    }
+
+    /// Revolve the selected sketch profile a full turn about the selected edge.
+    /// The angle is then editable in the panel. Returns true if a feature added.
+    fn revolve_selected_profile(&mut self) -> bool {
+        let Some(source) = self.revolvable_profile() else {
+            return false;
+        };
+        let Some(Pick::Edge(g)) = self.selection.primary() else {
+            return false;
+        };
+        let Some(point) = self.edge_anchors.get(&g).copied() else {
+            return false;
+        };
+        self.record_undo(self.doc.clone());
+        let id = self.doc.add(
+            "Revolve",
+            FeatureKind::Revolve {
+                source,
+                axis: EdgeAnchor { point },
+                angle: std::f64::consts::TAU,
+            },
+        );
+        self.ui.selected = Some(id);
+        self.selection.clear();
+        self.edge_anchors.clear();
+        true
+    }
+
     /// Begin drawing a new sketch on `plane`.
     fn start_sketch(&mut self, plane: SketchPlane) {
         self.sketch_session = Some(SketchSession {
@@ -1079,17 +1120,28 @@ impl Controller for Modeler {
             } else {
                 (format!("{n} edges selected"), format!("⌒ Fillet these {n} edges"))
             };
-            let mut fillet = false;
+            let can_revolve = self.revolvable_profile().is_some();
+            let (mut fillet, mut revolve) = (false, false);
             #[allow(deprecated)]
             egui::Panel::top("selection_bar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(label);
                     ui.separator();
                     fillet = ui.button(action).clicked();
+                    if can_revolve {
+                        ui.separator();
+                        revolve = ui
+                            .button("⟳ Revolve about this edge")
+                            .on_hover_text("Spin the sketch profile a full turn about this edge")
+                            .clicked();
+                    }
                     ui.separator();
                     ui.weak("⇧/⌘-click to add edges");
                 });
             });
+            if revolve {
+                changed |= self.revolve_selected_profile();
+            }
             if fillet {
                 changed |= self.fillet_selected_edges();
             }
@@ -1948,6 +2000,44 @@ fn main() -> anyhow::Result<()> {
     // Verification aid: an in-progress rotation, so the gizmo readout (an egui
     // overlay only shown mid-drag) renders headlessly. Uses a negative angle to
     // exercise the worst-case width.
+    if std::env::args().any(|a| a == "--revolve-demo") {
+        // An L-shaped profile on XZ, its left edge on the Z axis, revolved 270°
+        // so the swept cross-section reads clearly as a solid of revolution.
+        let mut s = Sketch2d::new();
+        let pts = [
+            (0.0, 0.0),
+            (16.0, 0.0),
+            (16.0, 6.0),
+            (6.0, 6.0),
+            (6.0, 30.0),
+            (0.0, 30.0),
+        ];
+        let ids: Vec<_> = pts.iter().map(|&(x, y)| s.add_point(x, y)).collect();
+        for i in 0..ids.len() {
+            s.add_line(ids[i], ids[(i + 1) % ids.len()]);
+        }
+        let mut doc = Document::new("revolve");
+        let sk = doc.add(
+            "Profile",
+            FeatureKind::ConstraintSketch { plane: SketchPlane::Xz, sketch: s },
+        );
+        doc.add(
+            "Revolve",
+            FeatureKind::Revolve {
+                source: sk,
+                axis: EdgeAnchor { point: DVec3::new(0.0, 0.0, 15.0) },
+                angle: 270.0_f64.to_radians(),
+            },
+        );
+        std::mem::swap(&mut modeler.doc, &mut doc);
+        let _ = modeler.mesh();
+        let path = "out/revolve-demo.png";
+        std::fs::create_dir_all("out")?;
+        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        println!("wrote {path}");
+        return Ok(());
+    }
+
     if std::env::args().any(|a| a == "--planes-demo") {
         // All three origin planes on, as construction guides.
         modeler.ui.show_xz = true;
@@ -2224,6 +2314,48 @@ mod tests {
         assert!((max[2] - 15.0).abs() < 0.5, "top pushed to z=15, got {}", max[2]);
         // (push/pull rebuilding at all proves the kernel re-found the scaled
         // body's now-b-spline face as planar — same path sketch-on-face uses.)
+    }
+
+    #[test]
+    fn revolve_a_sketch_profile_makes_a_solid_of_revolution() {
+        use rmf_core::EdgeAnchor;
+        use std::f64::consts::TAU;
+        // A 10×20 rectangle on the XZ plane with its left edge (u=0) on the Z
+        // axis — plane coords (u,v) map to world (u, 0, v).
+        let mut s = Sketch2d::new();
+        let p0 = s.add_point(0.0, 0.0);
+        let p1 = s.add_point(10.0, 0.0);
+        let p2 = s.add_point(10.0, 20.0);
+        let p3 = s.add_point(0.0, 20.0);
+        s.add_line(p0, p1);
+        s.add_line(p1, p2);
+        s.add_line(p2, p3);
+        s.add_line(p3, p0); // close the loop
+
+        let mut doc = Document::new("rev");
+        let sk = doc.add(
+            "Profile",
+            FeatureKind::ConstraintSketch { plane: SketchPlane::Xz, sketch: s },
+        );
+        // Revolve a full turn about the left edge (a point on it: world (0,0,10)).
+        doc.add(
+            "Revolve",
+            FeatureKind::Revolve {
+                source: sk,
+                axis: EdgeAnchor { point: DVec3::new(0.0, 0.0, 10.0) },
+                angle: TAU,
+            },
+        );
+
+        let mut m = Modeler::new();
+        m.doc = doc;
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "revolve should build: {:?}", m.ui.errors);
+        let (min, max) = bounds(&mesh);
+        // A solid cylinder radius 10 about Z, height 20: Ø20 footprint, z in [0,20].
+        assert!((max[0] - min[0] - 20.0).abs() < 0.6, "x footprint {min:?}..{max:?}");
+        assert!((max[1] - min[1] - 20.0).abs() < 0.6, "y footprint {min:?}..{max:?}");
+        assert!(min[2].abs() < 0.5 && (max[2] - 20.0).abs() < 0.5, "z {}..{}", min[2], max[2]);
     }
 
     #[test]

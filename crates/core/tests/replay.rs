@@ -88,6 +88,9 @@ impl GeometryBackend for Recording {
     fn scale(&mut self, body: &String, factors: DVec3, _anchor: DVec3) -> Result<String, String> {
         Ok(format!("scale({body},{:.1},{:.1},{:.1})", factors.x, factors.y, factors.z))
     }
+    fn revolve(&mut self, profile: &String, _axis: DVec3, angle: f64) -> Result<String, String> {
+        Ok(format!("revolve({profile},{angle:.2})"))
+    }
 }
 
 /// The canonical Phase-0 part, as parametric data: a filleted box with a bored

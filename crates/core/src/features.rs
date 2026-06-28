@@ -120,6 +120,15 @@ pub enum FeatureKind {
         factors: DVec3,
         anchor: DVec3,
     },
+
+    /// Revolve a planar profile `source` through `angle` radians about the
+    /// straight edge identified by `axis` (one of the profile's own segments or
+    /// an adjacent model edge). A full turn is `2π`.
+    Revolve {
+        source: FeatureId,
+        axis: EdgeAnchor,
+        angle: f64,
+    },
 }
 
 impl FeatureKind {
@@ -139,6 +148,7 @@ impl FeatureKind {
             FeatureKind::PushPull { source, .. } => vec![*source],
             FeatureKind::Rotate { source, .. } => vec![*source],
             FeatureKind::Scale { source, .. } => vec![*source],
+            FeatureKind::Revolve { source, .. } => vec![*source],
             FeatureKind::Boolean { target, tool, .. } => vec![*target, *tool],
         }
     }
@@ -154,7 +164,8 @@ impl FeatureKind {
             | FeatureKind::Extrude { source, .. }
             | FeatureKind::PushPull { source, .. }
             | FeatureKind::Rotate { source, .. }
-            | FeatureKind::Scale { source, .. } => Some(*source),
+            | FeatureKind::Scale { source, .. }
+            | FeatureKind::Revolve { source, .. } => Some(*source),
             // Heal to the kept body of a boolean.
             FeatureKind::Boolean { target, .. } => Some(*target),
             _ => None,
@@ -175,7 +186,8 @@ impl FeatureKind {
             | FeatureKind::Extrude { source, .. }
             | FeatureKind::PushPull { source, .. }
             | FeatureKind::Rotate { source, .. }
-            | FeatureKind::Scale { source, .. } => swap(source),
+            | FeatureKind::Scale { source, .. }
+            | FeatureKind::Revolve { source, .. } => swap(source),
             FeatureKind::Boolean { target, tool, .. } => {
                 swap(target);
                 swap(tool);
@@ -200,6 +212,7 @@ impl FeatureKind {
             FeatureKind::PushPull { .. } => "Push/Pull",
             FeatureKind::Rotate { .. } => "Rotate",
             FeatureKind::Scale { .. } => "Scale",
+            FeatureKind::Revolve { .. } => "Revolve",
         }
     }
 }

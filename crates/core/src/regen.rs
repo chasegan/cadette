@@ -334,5 +334,13 @@ where
             let body = input(*source)?;
             backend.scale(body, *factors, *anchor).map_err(backend_err)
         }
+        FeatureKind::Revolve {
+            source,
+            axis,
+            angle,
+        } => {
+            let body = input(*source)?;
+            backend.revolve(body, axis.point, *angle).map_err(backend_err)
+        }
     }
 }

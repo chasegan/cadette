@@ -543,6 +543,17 @@ fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
             changed |= drag(ui, "Scale Y", &mut factors.y);
             changed |= drag(ui, "Scale Z", &mut factors.z);
         }
+        FeatureKind::Revolve { angle, .. } => {
+            // Edit the revolve angle in degrees; stored as radians.
+            let mut deg = angle.to_degrees();
+            if ui
+                .add(egui::DragValue::new(&mut deg).speed(1.0).range(1.0..=360.0).suffix("°"))
+                .changed()
+            {
+                *angle = deg.to_radians();
+                changed = true;
+            }
+        }
     }
 
     changed

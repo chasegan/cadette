@@ -122,4 +122,13 @@ impl GeometryBackend for KernelBackend {
     ) -> Result<Solid, KernelError> {
         body.scale(factors.to_array(), anchor.to_array())
     }
+
+    fn revolve(
+        &mut self,
+        profile: &Solid,
+        axis_point: DVec3,
+        angle: f64,
+    ) -> Result<Solid, KernelError> {
+        profile.revolve(axis_point.to_array(), angle)
+    }
 }

@@ -90,6 +90,10 @@ impl GeometryBackend for Counting {
         self.ops += 1;
         Ok(format!("scale({b},{},{},{})", f.x, f.y, f.z))
     }
+    fn revolve(&mut self, p: &String, _axis: DVec3, angle: f64) -> Result<String, String> {
+        self.ops += 1;
+        Ok(format!("revolve({p},{angle})"))
+    }
 }
 
 /// A 3-step chain: box -> move -> fillet. Returns (doc, [box, move, fillet]).

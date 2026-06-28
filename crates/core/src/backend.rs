@@ -40,6 +40,15 @@ pub trait GeometryBackend {
     /// Extrude a planar face (`profile`) along its normal by `distance`.
     fn extrude(&mut self, profile: &Self::Body, distance: f64) -> Result<Self::Body, Self::Error>;
 
+    /// Revolve a planar `profile` by `angle` radians about the straight edge
+    /// nearest `axis_point` (one of the profile's own segments or a model edge).
+    fn revolve(
+        &mut self,
+        profile: &Self::Body,
+        axis_point: DVec3,
+        angle: f64,
+    ) -> Result<Self::Body, Self::Error>;
+
     fn translate(&mut self, body: &Self::Body, offset: DVec3) -> Result<Self::Body, Self::Error>;
 
     fn boolean(
