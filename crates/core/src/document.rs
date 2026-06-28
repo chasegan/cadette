@@ -48,6 +48,15 @@ impl Document {
         id
     }
 
+    /// Duplicate the subtree feeding `id` (fresh ids, see
+    /// [`History::clone_subtree`]) and return the new tip, leaving the rollback
+    /// bar at the document tip so the clone is active. For copy/paste & mirror.
+    pub fn duplicate(&mut self, id: FeatureId) -> Option<FeatureId> {
+        let new_tip = self.history.clone_subtree(id)?;
+        self.rollback_to_tip();
+        Some(new_tip)
+    }
+
     /// The active features: those before the rollback bar.
     pub fn active_features(&self) -> &[Feature] {
         let n = self.rollback.min(self.history.len());

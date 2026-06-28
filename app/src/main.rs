@@ -31,6 +31,9 @@ const EXPORT_DEFLECTION_MM: f64 = 0.05;
 const PROJECT_FORMAT_VERSION: u64 = 1;
 /// Smallest box dimension (mm) a resize drag may produce, so it can't collapse.
 const MIN_DIM: f64 = 0.1;
+/// How far (mm, in X and Y) a paste is offset from its original so it's visibly
+/// a separate body, ready to be moved.
+const PASTE_OFFSET: f64 = 10.0;
 
 /// A centered, axis-aligned rectangle defined by constraints. The corner points
 /// start deliberately rough; the solver snaps them to an exact `width x height`
@@ -318,6 +321,9 @@ struct Modeler {
     transform: Option<TransformDrag>,
     /// Active resize drag (bounding-box grip), if any.
     resize: Option<ResizeDrag>,
+    /// The body feature copied to the clipboard (Cmd/Ctrl+C), pasted as an
+    /// independent duplicate by Cmd/Ctrl+V. `None` until something is copied.
+    clipboard: Option<FeatureId>,
 }
 
 impl Modeler {
@@ -342,6 +348,7 @@ impl Modeler {
             manipulation: None,
             transform: None,
             resize: None,
+            clipboard: None,
         }
     }
 
@@ -704,6 +711,48 @@ impl Modeler {
         self.ui.selected = Some(id);
         self.selection.clear();
         self.edge_anchors.clear();
+        true
+    }
+
+    /// The body to copy/duplicate: the viewport-selected body, else the
+    /// panel-selected feature.
+    fn copy_target(&self) -> Option<FeatureId> {
+        self.selected_body().or(self.ui.selected)
+    }
+
+    /// Copy the selected body to the clipboard.
+    fn copy_selected(&mut self) {
+        self.clipboard = self.copy_target();
+        if let Some(name) = self.clipboard.and_then(|id| self.doc.history.get(id)).map(|f| &f.name) {
+            self.status = Some(format!("Copied '{name}'"));
+        }
+    }
+
+    /// Paste the clipboard body as an independent parametric duplicate, offset
+    /// from the original and selected. Returns true if a body was pasted.
+    fn paste(&mut self) -> bool {
+        let Some(source) = self.clipboard else {
+            return false;
+        };
+        if self.doc.history.get(source).is_none() {
+            self.status = Some("Nothing to paste".into()); // the copied body is gone
+            return false;
+        }
+        self.record_undo(self.doc.clone());
+        let Some(clone_tip) = self.doc.duplicate(source) else {
+            self.undo.pop();
+            return false;
+        };
+        let pasted = self.doc.add(
+            "Paste",
+            FeatureKind::Translate {
+                source: clone_tip,
+                offset: DVec3::new(PASTE_OFFSET, PASTE_OFFSET, 0.0),
+            },
+        );
+        self.ui.selected = Some(pasted);
+        self.selection.clear();
+        self.status = Some("Pasted a copy".into());
         true
     }
 
@@ -1203,6 +1252,20 @@ impl Controller for Modeler {
         }
         if resp.redo || redo_key {
             changed |= self.redo();
+        }
+
+        // Copy/paste a body (not while sketching — those keys are the sketch's).
+        let (copy_key, paste_key) = ctx.input(|i| {
+            let cmd = i.modifiers.command;
+            (cmd && i.key_pressed(Key::C), cmd && i.key_pressed(Key::V))
+        });
+        if self.sketch_session.is_none() {
+            if copy_key {
+                self.copy_selected();
+            }
+            if paste_key {
+                changed |= self.paste();
+            }
         }
 
         // The "Sketch" tool in the Add panel enters interactive draw mode on
@@ -2207,6 +2270,7 @@ mod tests {
             manipulation: None,
             transform: None,
             resize: None,
+            clipboard: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());
@@ -2356,6 +2420,43 @@ mod tests {
         assert!((max[0] - min[0] - 20.0).abs() < 0.6, "x footprint {min:?}..{max:?}");
         assert!((max[1] - min[1] - 20.0).abs() < 0.6, "y footprint {min:?}..{max:?}");
         assert!(min[2].abs() < 0.5 && (max[2] - 20.0).abs() < 0.5, "z {}..{}", min[2], max[2]);
+    }
+
+    #[test]
+    fn paste_duplicates_the_selected_body_offset_and_intact() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        let b = m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let _ = m.mesh();
+
+        // Copy the selected box, then paste.
+        m.ui.selected = Some(b);
+        m.copy_selected();
+        assert_eq!(m.clipboard, Some(b));
+        assert!(m.paste());
+
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        // Two visible bodies now: the original plus the pasted copy.
+        assert_eq!(m.ui.visible.len(), 2, "original + paste");
+        // Original box stays at [0,10]; the paste is offset by PASTE_OFFSET, so
+        // the combined footprint reaches 10 + PASTE_OFFSET on X and Y.
+        let (min, max) = bounds(&mesh);
+        assert!(min[0].abs() < 0.1 && min[1].abs() < 0.1, "original still at origin");
+        assert!(
+            (max[0] - (10.0 + PASTE_OFFSET as f32)).abs() < 0.2,
+            "paste offset on X: {}",
+            max[0]
+        );
+        assert!((max[1] - (10.0 + PASTE_OFFSET as f32)).abs() < 0.2, "paste offset on Y");
+
+        let pasted = m.ui.selected.unwrap();
+        assert_ne!(pasted, b, "paste selected a new feature");
+
+        // Paste is a single undo entry: undo restores the lone original.
+        assert!(m.undo());
+        let _ = m.mesh();
+        assert_eq!(m.ui.visible.len(), 1, "undo removes the whole paste");
     }
 
     #[test]
@@ -3039,6 +3140,7 @@ mod tests {
             manipulation: None,
             transform: None,
             resize: None,
+            clipboard: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());

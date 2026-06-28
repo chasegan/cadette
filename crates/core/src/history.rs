@@ -5,6 +5,8 @@
 //! depend on features that appear earlier, so [`crate::regen`] can evaluate in a
 //! single forward pass. Reordering and editing are validated against this rule.
 
+use std::collections::{HashMap, HashSet};
+
 use serde::{Deserialize, Serialize};
 
 use crate::features::{Feature, FeatureId, FeatureKind};
@@ -53,6 +55,46 @@ impl History {
 
     pub fn features(&self) -> &[Feature] {
         &self.features
+    }
+
+    /// Deep-clone the subtree feeding `id` — that feature plus all of its
+    /// transitive inputs — with fresh ids, appended in dependency order. Returns
+    /// the new tip (the clone of `id`), or `None` if `id` doesn't exist. The
+    /// clone references only other clones, so it's a fully independent,
+    /// parametrically-editable duplicate (the basis of copy/paste and mirror).
+    pub fn clone_subtree(&mut self, id: FeatureId) -> Option<FeatureId> {
+        self.get(id)?;
+        // The set of features in the subtree (transitive closure of inputs).
+        let mut set = HashSet::new();
+        let mut stack = vec![id];
+        while let Some(cur) = stack.pop() {
+            if !set.insert(cur) {
+                continue;
+            }
+            if let Some(f) = self.get(cur) {
+                stack.extend(f.kind.inputs());
+            }
+        }
+        // Clone in existing history order so inputs land before their dependents.
+        let originals: Vec<Feature> =
+            self.features.iter().filter(|f| set.contains(&f.id)).cloned().collect();
+        // Fresh ids are all greater than any existing id, so remapping each
+        // old→new can't collide with an as-yet-unremapped input.
+        let map: HashMap<FeatureId, FeatureId> =
+            originals.iter().map(|f| (f.id, self.alloc_id())).collect();
+        for f in &originals {
+            let mut kind = f.kind.clone();
+            for (&old, &new) in &map {
+                kind.remap_input(old, new);
+            }
+            self.features.push(Feature {
+                id: map[&f.id],
+                name: f.name.clone(),
+                suppressed: f.suppressed,
+                kind,
+            });
+        }
+        Some(map[&id])
     }
 
     /// Mutable access to all features in order — for bulk passes such as

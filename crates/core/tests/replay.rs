@@ -268,3 +268,38 @@ fn backend_failure_is_recorded_and_isolated() {
     // The fillet failed, so the box was never consumed and stays visible.
     assert_eq!(regen.visible(), &[b]);
 }
+
+#[test]
+fn clone_subtree_duplicates_a_body_independently() {
+    // A two-feature body: a Box moved by a Translate.
+    let mut doc = Document::new("dup");
+    let a = doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+    let b = doc.add(
+        "Move",
+        FeatureKind::Translate { source: a, offset: DVec3::new(5.0, 0.0, 0.0) },
+    );
+
+    let b2 = doc.duplicate(b).expect("clone the subtree");
+    assert_ne!(b2, b, "fresh tip id");
+    assert_eq!(doc.history.len(), 4, "Box' + Move' appended");
+
+    // The clone references its OWN copy of the box, not the original.
+    let a2 = doc.history.get(b2).unwrap().kind.inputs()[0];
+    assert_ne!(a2, a, "clone rewired to its own Box copy");
+
+    // Editing the original box leaves the clone untouched (true independence).
+    if let Some(FeatureKind::Box { size }) = doc.history.get_mut(a).map(|f| &mut f.kind) {
+        size.x = 99.0;
+    }
+    let unaffected = matches!(
+        &doc.history.get(a2).unwrap().kind,
+        FeatureKind::Box { size } if (size.x - 10.0).abs() < 1e-9
+    );
+    assert!(unaffected, "clone's box is independent of the original");
+
+    // Both bodies build, and every reference still points backward.
+    assert!(doc.history.validate().is_ok());
+    let regen = regenerate(&doc, &mut Recording);
+    assert!(regen.is_ok());
+    assert_eq!(regen.visible(), &[b, b2], "two independent visible bodies");
+}
