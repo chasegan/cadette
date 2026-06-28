@@ -336,6 +336,8 @@ struct Scene {
     edge_pipeline: wgpu::RenderPipeline,
     /// Line pipeline for the transform gizmo (drawn on top, depth test off).
     gizmo_pipeline: wgpu::RenderPipeline,
+    /// Line pipeline for the workplane grid (depth-tested, drawn behind model).
+    grid_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
@@ -345,6 +347,9 @@ struct Scene {
     /// Gizmo line vertices (rebuilt each frame; empty when hidden).
     gizmo_vertex_buffer: wgpu::Buffer,
     gizmo_vertex_count: u32,
+    /// Workplane grid line vertices (rebuilt when the grid setting changes).
+    grid_vertex_buffer: wgpu::Buffer,
+    grid_vertex_count: u32,
     /// CPU copy of edge segments (world endpoints + edge id) for screen-space
     /// edge picking — edges are too thin for the GPU id buffer.
     edge_segments: Vec<(Vec3, Vec3, u32)>,
@@ -583,11 +588,54 @@ impl Scene {
             cache: None,
         });
 
+        // Grid pipeline: same colored-vertex shader, but a depth-tested line
+        // list so the model occludes the ground-plane grid behind it.
+        let grid_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("rmf-grid-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &gizmo_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<GizmoVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &GIZMO_ATTRS,
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &gizmo_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let (vertex_buffer, index_buffer, index_count) = make_mesh_buffers(&device, mesh);
         let (edge_vertex_buffer, edge_index_buffer, edge_index_count) =
             make_edge_buffers(&device, mesh);
         let gizmo_vertex_buffer = make_gizmo_buffer(&device);
         let gizmo_vertex_count = 0u32;
+        let grid_vertex_buffer = make_grid_buffer(&device);
+        let grid_vertex_count = 0u32;
 
         Self {
             device,
@@ -596,6 +644,7 @@ impl Scene {
             pick_pipeline,
             edge_pipeline,
             gizmo_pipeline,
+            grid_pipeline,
             vertex_buffer,
             index_buffer,
             index_count,
@@ -604,6 +653,8 @@ impl Scene {
             edge_index_count,
             gizmo_vertex_buffer,
             gizmo_vertex_count,
+            grid_vertex_buffer,
+            grid_vertex_count,
             edge_segments: edge_segments(mesh),
             globals_buffer,
             bind_group,
@@ -632,6 +683,16 @@ impl Scene {
                 .write_buffer(&self.gizmo_vertex_buffer, 0, bytemuck::cast_slice(&verts[..n]));
         }
         self.gizmo_vertex_count = n as u32;
+    }
+
+    /// Replace the workplane grid line geometry (empty `verts` hides it).
+    fn upload_grid(&mut self, verts: &[GizmoVertex]) {
+        let n = verts.len().min(GRID_MAX_VERTS as usize);
+        if n > 0 {
+            self.queue
+                .write_buffer(&self.grid_vertex_buffer, 0, bytemuck::cast_slice(&verts[..n]));
+        }
+        self.grid_vertex_count = n as u32;
     }
 
     /// Record the 3D pass (clearing color + depth) into `encoder`. `selected`
@@ -674,6 +735,13 @@ impl Scene {
             occlusion_query_set: None,
             multiview_mask: None,
         });
+        // Grid first (behind the model — it's depth-tested so the model occludes it).
+        if self.grid_vertex_count > 0 {
+            pass.set_pipeline(&self.grid_pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_vertex_buffer(0, self.grid_vertex_buffer.slice(..));
+            pass.draw(0..self.grid_vertex_count, 0..1);
+        }
         if self.index_count > 0 {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
@@ -1494,6 +1562,70 @@ fn make_gizmo_buffer(device: &wgpu::Device) -> wgpu::Buffer {
     })
 }
 
+// --- Workplane grid --------------------------------------------------------
+
+/// Half-extent of the finite ground-plane grid (mm); it spans `[-E, E]^2`.
+const GRID_HALF_EXTENT: f32 = 100.0;
+/// Drop the grid just below z=0 so it doesn't z-fight a model base sitting there.
+const GRID_Z: f32 = -0.05;
+/// Don't draw minor lines once they'd be denser than this (keeps it readable).
+const GRID_MAX_LINES: f32 = 240.0;
+/// Capacity of the persistent grid vertex buffer.
+const GRID_MAX_VERTS: u64 = 4096;
+
+fn make_grid_buffer(device: &wgpu::Device) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("rmf-grid"),
+        size: GRID_MAX_VERTS * std::mem::size_of::<GizmoVertex>() as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+/// Line geometry for the finite z=0 workplane grid: faint minor lines at the
+/// grid spacing, brighter major lines every 10, and colored X/Y axis lines.
+/// Minor lines drop out when the spacing would make them too dense to read.
+fn grid_geometry(spec: GridSpec) -> Vec<GizmoVertex> {
+    if !spec.visible || spec.size <= 0.0 {
+        return Vec::new();
+    }
+    let ext = GRID_HALF_EXTENT;
+    let minor = spec.size;
+    let draw_minor = 2.0 * ext / minor <= GRID_MAX_LINES;
+    let minor_c = rgba([0.58, 0.60, 0.66], 0.16);
+    let major_c = rgba([0.62, 0.64, 0.70], 0.38);
+    let x_axis_c = rgba(Axis3::X.color(), 0.55);
+    let y_axis_c = rgba(Axis3::Y.color(), 0.55);
+
+    let mut v = Vec::new();
+    let mut line = |a: Vec3, b: Vec3, c: [f32; 4]| {
+        v.push(GizmoVertex { position: a.to_array(), color: c });
+        v.push(GizmoVertex { position: b.to_array(), color: c });
+    };
+    let n = (ext / minor).floor() as i32;
+    for i in -n..=n {
+        let on_major = i % 10 == 0;
+        if !on_major && !draw_minor {
+            continue;
+        }
+        let p = i as f32 * minor;
+        let base = if on_major { major_c } else { minor_c };
+        // Constant-x line (runs along Y); at x=0 it is the Y axis.
+        line(
+            Vec3::new(p, -ext, GRID_Z),
+            Vec3::new(p, ext, GRID_Z),
+            if i == 0 { y_axis_c } else { base },
+        );
+        // Constant-y line (runs along X); at y=0 it is the X axis.
+        line(
+            Vec3::new(-ext, p, GRID_Z),
+            Vec3::new(ext, p, GRID_Z),
+            if i == 0 { x_axis_c } else { base },
+        );
+    }
+    v
+}
+
 fn make_mesh_buffers(
     device: &wgpu::Device,
     mesh: &MeshData,
@@ -2260,6 +2392,9 @@ impl<C: Controller> WindowApp<C> {
             Vec::new()
         };
         state.scene.upload_gizmo(&gizmo_verts);
+        state
+            .scene
+            .upload_grid(&grid_geometry(self.controller.grid()));
 
         let jobs = state
             .egui_ctx
@@ -2416,6 +2551,7 @@ pub fn screenshot(
         let origin = Vec3::new(g.origin[0] as f32, g.origin[1] as f32, g.origin[2] as f32);
         scene.upload_gizmo(&gizmo_geometry(origin, &camera, None, None));
     }
+    scene.upload_grid(&grid_geometry(controller.grid()));
     scene.encode(&mut encoder, &color_view, &depth_view, &camera, width, height, &highlights);
     encode_egui(&mut encoder, &egui_renderer, &color_view, &jobs, &screen);
     queue.submit(egui_cmds.into_iter().chain(std::iter::once(encoder.finish())));
