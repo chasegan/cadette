@@ -21,6 +21,7 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <Geom_Plane.hxx>
+#include <GeomLib_IsPlanarSurface.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Circ.hxx>
@@ -193,6 +194,26 @@ std::unique_ptr<Shape> extrude(const Shape& s, double distance) {
 
 // --- Push/pull --------------------------------------------------------------
 
+// A face's plane, accepting both true Geom_Plane surfaces and surfaces that are
+// only *geometrically* planar — notably the b-splines a non-uniform GTransform
+// (our resize/Scale) produces from planes. Without this, a resized body's flat
+// faces stop reading as planar, so push/pull and sketch-on-face fail on them.
+// The Geom_Plane fast path keeps unscaled bodies free of any sampling cost.
+static bool face_pln(const TopoDS_Face& face, gp_Pln& out) {
+  Handle(Geom_Surface) surface = BRep_Tool::Surface(face);
+  Handle(Geom_Plane) plane = Handle(Geom_Plane)::DownCast(surface);
+  if (!plane.IsNull()) {
+    out = plane->Pln();
+    return true;
+  }
+  GeomLib_IsPlanarSurface checker(surface, 1e-6);
+  if (checker.IsPlanar()) {
+    out = checker.Plan();
+    return true;
+  }
+  return false;
+}
+
 std::unique_ptr<Shape> push_pull(const Shape& s, double px, double py, double pz,
                                  double nx, double ny, double nz,
                                  double distance) {
@@ -206,10 +227,9 @@ std::unique_ptr<Shape> push_pull(const Shape& s, double px, double py, double pz
     bool found = false;
     for (TopExp_Explorer ex(s.shape, TopAbs_FACE); ex.More(); ex.Next()) {
       const TopoDS_Face face = TopoDS::Face(ex.Current());
-      Handle(Geom_Surface) surface = BRep_Tool::Surface(face);
-      Handle(Geom_Plane) plane = Handle(Geom_Plane)::DownCast(surface);
-      if (plane.IsNull()) continue;
-      if (std::abs(plane->Pln().Axis().Direction().Dot(wanted)) < 0.99) continue;
+      gp_Pln pln;
+      if (!face_pln(face, pln)) continue;
+      if (std::abs(pln.Axis().Direction().Dot(wanted)) < 0.99) continue;
       // The anchor must lie on THIS face, not merely on its (infinite) plane —
       // otherwise a coplanar neighbour could be picked instead. The tolerance
       // absorbs the small error in a depth-reconstructed clicked point while
@@ -510,10 +530,9 @@ PlaneFrame face_plane(const Shape& s, uint32_t index) {
     for (TopExp_Explorer ex(s.shape, TopAbs_FACE); ex.More(); ex.Next(), ++i) {
       if (i != index) continue;
       const TopoDS_Face face = TopoDS::Face(ex.Current());
-      Handle(Geom_Surface) surface = BRep_Tool::Surface(face);
-      Handle(Geom_Plane) plane = Handle(Geom_Plane)::DownCast(surface);
-      if (plane.IsNull()) break;  // not planar — can't sketch on it
-      const gp_Ax3 axis = plane->Pln().Position();
+      gp_Pln pln;
+      if (!face_pln(face, pln)) break;  // not planar — can't sketch on it
+      const gp_Ax3 axis = pln.Position();
       // Origin = face centroid: a point that actually lies on the face (the
       // plane's reference point may not), so a push/pull anchor placed here
       // matches this face rather than a coplanar neighbour.

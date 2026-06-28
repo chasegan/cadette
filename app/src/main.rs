@@ -2066,6 +2066,45 @@ mod tests {
     }
 
     #[test]
+    fn push_pull_and_sketch_work_on_a_resized_body() {
+        // A non-uniform Scale turns planar faces into b-splines; without the
+        // planarity fallback in the kernel, push/pull and sketch-on-face stop
+        // recognizing them. Here the +Z face of a scaled box must still push.
+        use rmf_core::FaceAnchor;
+        let mut doc = Document::new("ppscale");
+        let b = doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let s = doc.add(
+            "Resize",
+            FeatureKind::Scale {
+                source: b,
+                factors: DVec3::new(2.0, 1.0, 1.0),
+                anchor: DVec3::ZERO,
+            },
+        );
+        // Scaled body: x in [0,20], z in [0,10]. Push the top face up by 5.
+        doc.add(
+            "Push/Pull",
+            FeatureKind::PushPull {
+                source: s,
+                anchor: FaceAnchor { point: DVec3::new(10.0, 5.0, 10.0), normal: DVec3::Z },
+                distance: 5.0,
+            },
+        );
+        let mut m = Modeler::new();
+        m.doc = doc;
+        let mesh = m.mesh();
+        assert!(
+            m.ui.errors.is_empty(),
+            "push/pull on a resized body should rebuild: {:?}",
+            m.ui.errors
+        );
+        let (_min, max) = bounds(&mesh);
+        assert!((max[2] - 15.0).abs() < 0.5, "top pushed to z=15, got {}", max[2]);
+        // (push/pull rebuilding at all proves the kernel re-found the scaled
+        // body's now-b-spline face as planar — same path sketch-on-face uses.)
+    }
+
+    #[test]
     fn gizmo_shows_on_face_selection_and_drag_moves_the_body() {
         use rmf_render::{Axis3, GizmoHandle, TransformDelta};
         let mut m = Modeler::new();
