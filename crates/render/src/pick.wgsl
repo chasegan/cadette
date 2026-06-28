@@ -1,5 +1,6 @@
-// Picking pass: render each fragment's source face id to an R32Uint target.
-// Output is face_id + 1 so that 0 means "no geometry" (the cleared value).
+// Picking pass: render each fragment's source face id to an R32Uint target
+// (face_id + 1, so 0 = no geometry) and its depth to an R32Float target, so the
+// host can reject edges that screen-space picking found but are occluded.
 
 struct Globals {
     view_proj : mat4x4<f32>,
@@ -27,7 +28,15 @@ fn vs_main(
     return out;
 }
 
+struct FsOut {
+    @location(0) id : u32,
+    @location(1) depth : f32,
+};
+
 @fragment
-fn fs_main(in : VsOut) -> @location(0) u32 {
-    return in.face_id + 1u;
+fn fs_main(in : VsOut) -> FsOut {
+    var out : FsOut;
+    out.id = in.face_id + 1u;
+    out.depth = in.clip.z; // NDC depth [0,1], post depth-test (front-most)
+    return out;
 }

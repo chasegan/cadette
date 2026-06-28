@@ -237,11 +237,17 @@ impl Plane3 {
 
 /// Pixel format of the offscreen face-id pick buffer.
 const PICK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
+/// Second pick target: the front-surface depth (NDC z), for edge occlusion.
+const PICK_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 
 pub use rmf_core::Pick;
 
 /// How close (pixels) the cursor must be to an edge to pick it over a face.
 const EDGE_PICK_PX: f32 = 6.0;
+/// How far (NDC depth) behind the front surface an edge must be to count as
+/// occluded — large enough to keep a face's own boundary edges, small enough to
+/// drop edges on the far side of the body.
+const PICK_DEPTH_TOL: f32 = 0.005;
 
 /// Max selected edges the shader can highlight at once (4 ids per `vec4`).
 const SEL_EDGE_CAP: usize = 64;
@@ -468,11 +474,18 @@ impl Scene {
             fragment: Some(wgpu::FragmentState {
                 module: &pick_shader,
                 entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: PICK_FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: PICK_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: PICK_DEPTH_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ],
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
@@ -765,9 +778,9 @@ impl Scene {
         }
     }
 
-    /// Render the face-id pass and read back the face under pixel `(px, py)`.
-    /// Returns the face id, or `None` for background. Synchronous — intended
-    /// for discrete clicks, not per-frame hover.
+    /// Render the face-id + depth pass and read back, under pixel `(px, py)`,
+    /// the face id (`None` = background) and the front-surface depth (NDC z;
+    /// `1.0` where there's no geometry). Synchronous.
     fn pick_face(
         &self,
         px: u32,
@@ -775,9 +788,9 @@ impl Scene {
         camera: &OrbitCamera,
         width: u32,
         height: u32,
-    ) -> Option<u32> {
+    ) -> (Option<u32>, f32) {
         if self.index_count == 0 || px >= width || py >= height {
-            return None;
+            return (None, 1.0);
         }
 
         let aspect = width as f32 / height.max(1) as f32;
@@ -785,21 +798,22 @@ impl Scene {
         self.queue
             .write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
 
-        let id_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("rmf-pick-target"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: PICK_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
+        let make_target = |format, label| {
+            self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        };
+        let id_texture = make_target(PICK_FORMAT, "rmf-pick-id");
+        let depth_texture = make_target(PICK_DEPTH_FORMAT, "rmf-pick-depth");
         let id_view = id_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_color_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let depth = create_depth(&self.device, width, height);
 
         let mut encoder = self
@@ -808,16 +822,28 @@ impl Scene {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("rmf-pick-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &id_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
+                color_attachments: &[
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &id_view,
+                        resolve_target: None,
                         // 0 = no geometry (the pick shader writes face_id + 1).
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &depth_color_view,
+                        resolve_target: None,
+                        // 1.0 = far / no geometry.
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 0.0, b: 0.0, a: 0.0 }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    }),
+                ],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &depth,
                     depth_ops: Some(wgpu::Operations {
@@ -837,59 +863,102 @@ impl Scene {
             pass.draw_indexed(0..self.index_count, 0, 0..1);
         }
 
-        // Copy the single pixel under the cursor to a readback buffer.
-        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rmf-pick-readback"),
-            size: wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &id_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d { x: px, y: py, z: 0 },
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
-                    rows_per_image: Some(1),
+        // Copy both single pixels under the cursor to readback buffers.
+        let make_readback = |label| {
+            self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            })
+        };
+        let id_rb = make_readback("rmf-pick-id-readback");
+        let depth_rb = make_readback("rmf-pick-depth-readback");
+        let copy_pixel = |encoder: &mut wgpu::CommandEncoder, tex: &wgpu::Texture, buf: &wgpu::Buffer| {
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: tex,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: px, y: py, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
                 },
-            },
-            wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-        );
+                wgpu::TexelCopyBufferInfo {
+                    buffer: buf,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
+                        rows_per_image: Some(1),
+                    },
+                },
+                wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            );
+        };
+        copy_pixel(&mut encoder, &id_texture, &id_rb);
+        copy_pixel(&mut encoder, &depth_texture, &depth_rb);
         self.queue.submit(Some(encoder.finish()));
 
-        let slice = readback.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |r| r.expect("map pick readback"));
+        id_rb
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |r| r.expect("map pick id"));
+        depth_rb
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |r| r.expect("map pick depth"));
         self.device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            })
+            .poll(wgpu::PollType::Wait { submission_index: None, timeout: None })
             .ok();
-        let data = slice.get_mapped_range();
-        let raw = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        drop(data);
-        readback.unmap();
 
-        (raw != 0).then(|| raw - 1)
+        let id_data = id_rb.slice(..).get_mapped_range();
+        let raw = u32::from_le_bytes([id_data[0], id_data[1], id_data[2], id_data[3]]);
+        drop(id_data);
+        id_rb.unmap();
+        let depth_data = depth_rb.slice(..).get_mapped_range();
+        let z = f32::from_le_bytes([depth_data[0], depth_data[1], depth_data[2], depth_data[3]]);
+        drop(depth_data);
+        depth_rb.unmap();
+
+        ((raw != 0).then(|| raw - 1), z)
     }
 
-    /// Pick the entity under pixel `(px, py)`: a nearby edge takes priority
-    /// over the face behind it; otherwise the face (or nothing).
-    fn pick_at(&self, px: u32, py: u32, camera: &OrbitCamera, w: u32, h: u32) -> Option<Pick> {
-        if let Some(edge) = self.pick_edge(px as f32, py as f32, camera, w, h) {
-            return Some(Pick::Edge(edge));
+    /// Whether the picked `edge` is occluded by the front surface (whose depth at
+    /// the cursor is `face_depth`). Lets a nearby edge be ignored when it's
+    /// really behind the face the cursor is over — the cause of hover flicker.
+    fn edge_occluded(
+        &self,
+        edge: u32,
+        face: Option<u32>,
+        face_depth: f32,
+        px: u32,
+        py: u32,
+        camera: &OrbitCamera,
+        w: u32,
+        h: u32,
+    ) -> bool {
+        if face.is_none() {
+            return false; // nothing in front (silhouette / background)
         }
-        self.pick_face(px, py, camera, w, h).map(Pick::Face)
+        let Some(p) = self.edge_point(edge, px, py, camera, w, h) else {
+            return false;
+        };
+        let aspect = w as f32 / h.max(1) as f32;
+        let clip = camera.view_proj(aspect) * p.extend(1.0);
+        if clip.w <= 1e-6 {
+            return false;
+        }
+        (clip.z / clip.w) > face_depth + PICK_DEPTH_TOL
+    }
+
+    /// Pick the entity under pixel `(px, py)`: a nearby *unoccluded* edge takes
+    /// priority over the face; otherwise the face (or nothing). The occlusion
+    /// check stops back-of-the-body edges that merely project near the cursor
+    /// from stealing the hover off the face it's over.
+    fn pick_at(&self, px: u32, py: u32, camera: &OrbitCamera, w: u32, h: u32) -> Option<Pick> {
+        let (face, face_depth) = self.pick_face(px, py, camera, w, h);
+        if let Some(edge) = self.pick_edge(px as f32, py as f32, camera, w, h) {
+            if !self.edge_occluded(edge, face, face_depth, px, py, camera, w, h) {
+                return Some(Pick::Edge(edge));
+            }
+        }
+        face.map(Pick::Face)
     }
 
     /// Like [`Self::pick_at`], plus the world-space point under the cursor (from
@@ -903,10 +972,13 @@ impl Scene {
         w: u32,
         h: u32,
     ) -> (Option<Pick>, Option<Vec3>) {
+        let (face, face_depth) = self.pick_face(px, py, camera, w, h);
         if let Some(edge) = self.pick_edge(px as f32, py as f32, camera, w, h) {
-            return (Some(Pick::Edge(edge)), self.edge_point(edge, px, py, camera, w, h));
+            if !self.edge_occluded(edge, face, face_depth, px, py, camera, w, h) {
+                return (Some(Pick::Edge(edge)), self.edge_point(edge, px, py, camera, w, h));
+            }
         }
-        match self.pick_face(px, py, camera, w, h) {
+        match face {
             Some(id) => (Some(Pick::Face(id)), self.world_under_cursor(px, py, camera, w, h)),
             None => (None, None),
         }
@@ -946,12 +1018,16 @@ impl Scene {
                 view_formats: &[],
             })
         };
+        // The pick pipeline writes two color targets (id + depth); this pass
+        // only cares about the z-buffer, so both colors are throwaways.
         let color = make(PICK_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        let depth_color = make(PICK_DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
         let depth = make(
             DEPTH_FORMAT,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         );
         let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_color_view = depth_color.create_view(&wgpu::TextureViewDescriptor::default());
         let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut encoder = self
@@ -960,15 +1036,26 @@ impl Scene {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("rmf-depth-pick-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &color_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
+                color_attachments: &[
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &color_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &depth_color_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    }),
+                ],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &depth_view,
                     depth_ops: Some(wgpu::Operations {
@@ -2655,7 +2742,7 @@ mod tests {
 
         // The quad straddles the origin (the camera target), so the center ray
         // hits it.
-        assert_eq!(scene.pick_face(32, 32, &camera, 64, 64), Some(0));
+        assert_eq!(scene.pick_face(32, 32, &camera, 64, 64).0, Some(0));
     }
 
     /// An edge passing through the cursor is picked in preference to the face
