@@ -68,9 +68,6 @@ pub struct HistoryResponse {
     /// A boolean op was clicked — the host combines the selected body with the
     /// other visible bodies (subtract carves the selection out of them).
     pub boolean: Option<BooleanOp>,
-    /// The history panel's screen rectangle — the host clips viewport overlays
-    /// (e.g. grid ruler labels) to the area beside it.
-    pub panel_rect: Option<egui::Rect>,
 }
 
 impl HistoryState {
@@ -113,7 +110,7 @@ pub fn history_panel(
     // of a frame we only hold a `&Context`. `.show(ctx)` still works, so allow
     // it until the replacement for context-level panels settles.
     #[allow(deprecated)]
-    let panel = egui::Panel::left("history_panel")
+    egui::Panel::left("history_panel")
         .resizable(true)
         .default_size(300.0)
         .show(ctx, |ui| {
@@ -195,7 +192,6 @@ pub fn history_panel(
             }
         });
 
-    resp.panel_rect = Some(panel.response.rect);
     resp
 }
 

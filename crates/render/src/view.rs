@@ -33,11 +33,6 @@ impl ViewContext {
         self.project_world(vec3(world))
     }
 
-    /// The viewport size in egui points (for clamping overlays to the screen).
-    pub fn size(&self) -> Vec2 {
-        self.size
-    }
-
     /// Project a world point to a screen position (egui points), or `None` if
     /// it is behind the camera.
     fn project_world(&self, world: Vec3) -> Option<Pos2> {
