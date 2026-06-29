@@ -171,6 +171,9 @@ struct SketchSession {
     /// Pen tool: where a smooth-anchor drag began (the anchor goes here; the
     /// drag pulls out its handle).
     pen_press: Option<[f64; 2]>,
+    /// Pen tool: the FIRST anchor's in-handle (mirror of its out-handle), saved
+    /// so the closing segment lands on it — a smooth join across the start.
+    pen_start_in: Option<[f64; 2]>,
 }
 
 /// A deferred edit to the sketch session, collected during egui drawing and
@@ -999,6 +1002,7 @@ impl Modeler {
             dragging_handle: None,
             pen_out: None,
             pen_press: None,
+            pen_start_in: None,
         });
     }
 
@@ -1025,6 +1029,7 @@ impl Modeler {
             dragging_handle: None,
             pen_out: None,
             pen_press: None,
+            pen_start_in: None,
         });
         self.selection.clear();
         true
@@ -1582,6 +1587,10 @@ impl Modeler {
                             let in_handle = [2.0 * pu - hu, 2.0 * pv - hv];
                             if let Some(last) = s.last {
                                 connect_pen(&mut s.sketch, last, pid, s.pen_out, Some(in_handle));
+                            } else {
+                                // First anchor: its incoming segment is the eventual
+                                // close, so save the in-handle for then.
+                                s.pen_start_in = Some(in_handle);
                             }
                             if s.start.is_none() {
                                 s.start = Some(pid);
@@ -1594,11 +1603,14 @@ impl Modeler {
                 SketchAction::PenClose => {
                     if let Some(s) = self.sketch_session.as_mut() {
                         if let (Some(last), Some(start)) = (s.last, s.start) {
-                            connect_pen(&mut s.sketch, last, start, s.pen_out, None);
+                            // The closing segment lands on the first anchor's saved
+                            // in-handle → smooth across the start point.
+                            connect_pen(&mut s.sketch, last, start, s.pen_out, s.pen_start_in);
                             s.closed = true;
                             s.tool = SketchTool::Select;
                             s.pen_out = None;
                             s.pen_press = None;
+                            s.pen_start_in = None;
                         }
                     }
                     self.resolve_session();
@@ -3285,6 +3297,26 @@ mod tests {
         assert_eq!(s2.beziers.len(), 1);
         assert_eq!(s2.beziers[0].c1, [5.0, 5.0]);
         assert_eq!(s2.beziers[0].c2, [15.0, -5.0]);
+    }
+
+    #[test]
+    fn pen_close_lands_on_the_first_anchors_in_handle_for_a_smooth_start() {
+        // A smooth first anchor P0=(0,0) drags out handle (0,5): its out-handle
+        // (0,5) feeds the first segment's c1; its in-handle (0,-5) is saved for
+        // the close. After closing, the two segments at P0 must be mirror
+        // symmetric through P0 → smooth.
+        let mut s = Sketch2d::new();
+        let p0 = s.add_point(0.0, 0.0);
+        let p1 = s.add_point(10.0, 0.0);
+        let p2 = s.add_point(5.0, 10.0);
+        connect_pen(&mut s, p0, p1, Some([0.0, 5.0]), None); // first segment, c1 = out-handle
+        connect_pen(&mut s, p1, p2, None, None);
+        connect_pen(&mut s, p2, p0, None, Some([0.0, -5.0])); // close, c2 = saved in-handle
+
+        let out_c1 = s.beziers.iter().find(|b| b.a == p0).map(|b| b.c1).unwrap();
+        let in_c2 = s.beziers.iter().find(|b| b.b == p0).map(|b| b.c2).unwrap();
+        assert_eq!(out_c1, [0.0, 5.0]);
+        assert_eq!(in_c2, [-out_c1[0], -out_c1[1]], "handles opposed through P0 → smooth");
     }
 
     #[test]
