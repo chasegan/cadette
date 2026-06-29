@@ -1,0 +1,57 @@
+name: Release
+
+# Build distributable assets when a version tag (v#.#.#) is pushed, and attach
+# them to a GitHub Release for that tag.
+#
+# macOS only for now. A Windows asset needs build.rs taught to link OCCT on MSVC
+# (no -Wl,-rpath) plus OCCT provisioned via vcpkg — tracked as a follow-up.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write # create the release and upload assets
+
+jobs:
+  macos:
+    name: macOS (Apple Silicon)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OpenCASCADE + dylibbundler
+        run: brew install opencascade dylibbundler
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: |
+          export CDT_OCCT_PREFIX="$(brew --prefix opencascade)"
+          cargo build --release --locked -p cdt-app
+
+      - name: Bundle a self-contained app folder
+        # dylibbundler copies every non-system dylib the binary needs (OCCT and
+        # its deps) into ./libs and rewrites the load paths to @executable_path,
+        # so the result runs without Homebrew installed. -s adds OCCT's lib dir
+        # so @rpath inter-dependencies resolve.
+        run: |
+          STAGE="cadette-macos-arm64"
+          mkdir -p "$STAGE/libs"
+          cp target/release/cdt-app "$STAGE/cadette"
+          dylibbundler \
+            --overwrite-dir --bundle-deps \
+            --fix-file "$STAGE/cadette" \
+            --dest-dir "$STAGE/libs" \
+            --install-path "@executable_path/libs" \
+            --search-path "$(brew --prefix opencascade)/lib"
+          ditto -c -k --sequesterRsrc --keepParent "$STAGE" "$STAGE.zip"
+
+      - name: Publish release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: cadette-macos-arm64.zip

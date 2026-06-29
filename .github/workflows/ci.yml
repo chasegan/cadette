@@ -1,0 +1,28 @@
+name: CI
+
+# Run the whole test suite on every push. We use a macOS runner because the
+# kernel links a system OpenCASCADE (installed here via Homebrew, matching the
+# 7.9 dev setup) and the render crate's tests create a real wgpu device, which
+# the runner's Metal backend provides.
+on: push
+
+jobs:
+  test:
+    name: Test (macOS / Apple Silicon)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OpenCASCADE
+        run: brew install opencascade
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: |
+          export CDT_OCCT_PREFIX="$(brew --prefix opencascade)"
+          cargo test --workspace --locked
