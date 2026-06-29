@@ -14,7 +14,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MPL-2.0"
-repository = "https://github.com/chas/cadette"
+repository = "https://github.com/chasegan/cadette"
 rust-version = "1.85"
 
 # Shared dependency versions, referenced by member crates with `workspace = true`.
