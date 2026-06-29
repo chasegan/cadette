@@ -92,6 +92,13 @@ auto guard(const char* op, F&& f) -> decltype(f()) {
 TopoDS_Shape unify_same_domain(const TopoDS_Shape& s) {
   ShapeUpgrade_UnifySameDomain tool(s, /*unifyEdges=*/true, /*unifyFaces=*/true,
                                     /*concatBSplines=*/false);
+  // OCCT's default same-domain tolerance is Precision::Confusion (~1e-7), far
+  // tighter than the numerical drift a sequence of interactive booleans leaves
+  // between faces that are meant to be coplanar. 1e-3 mm (a micron) is still
+  // orders of magnitude below any real feature on a mm-scale print, so it merges
+  // those near-coplanar seams without ever fusing geometry the user intended.
+  tool.SetLinearTolerance(1.0e-3);
+  tool.SetAngularTolerance(1.0e-4);
   tool.Build();
   return tool.Shape();
 }
@@ -351,7 +358,19 @@ std::unique_ptr<Shape> push_pull(const Shape& s, double px, double py, double pz
       throw std::runtime_error("push_pull: no matching planar face");
     }
 
-    gp_Vec direction(wanted);
+    // Extrude along the face's OWN exact normal, not the passed `wanted` (which
+    // carries depth-reconstruction noise from the interactive pick). A tilt of a
+    // few 1e-4 rad would make each push's new wall a hair off-vertical, so
+    // repeated push/pulls on the same face produce walls that aren't exactly
+    // coplanar and so won't merge — the "stacked segments" the user sees. Taking
+    // the normal from the resolved face keeps every push perfectly axis-true.
+    gp_Pln target_pln;
+    face_pln(target, target_pln);
+    gp_Dir face_normal = target_pln.Axis().Direction();
+    // face_pln's normal can point either way; align it with the requested push.
+    if (face_normal.Dot(wanted) < 0.0) face_normal.Reverse();
+
+    gp_Vec direction(face_normal);
     direction *= distance;
     if (direction.Magnitude() < 1e-9) {
       return std::make_unique<Shape>(s.shape);  // no-op
