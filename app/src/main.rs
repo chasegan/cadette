@@ -209,6 +209,8 @@ enum SketchAction {
     CurveSelected,
     /// Convert the (single) selected bezier back into a straight line.
     StraightenSelected,
+    /// Re-smooth the (single) selected corner node (symmetrize its handles).
+    SmoothSelected,
     /// Pen: a smooth-anchor drag began at this plane coordinate.
     PenPress([f64; 2]),
     /// Pen: place a corner anchor (a plain click) at this coordinate.
@@ -1192,6 +1194,20 @@ impl Modeler {
                 {
                     actions.push(SketchAction::CurveSelected);
                 }
+                // Re-smooth: only when a single selected point is a corner junction
+                // of two beziers (the inverse of an Alt-drag break).
+                let is_corner = (np == 1)
+                    .then(|| session.selected_points.first().copied())
+                    .flatten()
+                    .is_some_and(|p| session.sketch.node_smoothness(p) == Some(false));
+                if is_corner
+                    && ui
+                        .add_enabled(true, egui::Button::new("⤿ Smooth"))
+                        .on_hover_text("Make this corner smooth — align its two handles")
+                        .clicked()
+                {
+                    actions.push(SketchAction::SmoothSelected);
+                }
                 ui.separator();
                 let dof = session.dof;
                 let status = if dof == 0 {
@@ -1660,6 +1676,13 @@ impl Modeler {
                         s.selected_lines.clear();
                         s.selected_points.clear();
                         s.selected_beziers.clear();
+                    }
+                }
+                SketchAction::SmoothSelected => {
+                    if let Some(s) = self.sketch_session.as_mut() {
+                        if let Some(&p) = s.selected_points.first() {
+                            s.sketch.smooth_node(p);
+                        }
                     }
                 }
                 SketchAction::PenPress(uv) => {

@@ -335,6 +335,79 @@ impl Sketch2d {
         false
     }
 
+    /// The (bezier, end) pairs whose handle sits at `node`. A junction where two
+    /// beziers meet has exactly two; that's the case that can be a smooth/corner.
+    fn bezier_ends_at(&self, node: PointId) -> Vec<(usize, bool)> {
+        let mut ends = Vec::new();
+        for (i, b) in self.beziers.iter().enumerate() {
+            if b.a == node {
+                ends.push((i, true));
+            }
+            if b.b == node {
+                ends.push((i, false));
+            }
+        }
+        ends
+    }
+
+    /// Smooth/corner state of `node` as a two-bezier junction: `Some(true)` if its
+    /// handles are mirror-symmetric (smooth), `Some(false)` if independent
+    /// (corner), `None` if it isn't a junction of exactly two beziers.
+    pub fn node_smoothness(&self, node: PointId) -> Option<bool> {
+        let ends = self.bezier_ends_at(node);
+        if ends.len() != 2 {
+            return None;
+        }
+        Some(self.node_is_smooth(ends[0].0, ends[0].1))
+    }
+
+    /// Re-smooth a corner `node` (the inverse of an Alt-drag break): align its two
+    /// handles collinear through the node with equal length, so the curve passes
+    /// through smoothly (C¹) — an exact mirror, so [`node_is_smooth`] then holds.
+    /// The shared tangent is the average of the two current handle directions and
+    /// the common length their average. Returns false if `node` isn't a junction
+    /// of two beziers (or a handle is degenerate).
+    pub fn smooth_node(&mut self, node: PointId) -> bool {
+        let ends = self.bezier_ends_at(node);
+        if ends.len() != 2 {
+            return false;
+        }
+        let n = self.points[node.0];
+        let handle = |(i, c1): (usize, bool)| {
+            let b = self.beziers[i];
+            if c1 { b.c1 } else { b.c2 }
+        };
+        // Vectors from the node out to each handle.
+        let (h0v, h1v) = (handle(ends[0]), handle(ends[1]));
+        let v0 = [h0v[0] - n.x, h0v[1] - n.y];
+        let v1 = [h1v[0] - n.x, h1v[1] - n.y];
+        let l0 = (v0[0] * v0[0] + v0[1] * v0[1]).sqrt();
+        let l1 = (v1[0] * v1[0] + v1[1] * v1[1]).sqrt();
+        if l0 < 1e-9 || l1 < 1e-9 {
+            return false;
+        }
+        // Average the two directions with v1 flipped (smooth handles oppose),
+        // then split equal-length along ±the resulting tangent.
+        let t0 = [v0[0] / l0, v0[1] / l0];
+        let t1 = [-v1[0] / l1, -v1[1] / l1];
+        let sum = [t0[0] + t1[0], t0[1] + t1[1]];
+        let sl = (sum[0] * sum[0] + sum[1] * sum[1]).sqrt();
+        let dir = if sl < 1e-9 { t0 } else { [sum[0] / sl, sum[1] / sl] };
+        let len = (l0 + l1) / 2.0;
+        let h0 = [n.x + dir[0] * len, n.y + dir[1] * len];
+        let h1 = [n.x - dir[0] * len, n.y - dir[1] * len];
+        let mut set = |(i, c1): (usize, bool), h: [f64; 2]| {
+            if c1 {
+                self.beziers[i].c1 = h;
+            } else {
+                self.beziers[i].c2 = h;
+            }
+        };
+        set(ends[0], h0);
+        set(ends[1], h1);
+        true
+    }
+
     /// Move point `p` to `(x, y)`, carrying any incident bezier handles by the
     /// same delta so the curves keep their shape (and a smooth node stays
     /// smooth) as the anchor moves.
@@ -675,6 +748,27 @@ mod edit_tests {
 
         // A bezier meeting nothing (open end) is not a smooth join.
         assert!(!s.node_is_smooth(0, true), "the a-end has no partner");
+    }
+
+    #[test]
+    fn smooth_node_re_symmetrizes_a_broken_corner() {
+        let mut s = Sketch2d::new();
+        let a = s.add_point(0.0, 0.0);
+        let m = s.add_point(10.0, 0.0);
+        let b = s.add_point(20.0, 0.0);
+        s.add_bezier(a, m, [2.0, 2.0], [8.0, 3.0]);
+        s.add_bezier(m, b, [13.0, 5.0], [18.0, 2.0]); // corner: handle off the mirror
+        assert_eq!(s.node_smoothness(m), Some(false), "starts a corner");
+
+        assert!(s.smooth_node(m), "two beziers meet at m → smoothable");
+        assert_eq!(s.node_smoothness(m), Some(true), "now a smooth (mirror) join");
+        // The two handles are exact mirrors through m.
+        let (c2, c1) = (s.beziers[0].c2, s.beziers[1].c1);
+        assert!((c1[0] - (20.0 - c2[0])).abs() < 1e-9 && (c1[1] - (0.0 - c2[1])).abs() < 1e-9);
+
+        // A lone point (no two beziers) can't be smoothed.
+        assert_eq!(s.node_smoothness(a), None);
+        assert!(!s.smooth_node(a));
     }
 
     #[test]
