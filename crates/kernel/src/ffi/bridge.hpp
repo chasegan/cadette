@@ -66,6 +66,8 @@ std::unique_ptr<Shape> translate(const Shape& s, double dx, double dy, double dz
 std::unique_ptr<Shape> fuse(const Shape& a, const Shape& b);
 std::unique_ptr<Shape> cut(const Shape& a, const Shape& b);
 std::unique_ptr<Shape> common(const Shape& a, const Shape& b);
+std::unique_ptr<Shape> unify(const Shape& s);
+std::size_t count_faces(const Shape& s);
 
 // --- Edge treatments --------------------------------------------------------
 std::unique_ptr<Shape> rotate(const Shape& s, double cx, double cy, double cz,

@@ -178,6 +178,18 @@ impl Solid {
         Ok(Self::wrap(ffi::compound(&self.0, &other.0)?))
     }
 
+    /// Merge same-domain faces and edges — remove the artificial seam edges left
+    /// between coplanar neighbours (e.g. by a boolean). Booleans already apply
+    /// this; exposed for an explicit "refine".
+    pub fn unify(&self) -> Result<Self> {
+        Ok(Self::wrap(ffi::unify(&self.0)?))
+    }
+
+    /// The number of faces in this solid (TopExp order).
+    pub fn face_count(&self) -> usize {
+        ffi::count_faces(&self.0)
+    }
+
     // --- Edge treatments ----------------------------------------------------
 
     /// Fillet every edge with a constant `radius`. Returns an error if the

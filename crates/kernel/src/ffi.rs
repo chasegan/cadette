@@ -164,6 +164,13 @@ pub mod ffi {
         fn cut(a: &Shape, b: &Shape) -> Result<UniquePtr<Shape>>;
         fn common(a: &Shape, b: &Shape) -> Result<UniquePtr<Shape>>;
 
+        /// Merge same-domain faces/edges (remove seam edges between coplanar
+        /// neighbours) — an explicit "refine". Booleans already do this.
+        fn unify(s: &Shape) -> Result<UniquePtr<Shape>>;
+
+        /// Count the faces of a shape (for topology assertions/debugging).
+        fn count_faces(s: &Shape) -> usize;
+
         // --- Edge treatments ----------------------------------------------
         /// Fillet every edge of `shape` with a constant `radius`.
         fn fillet_all_edges(shape: &Shape, radius: f64) -> Result<UniquePtr<Shape>>;

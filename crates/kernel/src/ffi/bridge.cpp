@@ -15,6 +15,7 @@
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
+#include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
@@ -82,6 +83,17 @@ auto guard(const char* op, F&& f) -> decltype(f()) {
   } catch (...) {
     throw std::runtime_error(std::string(op) + ": unknown C++ exception");
   }
+}
+
+// Merge faces that lie on the same underlying surface (and edges on the same
+// curve), removing the artificial seam edges that boolean operations leave
+// between coplanar neighbours — OCCT's equivalent of FreeCAD's "Refine shape".
+// Only same-domain geometry is unified, so intentional features are untouched.
+TopoDS_Shape unify_same_domain(const TopoDS_Shape& s) {
+  ShapeUpgrade_UnifySameDomain tool(s, /*unifyEdges=*/true, /*unifyFaces=*/true,
+                                    /*concatBSplines=*/false);
+  tool.Build();
+  return tool.Shape();
 }
 
 }  // namespace
@@ -348,7 +360,8 @@ std::unique_ptr<Shape> push_pull(const Shape& s, double px, double py, double pz
     const TopoDS_Shape result =
         distance >= 0.0 ? BRepAlgoAPI_Fuse(s.shape, prism).Shape()
                         : BRepAlgoAPI_Cut(s.shape, prism).Shape();
-    return std::make_unique<Shape>(result);
+    // Pulling a face flush with a neighbour leaves a coplanar seam — merge it.
+    return std::make_unique<Shape>(unify_same_domain(result));
   });
 }
 
@@ -425,23 +438,41 @@ std::unique_ptr<Shape> compound(const Shape& a, const Shape& b) {
 
 // --- Booleans ---------------------------------------------------------------
 
+// Each boolean unifies its result so coplanar faces of the two operands merge
+// into one instead of staying split by a seam edge.
 std::unique_ptr<Shape> fuse(const Shape& a, const Shape& b) {
   return guard("fuse", [&] {
-    return std::make_unique<Shape>(BRepAlgoAPI_Fuse(a.shape, b.shape).Shape());
+    return std::make_unique<Shape>(
+        unify_same_domain(BRepAlgoAPI_Fuse(a.shape, b.shape).Shape()));
   });
 }
 
 std::unique_ptr<Shape> cut(const Shape& a, const Shape& b) {
   return guard("cut", [&] {
-    return std::make_unique<Shape>(BRepAlgoAPI_Cut(a.shape, b.shape).Shape());
+    return std::make_unique<Shape>(
+        unify_same_domain(BRepAlgoAPI_Cut(a.shape, b.shape).Shape()));
   });
 }
 
 std::unique_ptr<Shape> common(const Shape& a, const Shape& b) {
   return guard("common", [&] {
     return std::make_unique<Shape>(
-        BRepAlgoAPI_Common(a.shape, b.shape).Shape());
+        unify_same_domain(BRepAlgoAPI_Common(a.shape, b.shape).Shape()));
   });
+}
+
+// Standalone refine — merge same-domain faces/edges of any shape on demand.
+std::unique_ptr<Shape> unify(const Shape& s) {
+  return guard("unify", [&] {
+    return std::make_unique<Shape>(unify_same_domain(s.shape));
+  });
+}
+
+// Number of faces in the shape (TopExp order) — for asserting topology.
+std::size_t count_faces(const Shape& s) {
+  std::size_t n = 0;
+  for (TopExp_Explorer ex(s.shape, TopAbs_FACE); ex.More(); ex.Next()) n++;
+  return n;
 }
 
 // --- Edge treatments --------------------------------------------------------
