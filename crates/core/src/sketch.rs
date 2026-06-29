@@ -242,6 +242,29 @@ impl Sketch2d {
         true
     }
 
+    /// Keep a shared node smooth after moving bezier `bez`'s handle (`is_c1`
+    /// selects which end's handle): any OTHER bezier meeting at that node gets
+    /// its adjacent handle set diametrically opposite, with equal length —
+    /// collinear through the node, so the curve passes through smoothly (C¹).
+    pub fn mirror_partner_handle(&mut self, bez: usize, is_c1: bool) {
+        let Some(b) = self.beziers.get(bez).copied() else {
+            return;
+        };
+        let (node, handle) = if is_c1 { (b.a, b.c1) } else { (b.b, b.c2) };
+        let n = self.points[node.0];
+        let mirrored = [2.0 * n.x - handle[0], 2.0 * n.y - handle[1]];
+        for (i, other) in self.beziers.iter_mut().enumerate() {
+            if i == bez {
+                continue;
+            }
+            if other.a == node {
+                other.c1 = mirrored;
+            } else if other.b == node {
+                other.c2 = mirrored;
+            }
+        }
+    }
+
     /// A point on the cubic bezier `segment` at parameter `t ∈ [0,1]`.
     pub fn bezier_at(seg: &SketchBezier, points: &[SketchPoint], t: f64) -> [f64; 2] {
         let a = points[seg.a.0];
@@ -472,6 +495,23 @@ mod edit_tests {
             elems.iter().filter(|e| matches!(e, ProfileElem::Bezier { .. })).count(),
             1
         );
+    }
+
+    #[test]
+    fn mirror_partner_handle_makes_a_smooth_node() {
+        // Two beziers meeting at a shared node N=(10,0); drag one's handle and
+        // the other's handle at N must go diametrically opposite, equal length.
+        let mut s = Sketch2d::new();
+        let a = s.add_point(0.0, 0.0);
+        let n = s.add_point(10.0, 0.0); // the shared node
+        let c = s.add_point(20.0, 0.0);
+        s.add_bezier(a, n, [3.0, 0.0], [7.0, 4.0]); // bez 0 ends at n (c2 = its handle at n)
+        s.add_bezier(n, c, [13.0, 0.0], [17.0, 0.0]); // bez 1 starts at n (c1 = its handle at n)
+
+        // Move bez 0's end handle (c2) up to (7, 4) [already], mirror onto bez 1.
+        s.mirror_partner_handle(0, false); // is_c1=false → node = n, handle = c2 = (7,4)
+        // Partner = bez 1's c1 = 2*n - (7,4) = (20-7, 0-4) = (13, -4).
+        assert_eq!(s.beziers[1].c1, [13.0, -4.0], "handle mirrored through the node");
     }
 
     #[test]

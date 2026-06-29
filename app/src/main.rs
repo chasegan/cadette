@@ -1432,6 +1432,8 @@ impl Modeler {
                                     bz.c2 = [u, v];
                                 }
                             }
+                            // Keep an adjacent bezier's handle mirrored → smooth node.
+                            s.sketch.mirror_partner_handle(i, is_c1);
                         } else if let Some(pid) = s.dragging {
                             if let Some(p) = s.sketch.points.get_mut(pid.0) {
                                 p.x = u;
