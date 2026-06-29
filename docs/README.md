@@ -15,7 +15,7 @@ No build step, no dependencies. Just `index.html`, `styles.css`, and `favicon.sv
 ## Preview locally
 
 ```sh
-cd site
+cd docs
 python3 -m http.server 8000
 # open http://localhost:8000
 ```
@@ -43,9 +43,8 @@ https://github.com/chasegan/cadette/releases/latest/download/Cadette-Linux.AppIm
 
 ## Deploy on GitHub Pages
 
-1. Put these files at the **root** of a repo (a dedicated `cadette-site` repo is tidiest),
-   or in a `/docs` folder of an existing repo.
-2. Repo **Settings → Pages** → Source = the branch (and `/docs` if used).
+1. These files live in `/docs` of the `chasegan/cadette` repo.
+2. Repo **Settings → Pages** → Source = "Deploy from a branch", branch `main`, folder `/docs`.
 3. Set the custom domain to `cadette.org` (the `CNAME` file already does this).
 4. In **GoDaddy DNS** add:
    - Four `A` records for the apex `@` → `185.199.108.153`, `185.199.109.153`,
