@@ -2311,14 +2311,44 @@ impl Controller for Modeler {
         let Some(id) = m.feature else {
             return; // never dragged far enough to create a feature
         };
-        let distance = match self.doc.history.get(id).map(|f| &f.kind) {
-            Some(FeatureKind::PushPull { distance, .. }) => *distance,
-            _ => 0.0,
+        let (src, anchor, distance) = match self.doc.history.get(id).map(|f| &f.kind) {
+            Some(FeatureKind::PushPull { source, anchor, distance }) => (*source, *anchor, *distance),
+            _ => return,
         };
         // Discard a cancelled or no-op push/pull (and the undo it recorded).
         if !commit || distance.abs() < 1e-3 {
             self.doc.history.remove(id);
             self.undo.pop();
+            return;
+        }
+
+        // Coalesce consecutive push/pulls of the SAME face. Each drag otherwise
+        // adds a fresh PushPull, and stacking them fuses/cuts a separate prism per
+        // step — which on a face with a hole or fillet leaves coplanar bands that
+        // OCCT's same-domain merge can't rejoin, so the wall splits into segments.
+        // Folding this push's distance into the previous one keeps the body a
+        // single clean prism (a single push of the net distance never splits).
+        let prev = match self.doc.history.get(src).map(|f| &f.kind) {
+            Some(FeatureKind::PushPull { anchor, distance, .. }) => Some((*anchor, *distance)),
+            _ => None,
+        };
+        if let Some((prev_anchor, prev_distance)) = prev {
+            // Same face = same outward normal, and this push's face sits exactly
+            // where the previous push left it (its plane offset along the normal).
+            let same_normal = anchor.normal.dot(prev_anchor.normal) > 0.999;
+            let prev_face = prev_anchor.point.dot(prev_anchor.normal) + prev_distance;
+            let this_face = anchor.point.dot(anchor.normal);
+            if same_normal && (this_face - prev_face).abs() < 0.05 {
+                if let Some(f) = self.doc.history.get_mut(src) {
+                    if let FeatureKind::PushPull { distance: d, .. } = &mut f.kind {
+                        *d = prev_distance + distance;
+                    }
+                }
+                self.doc.history.remove(id);
+                if self.ui.selected == Some(id) {
+                    self.ui.selected = Some(src);
+                }
+            }
         }
     }
 
@@ -3298,6 +3328,48 @@ mod tests {
         assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
         let (_min, max) = bounds(&mesh);
         assert!((max[2] - 15.0).abs() < 0.5, "max z {}", max[2]);
+    }
+
+    #[test]
+    fn repeated_pushes_of_one_face_coalesce_instead_of_splitting() {
+        use rmf_core::FaceAnchor;
+        use std::collections::BTreeSet;
+        // The real starting shape: a filleted block with a bored hole. Stacking a
+        // fresh PushPull per drag leaves coplanar bands the kernel can't remerge
+        // (the hole defeats UnifySameDomain), so the wall splits into "segments".
+        // finish_manipulation must instead fold each push into the previous one.
+        let mut m = Modeler::new();
+        m.doc = crate::build_document();
+        m.mesh(); // populate ui.visible
+        let body = *m.ui.visible.first().expect("one starting body");
+
+        let distinct = |m: &mut Modeler| {
+            m.mesh().vertices.iter().map(|v| v.face_id).collect::<BTreeSet<u32>>().len()
+        };
+
+        // Drive the manipulation lifecycle for several separate pushes of the top
+        // face (centered shape → top at z=40; click off-center, clear of the bore).
+        // After the first push, every later one folds into it (the base feature).
+        let mut base: Option<FeatureId> = None;
+        let mut z = 40.0;
+        for d in [-1.0_f64, -2.0, -2.0, 3.0, -2.0] {
+            let src = base.unwrap_or(body);
+            let anchor = FaceAnchor { point: DVec3::new(10.0, 10.0, z), normal: DVec3::Z };
+            let id = m.doc.add("Push/Pull", FeatureKind::PushPull { source: src, anchor, distance: d });
+            m.undo.push(m.doc.clone()); // each drag records one undo entry
+            m.manipulation = Some(Manipulation { source: src, anchor, feature: Some(id) });
+            m.finish_manipulation(true);
+            base.get_or_insert(id); // the first push is the coalescing target
+            z += d;
+        }
+
+        // History collapsed to a single push, and the body is one clean prism
+        // (~31 faces: the inset ledge), not the ~36 of stacked segments.
+        let pushes = m.doc.history.features().iter().filter(|f|
+            matches!(f.kind, FeatureKind::PushPull { .. })).count();
+        assert_eq!(pushes, 1, "consecutive pushes fold into one feature");
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        assert!(distinct(&mut m) <= 31, "wall must not split into segments");
     }
 
     #[test]
