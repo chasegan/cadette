@@ -227,6 +227,33 @@ impl Sketch2d {
         self.beziers.push(SketchBezier { a, b, c1, c2 });
     }
 
+    /// Split bezier `bez` at parameter `t ∈ [0,1]`, inserting a new point on the
+    /// curve. De Casteljau subdivision: the two halves reproduce the original
+    /// curve exactly. The original keeps its id as the first half; the second
+    /// half is appended. Returns the new point.
+    pub fn split_bezier(&mut self, bez: usize, t: f64) -> Option<PointId> {
+        let seg = *self.beziers.get(bez)?;
+        let p0 = {
+            let p = self.point(seg.a);
+            [p.x, p.y]
+        };
+        let p3 = {
+            let p = self.point(seg.b);
+            [p.x, p.y]
+        };
+        let lerp = |a: [f64; 2], b: [f64; 2]| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        let q0 = lerp(p0, seg.c1);
+        let q1 = lerp(seg.c1, seg.c2);
+        let q2 = lerp(seg.c2, p3);
+        let r0 = lerp(q0, q1);
+        let r1 = lerp(q1, q2);
+        let s = lerp(r0, r1); // the split point, on the curve
+        let mid = self.add_point(s[0], s[1]);
+        self.beziers[bez] = SketchBezier { a: seg.a, b: mid, c1: q0, c2: r0 };
+        self.beziers.push(SketchBezier { a: mid, b: seg.b, c1: r1, c2: q2 });
+        Some(mid)
+    }
+
     /// Convert a straight `line` into a bezier with default handles at 1/3 and
     /// 2/3 along it (so it starts looking straight, ready to be shaped). Returns
     /// false if the id is invalid.
@@ -549,6 +576,24 @@ mod edit_tests {
         assert_eq!(s.points.len(), 3, "a triangle remains");
         assert_eq!(s.lines.len(), 3);
         assert!(s.loop_order().is_some(), "still one closed loop");
+    }
+
+    #[test]
+    fn split_bezier_keeps_the_curve_and_adds_a_segment() {
+        let mut s = Sketch2d::new();
+        let a = s.add_point(0.0, 0.0);
+        let b = s.add_point(30.0, 0.0);
+        s.add_bezier(a, b, [10.0, 20.0], [20.0, 20.0]);
+        // The midpoint of the original curve (t=0.5) — for later comparison.
+        let mid_before = Sketch2d::bezier_at(&s.beziers[0], &s.points, 0.5);
+
+        let new = s.split_bezier(0, 0.5).unwrap();
+        assert_eq!(s.beziers.len(), 2, "one bezier became two");
+        // The new point sits on the original curve at t=0.5.
+        let np = s.point(new);
+        assert!((np.x - mid_before[0]).abs() < 1e-9 && (np.y - mid_before[1]).abs() < 1e-9);
+        // The two halves are continuous (first ends where second starts).
+        assert_eq!(s.beziers[0].b, s.beziers[1].a, "halves share the new point");
     }
 
     #[test]

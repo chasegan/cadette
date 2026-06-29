@@ -194,6 +194,8 @@ enum SketchAction {
     ReleaseDrag,
     /// Insert a vertex at the given plane coordinate on `line`, splitting it.
     InsertOnLine(LineId, [f64; 2]),
+    /// Insert a vertex on a bezier (index) at parameter `t`, splitting the curve.
+    InsertOnBezier(usize, f64),
     /// Delete the selected points, healing the loop.
     DeleteSelected,
     /// Convert the (single) selected line into a bezier.
@@ -1138,13 +1140,17 @@ impl Modeler {
                     actions.push(SketchAction::Cancel);
                 }
                 ui.separator();
-                for (tool, label) in [
-                    (SketchTool::Line, "✏ Line"),
-                    (SketchTool::Pen, "✒ Pen"),
-                    (SketchTool::Select, "◉ Select"),
-                    (SketchTool::Insert, "✚ Insert"),
+                // Drawing tools (Line/Pen) extend the boundary, so they're off once
+                // the loop is closed; Insert edits a closed loop, so it's off until
+                // then. Select is always available.
+                for (tool, label, enabled) in [
+                    (SketchTool::Line, "✏ Line", !session.closed),
+                    (SketchTool::Pen, "✒ Pen", !session.closed),
+                    (SketchTool::Select, "◉ Select", true),
+                    (SketchTool::Insert, "✚ Insert", session.closed),
                 ] {
-                    if ui.selectable_label(session.tool == tool, label).clicked() {
+                    let w = egui::SelectableLabel::new(session.tool == tool, label);
+                    if ui.add_enabled(enabled, w).clicked() {
                         actions.push(SketchAction::SetTool(tool));
                     }
                 }
@@ -1254,8 +1260,8 @@ impl Modeler {
                     }
                     best.1
                 };
-                // Nearest line segment to a screen position, within a pick band.
-                let nearest_line = |pos: egui::Pos2| -> Option<LineId> {
+                // Nearest line segment to a screen position (+ its distance).
+                let nearest_line = |pos: egui::Pos2| -> Option<(LineId, f32)> {
                     let mut best = (8.0_f32, None);
                     for (i, l) in session.sketch.lines.iter().enumerate() {
                         let a = session.sketch.point(l.a);
@@ -1267,7 +1273,25 @@ impl Modeler {
                             }
                         }
                     }
-                    best.1
+                    best.1.map(|id| (id, best.0))
+                };
+                // Nearest bezier to a screen position: its index, parameter t, and
+                // distance (found by sampling the curve).
+                let nearest_bezier = |pos: egui::Pos2| -> Option<(usize, f64, f32)> {
+                    let mut best = (8.0_f32, None);
+                    for (bi, bz) in session.sketch.beziers.iter().enumerate() {
+                        for k in 0..=24 {
+                            let t = k as f64 / 24.0;
+                            let uv = Sketch2d::bezier_at(bz, &session.sketch.points, t);
+                            if let Some(sp) = proj(uv[0], uv[1]) {
+                                let d = sp.distance(pos);
+                                if d < best.0 {
+                                    best = (d, Some((bi, t)));
+                                }
+                            }
+                        }
+                    }
+                    best.1.map(|(bi, t)| (bi, t, best.0))
                 };
 
                 // Nearest bezier control handle to a screen position.
@@ -1420,7 +1444,9 @@ impl Modeler {
                                         .map(|id| session.sketch.point(id))
                                         .and_then(|p| proj(p.x, p.y))
                                         .is_some_and(|sp| sp.distance(pos) < 10.0);
-                                if near_start && session.sketch.lines.len() >= 2 {
+                                let n_segs = session.sketch.lines.len()
+                                    + session.sketch.beziers.len();
+                                if near_start && n_segs >= 2 {
                                     actions.push(SketchAction::CloseLoop);
                                 } else if let Some(uv) = view.cursor_on_plane(pos, o, xd, yd, nd) {
                                     actions.push(SketchAction::AddPoint(uv));
@@ -1428,9 +1454,22 @@ impl Modeler {
                             }
                             SketchTool::Select => actions.push(SketchAction::PickAt(pos)),
                             SketchTool::Insert => {
-                                // Click a segment to split it at the click point.
-                                if let (Some(line), Some(uv)) =
-                                    (nearest_line(pos), view.cursor_on_plane(pos, o, xd, yd, nd))
+                                // Split whichever segment (line or bezier) is nearer:
+                                // a line splits into two lines, a bezier into two
+                                // beziers (so the curve is preserved).
+                                let line = nearest_line(pos);
+                                let bez = nearest_bezier(pos);
+                                let bez_nearer = match (line, bez) {
+                                    (Some((_, ld)), Some((_, _, bd))) => bd <= ld,
+                                    (None, Some(_)) => true,
+                                    _ => false,
+                                };
+                                if bez_nearer {
+                                    if let Some((bi, t, _)) = bez {
+                                        actions.push(SketchAction::InsertOnBezier(bi, t));
+                                    }
+                                } else if let (Some((line, _)), Some(uv)) =
+                                    (line, view.cursor_on_plane(pos, o, xd, yd, nd))
                                 {
                                     actions.push(SketchAction::InsertOnLine(line, uv));
                                 }
@@ -1540,6 +1579,13 @@ impl Modeler {
                 SketchAction::InsertOnLine(line, [u, v]) => {
                     if let Some(s) = self.sketch_session.as_mut() {
                         s.sketch.split_line(line, u, v);
+                        s.selected_points.clear();
+                        s.selected_lines.clear();
+                    }
+                }
+                SketchAction::InsertOnBezier(idx, t) => {
+                    if let Some(s) = self.sketch_session.as_mut() {
+                        s.sketch.split_bezier(idx, t);
                         s.selected_points.clear();
                         s.selected_lines.clear();
                     }
