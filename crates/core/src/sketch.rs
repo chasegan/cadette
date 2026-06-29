@@ -303,6 +303,38 @@ impl Sketch2d {
         }
     }
 
+    /// Whether the node at bezier `bez`'s `is_c1` end is a SMOOTH join — i.e. a
+    /// second bezier meets it there with its adjacent handle diametrically
+    /// opposite (the mirror of this one). A corner node (independent handles, or
+    /// a bezier meeting a line / an open end) returns false. The smooth/corner
+    /// distinction lives in the handle geometry itself, so it survives save/reload
+    /// and point renumbering with no extra stored state.
+    pub fn node_is_smooth(&self, bez: usize, is_c1: bool) -> bool {
+        let Some(b) = self.beziers.get(bez) else {
+            return false;
+        };
+        let (node, handle) = if is_c1 { (b.a, b.c1) } else { (b.b, b.c2) };
+        let n = self.points[node.0];
+        let mirror = [2.0 * n.x - handle[0], 2.0 * n.y - handle[1]];
+        for (i, other) in self.beziers.iter().enumerate() {
+            if i == bez {
+                continue;
+            }
+            let partner = if other.a == node {
+                Some(other.c1)
+            } else if other.b == node {
+                Some(other.c2)
+            } else {
+                None
+            };
+            if let Some(p) = partner {
+                let d = ((p[0] - mirror[0]).powi(2) + (p[1] - mirror[1]).powi(2)).sqrt();
+                return d < 1e-6;
+            }
+        }
+        false
+    }
+
     /// Move point `p` to `(x, y)`, carrying any incident bezier handles by the
     /// same delta so the curves keep their shape (and a smooth node stays
     /// smooth) as the anchor moves.
@@ -621,6 +653,28 @@ mod edit_tests {
             elems.iter().filter(|e| matches!(e, ProfileElem::Bezier { .. })).count(),
             1
         );
+    }
+
+    #[test]
+    fn node_is_smooth_detects_symmetric_handles() {
+        // Two beziers sharing node `m`, with handles mirror-symmetric through it.
+        let mut s = Sketch2d::new();
+        let a = s.add_point(0.0, 0.0);
+        let m = s.add_point(10.0, 0.0);
+        let b = s.add_point(20.0, 0.0);
+        // Incoming bezier a->m, its c2 (handle at m) at (8, 2).
+        s.add_bezier(a, m, [2.0, 2.0], [8.0, 2.0]);
+        // Outgoing bezier m->b, its c1 (handle at m) at the mirror (12, -2).
+        s.add_bezier(m, b, [12.0, -2.0], [18.0, 2.0]);
+        // Node m, seen from the incoming bezier's c2 end, is smooth.
+        assert!(s.node_is_smooth(0, false), "mirror-symmetric handles = smooth");
+
+        // Break it: move the outgoing handle off the mirror line.
+        s.beziers[1].c1 = [12.0, 5.0];
+        assert!(!s.node_is_smooth(0, false), "asymmetric handles = corner");
+
+        // A bezier meeting nothing (open end) is not a smooth join.
+        assert!(!s.node_is_smooth(0, true), "the a-end has no partner");
     }
 
     #[test]

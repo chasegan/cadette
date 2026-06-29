@@ -167,6 +167,10 @@ struct SketchSession {
     dragging: Option<PointId>,
     /// The bezier control handle being dragged: `(bezier index, is_c1)`.
     dragging_handle: Option<(usize, bool)>,
+    /// Whether the handle drag should keep the node smooth (mirror the partner
+    /// handle). Captured at grab from the node's current geometry; cleared the
+    /// moment Alt is held, so Alt-drag breaks the join into a corner.
+    dragging_smooth: bool,
     /// Pen tool: the out-handle of `last` (the next segment's `c1`); `None` at a
     /// corner anchor.
     pen_out: Option<[f64; 2]>,
@@ -191,7 +195,8 @@ enum SketchAction {
     /// Begin dragging a bezier control handle `(bezier index, is_c1)`.
     GrabHandle((usize, bool)),
     /// Move whatever is grabbed (point or handle) to a new plane coordinate.
-    DragTo([f64; 2]),
+    /// The bool is whether Alt is held (break a smooth node into a corner).
+    DragTo([f64; 2], bool),
     /// End the drag (re-solve).
     ReleaseDrag,
     /// Insert a vertex at the given plane coordinate on `line`, splitting it.
@@ -1007,6 +1012,7 @@ impl Modeler {
             editing: None,
             dragging: None,
             dragging_handle: None,
+            dragging_smooth: true,
             pen_out: None,
             pen_press: None,
             pen_start_in: None,
@@ -1035,6 +1041,7 @@ impl Modeler {
             editing: Some(id),
             dragging: None,
             dragging_handle: None,
+            dragging_smooth: true,
             pen_out: None,
             pen_press: None,
             pen_start_in: None,
@@ -1222,7 +1229,7 @@ impl Modeler {
                         "Line: click the plane to add points; click the first point to close."
                     }
                     SketchTool::Select => {
-                        "Select: click an edge then Curve/Straighten it; click points/lines to constrain; drag a point or handle to move it."
+                        "Select: click an edge then Curve/Straighten it; drag a point or handle to move it (Alt-drag a handle to break a smooth node into a corner)."
                     }
                     SketchTool::Insert => "Insert: click a segment to add a vertex on it.",
                     SketchTool::Pen => {
@@ -1401,7 +1408,8 @@ impl Modeler {
                             .interact_pointer_pos()
                             .and_then(|pos| view.cursor_on_plane(pos, o, xd, yd, nd))
                         {
-                            actions.push(SketchAction::DragTo(uv));
+                            let alt = response.ctx.input(|i| i.modifiers.alt);
+                            actions.push(SketchAction::DragTo(uv, alt));
                         }
                     }
                     if response.drag_stopped() {
@@ -1567,14 +1575,23 @@ impl Modeler {
                 SketchAction::GrabHandle(h) => {
                     if let Some(s) = self.sketch_session.as_mut() {
                         s.dragging_handle = Some(h);
+                        // Remember whether this node is smooth right now, so a
+                        // plain drag preserves its smoothness as it moves.
+                        s.dragging_smooth = s.sketch.node_is_smooth(h.0, h.1);
                     }
                 }
-                SketchAction::DragTo([u, v]) => {
+                SketchAction::DragTo([u, v], alt) => {
                     // Move whatever is grabbed — a bezier handle takes priority
                     // over a point. (The session is a working copy; the doc only
                     // changes on Finish.)
                     if let Some(s) = self.sketch_session.as_mut() {
                         if let Some((i, is_c1)) = s.dragging_handle {
+                            // Alt breaks the join into a corner (handles move
+                            // independently); once broken it stays broken for the
+                            // rest of the drag.
+                            if alt {
+                                s.dragging_smooth = false;
+                            }
                             if let Some(bz) = s.sketch.beziers.get_mut(i) {
                                 if is_c1 {
                                     bz.c1 = [u, v];
@@ -1582,8 +1599,11 @@ impl Modeler {
                                     bz.c2 = [u, v];
                                 }
                             }
-                            // Keep an adjacent bezier's handle mirrored → smooth node.
-                            s.sketch.mirror_partner_handle(i, is_c1);
+                            // Keep an adjacent bezier's handle mirrored → smooth
+                            // node, unless this is a corner (Alt, or already split).
+                            if s.dragging_smooth {
+                                s.sketch.mirror_partner_handle(i, is_c1);
+                            }
                         } else if let Some(pid) = s.dragging {
                             // Carry the anchor's handles with it (keeps the curve).
                             s.sketch.move_point(pid, u, v);
