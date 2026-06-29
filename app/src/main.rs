@@ -156,6 +156,8 @@ struct SketchSession {
     /// Selected entities (for applying constraints).
     selected_points: Vec<PointId>,
     selected_lines: Vec<LineId>,
+    /// Selected bezier segments, by index (for straighten).
+    selected_beziers: Vec<usize>,
     /// Remaining degrees of freedom from the last solve (for UI feedback).
     dof: usize,
     /// The feature being re-edited, if this session reopened an existing sketch
@@ -200,6 +202,8 @@ enum SketchAction {
     DeleteSelected,
     /// Convert the (single) selected line into a bezier.
     CurveSelected,
+    /// Convert the (single) selected bezier back into a straight line.
+    StraightenSelected,
     /// Pen: a smooth-anchor drag began at this plane coordinate.
     PenPress([f64; 2]),
     /// Pen: place a corner anchor (a plain click) at this coordinate.
@@ -998,6 +1002,7 @@ impl Modeler {
             closed: false,
             selected_points: Vec::new(),
             selected_lines: Vec::new(),
+            selected_beziers: Vec::new(),
             dof: 0,
             editing: None,
             dragging: None,
@@ -1025,6 +1030,7 @@ impl Modeler {
             closed: true,
             selected_points: Vec::new(),
             selected_lines: Vec::new(),
+            selected_beziers: Vec::new(),
             dof: 0,
             editing: Some(id),
             dragging: None,
@@ -1122,6 +1128,7 @@ impl Modeler {
         };
         let np = session.selected_points.len();
         let nl = session.selected_lines.len();
+        let nb = session.selected_beziers.len();
 
         // Delete/Backspace removes selected points.
         if np >= 1
@@ -1161,8 +1168,18 @@ impl Modeler {
                 {
                     actions.push(SketchAction::DeleteSelected);
                 }
-                if ui
-                    .add_enabled(nl == 1, egui::Button::new("⤸ Curve"))
+                // One button toggles an edge between straight and curved, based on
+                // what's selected: a line → "Curve", a bezier → "Straighten".
+                if nb == 1 && nl == 0 {
+                    if ui
+                        .add_enabled(true, egui::Button::new("╱ Straighten"))
+                        .on_hover_text("Turn the selected curve back into a straight line")
+                        .clicked()
+                    {
+                        actions.push(SketchAction::StraightenSelected);
+                    }
+                } else if ui
+                    .add_enabled(nl == 1 && nb == 0, egui::Button::new("⤸ Curve"))
                     .on_hover_text("Turn the selected line into a bezier — then drag its handles")
                     .clicked()
                 {
@@ -1205,7 +1222,7 @@ impl Modeler {
                         "Line: click the plane to add points; click the first point to close."
                     }
                     SketchTool::Select => {
-                        "Select: click points/lines to constrain; drag a point to move it."
+                        "Select: click an edge then Curve/Straighten it; click points/lines to constrain; drag a point or handle to move it."
                     }
                     SketchTool::Insert => "Insert: click a segment to add a vertex on it.",
                     SketchTool::Pen => {
@@ -1321,13 +1338,16 @@ impl Modeler {
                 }
                 // Bezier segments (sampled polyline) + their control handles.
                 let handle_col = egui::Color32::from_rgb(150, 220, 130);
-                for bz in &session.sketch.beziers {
+                for (bi, bz) in session.sketch.beziers.iter().enumerate() {
+                    let sel = session.selected_beziers.contains(&bi);
+                    let col = if sel { selected } else { accent };
+                    let width = if sel { 2.5 } else { 1.5 };
                     let mut prev: Option<egui::Pos2> = None;
                     for k in 0..=24 {
                         let uv = Sketch2d::bezier_at(bz, &session.sketch.points, k as f64 / 24.0);
                         if let Some(sp) = proj(uv[0], uv[1]) {
                             if let Some(pp) = prev {
-                                painter.line_segment([pp, sp], egui::Stroke::new(1.5, accent));
+                                painter.line_segment([pp, sp], egui::Stroke::new(width, col));
                             }
                             prev = Some(sp);
                         }
@@ -1513,6 +1533,7 @@ impl Modeler {
                         s.tool = tool;
                         s.selected_points.clear();
                         s.selected_lines.clear();
+                        s.selected_beziers.clear();
                     }
                 }
                 SketchAction::AddPoint([u, v]) => {
@@ -1581,6 +1602,7 @@ impl Modeler {
                         s.sketch.split_line(line, u, v);
                         s.selected_points.clear();
                         s.selected_lines.clear();
+                        s.selected_beziers.clear();
                     }
                 }
                 SketchAction::InsertOnBezier(idx, t) => {
@@ -1588,6 +1610,7 @@ impl Modeler {
                         s.sketch.split_bezier(idx, t);
                         s.selected_points.clear();
                         s.selected_lines.clear();
+                        s.selected_beziers.clear();
                     }
                 }
                 SketchAction::DeleteSelected => {
@@ -1595,6 +1618,7 @@ impl Modeler {
                         let remove = std::mem::take(&mut s.selected_points);
                         s.sketch.delete_points(&remove);
                         s.selected_lines.clear();
+                        s.selected_beziers.clear();
                     }
                     self.resolve_session();
                 }
@@ -1605,6 +1629,17 @@ impl Modeler {
                         }
                         s.selected_lines.clear();
                         s.selected_points.clear();
+                        s.selected_beziers.clear();
+                    }
+                }
+                SketchAction::StraightenSelected => {
+                    if let Some(s) = self.sketch_session.as_mut() {
+                        if let Some(&bez) = s.selected_beziers.first() {
+                            s.sketch.straighten_bezier(bez);
+                        }
+                        s.selected_lines.clear();
+                        s.selected_points.clear();
+                        s.selected_beziers.clear();
                     }
                 }
                 SketchAction::PenPress(uv) => {
@@ -1666,6 +1701,7 @@ impl Modeler {
                         s.sketch.add_constraint(constraint);
                         s.selected_points.clear();
                         s.selected_lines.clear();
+                        s.selected_beziers.clear();
                     }
                     self.resolve_session();
                 }
@@ -1709,6 +1745,27 @@ impl Modeler {
                 }
             }
         }
+        // Nearest bezier (sampled), competing with the nearest line — pick the
+        // edge actually closest to the click, whichever kind.
+        let mut best_bez: (f32, Option<usize>) = (8.0, None);
+        for (i, bz) in s.sketch.beziers.iter().enumerate() {
+            for k in 0..=24 {
+                let uv = Sketch2d::bezier_at(bz, &s.sketch.points, k as f64 / 24.0);
+                if let Some(sp) = proj(uv[0], uv[1]) {
+                    let d = sp.distance(pos);
+                    if d < best_bez.0 {
+                        best_bez = (d, Some(i));
+                    }
+                }
+            }
+        }
+        let bez_nearer = best_bez.0 <= best_line.0;
+        if bez_nearer {
+            if let Some(i) = best_bez.1 {
+                toggle(&mut s.selected_beziers, i);
+                return;
+            }
+        }
         if let Some(id) = best_line.1 {
             toggle(&mut s.selected_lines, id);
             return;
@@ -1716,6 +1773,7 @@ impl Modeler {
 
         s.selected_points.clear();
         s.selected_lines.clear();
+        s.selected_beziers.clear();
     }
 }
 

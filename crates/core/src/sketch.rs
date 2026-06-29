@@ -269,6 +269,17 @@ impl Sketch2d {
         true
     }
 
+    /// Convert bezier `bez` back into a straight line between its endpoints,
+    /// discarding the control handles. Returns false if the index is invalid.
+    pub fn straighten_bezier(&mut self, bez: usize) -> bool {
+        let Some(b) = self.beziers.get(bez).copied() else {
+            return false;
+        };
+        self.beziers.remove(bez);
+        self.add_line(b.a, b.b);
+        true
+    }
+
     /// Keep a shared node smooth after moving bezier `bez`'s handle (`is_c1`
     /// selects which end's handle): any OTHER bezier meeting at that node gets
     /// its adjacent handle set diametrically opposite, with equal length —
@@ -610,6 +621,20 @@ mod edit_tests {
             elems.iter().filter(|e| matches!(e, ProfileElem::Bezier { .. })).count(),
             1
         );
+    }
+
+    #[test]
+    fn straighten_bezier_restores_a_line() {
+        let mut s = square();
+        assert!(s.curve_line(LineId(0)));
+        assert_eq!(s.beziers.len(), 1);
+        // Round-trip: straighten the one curve back to a line.
+        assert!(s.straighten_bezier(0));
+        assert_eq!(s.beziers.len(), 0, "the curve is gone");
+        // Still a closed loop of four straight segments.
+        let elems = s.profile_elements().unwrap();
+        assert_eq!(elems.len(), 4);
+        assert!(elems.iter().all(|e| matches!(e, ProfileElem::Line { .. })));
     }
 
     #[test]
