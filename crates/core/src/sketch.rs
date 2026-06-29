@@ -265,6 +265,25 @@ impl Sketch2d {
         }
     }
 
+    /// Move point `p` to `(x, y)`, carrying any incident bezier handles by the
+    /// same delta so the curves keep their shape (and a smooth node stays
+    /// smooth) as the anchor moves.
+    pub fn move_point(&mut self, p: PointId, x: f64, y: f64) {
+        let Some(pt) = self.points.get(p.0).copied() else {
+            return;
+        };
+        let (dx, dy) = (x - pt.x, y - pt.y);
+        self.points[p.0] = SketchPoint { x, y };
+        for bz in &mut self.beziers {
+            if bz.a == p {
+                bz.c1 = [bz.c1[0] + dx, bz.c1[1] + dy];
+            }
+            if bz.b == p {
+                bz.c2 = [bz.c2[0] + dx, bz.c2[1] + dy];
+            }
+        }
+    }
+
     /// A point on the cubic bezier `segment` at parameter `t ∈ [0,1]`.
     pub fn bezier_at(seg: &SketchBezier, points: &[SketchPoint], t: f64) -> [f64; 2] {
         let a = points[seg.a.0];
@@ -415,29 +434,80 @@ impl Sketch2d {
         Some(p)
     }
 
-    /// Delete `remove`d points from the closed loop, reconnecting the survivors
-    /// into a clean loop. Requires a single closed loop and at least 3 points
-    /// left (a profile needs a triangle). Rebuilds the geometry, so constraints
-    /// and circles are dropped. Returns false (unchanged) if not applicable.
+    /// The closed loop as ordered `(anchor, edge-leaving-it)` pairs, walking
+    /// BOTH lines and beziers (edge = `None` for a line, `Some((c1,c2))` for a
+    /// bezier, handles oriented for the forward direction). `None` unless the
+    /// segments form exactly one closed loop.
+    #[allow(clippy::type_complexity)]
+    fn loop_edges(&self) -> Option<Vec<(PointId, Option<([f64; 2], [f64; 2])>)>> {
+        struct Conn {
+            a: PointId,
+            b: PointId,
+            bez: Option<([f64; 2], [f64; 2])>,
+        }
+        let conns: Vec<Conn> = self
+            .lines
+            .iter()
+            .map(|l| Conn { a: l.a, b: l.b, bez: None })
+            .chain(self.beziers.iter().map(|bz| Conn { a: bz.a, b: bz.b, bez: Some((bz.c1, bz.c2)) }))
+            .collect();
+        let n = conns.len();
+        if n < 3 {
+            return None;
+        }
+        let start = conns[0].a;
+        let mut current = start;
+        let mut visited = vec![false; n];
+        let mut edges = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (idx, conn) = conns
+                .iter()
+                .enumerate()
+                .find(|(i, c)| !visited[*i] && (c.a == current || c.b == current))?;
+            visited[idx] = true;
+            let forward = conn.a == current;
+            let bez = conn.bez.map(|(c1, c2)| if forward { (c1, c2) } else { (c2, c1) });
+            edges.push((current, bez));
+            current = if forward { conn.b } else { conn.a };
+        }
+        (current == start).then_some(edges)
+    }
+
+    /// Delete `remove`d points from the closed loop, reconnecting the survivors.
+    /// Segments not touched by a deletion keep their type (line OR bezier); where
+    /// a deletion bridges a gap the new segment is a straight line. Requires one
+    /// closed loop and ≥3 points left. Drops constraints + circles (topology
+    /// changed). Returns false (unchanged) if not applicable.
     pub fn delete_points(&mut self, remove: &[PointId]) -> bool {
-        let Some(order) = self.loop_order() else {
+        let Some(edges) = self.loop_edges() else {
             return false;
         };
-        let kept: Vec<SketchPoint> = order
-            .iter()
-            .filter(|id| !remove.contains(id))
-            .map(|&id| self.point(id))
-            .collect();
-        if kept.len() < 3 || kept.len() == order.len() {
+        let n = edges.len();
+        let keep: Vec<usize> = (0..n).filter(|&i| !remove.contains(&edges[i].0)).collect();
+        if keep.len() < 3 || keep.len() == n {
             return false; // nothing removed, or too few points left
         }
-        let n = kept.len();
-        self.points = kept;
-        self.lines = (0..n)
-            .map(|i| SketchLine { a: PointId(i), b: PointId((i + 1) % n) })
+        let mut fresh = Sketch2d::new();
+        let new_ids: Vec<PointId> = keep
+            .iter()
+            .map(|&i| {
+                let p = self.point(edges[i].0);
+                fresh.add_point(p.x, p.y)
+            })
             .collect();
-        self.circles.clear();
-        self.constraints.clear();
+        for j in 0..keep.len() {
+            let nj = (j + 1) % keep.len();
+            // Keep the original edge only if the next kept anchor was the
+            // original neighbour (no removed anchors bridged between them).
+            let originally_adjacent = (keep[j] + 1) % n == keep[nj];
+            match (originally_adjacent, edges[keep[j]].1) {
+                (true, Some((c1, c2))) => fresh.add_bezier(new_ids[j], new_ids[nj], c1, c2),
+                _ => {
+                    fresh.add_line(new_ids[j], new_ids[nj]);
+                }
+            }
+        }
+        *self = fresh;
         true
     }
 }
@@ -495,6 +565,38 @@ mod edit_tests {
             elems.iter().filter(|e| matches!(e, ProfileElem::Bezier { .. })).count(),
             1
         );
+    }
+
+    #[test]
+    fn move_point_carries_its_bezier_handles() {
+        let mut s = Sketch2d::new();
+        let a = s.add_point(0.0, 0.0);
+        let b = s.add_point(10.0, 0.0);
+        s.add_bezier(a, b, [3.0, 5.0], [7.0, 5.0]); // c1 near a, c2 near b
+        s.move_point(a, 0.0, 2.0); // delta (0, +2)
+        assert_eq!(s.beziers[0].c1, [3.0, 7.0], "c1 (near a) moved with the anchor");
+        assert_eq!(s.beziers[0].c2, [7.0, 5.0], "c2 (near b) unchanged");
+    }
+
+    #[test]
+    fn delete_on_a_bezier_loop_keeps_untouched_curves() {
+        // A square with bottom + top edges curved (beziers), sides straight.
+        let mut s = Sketch2d::new();
+        let p: Vec<_> = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+            .iter()
+            .map(|&(x, y)| s.add_point(x, y))
+            .collect();
+        s.add_bezier(p[0], p[1], [3.0, -2.0], [7.0, -2.0]);
+        s.add_line(p[1], p[2]);
+        s.add_bezier(p[2], p[3], [7.0, 12.0], [3.0, 12.0]);
+        s.add_line(p[3], p[0]);
+
+        // Delete corner p1 (between the bottom bezier and the right line).
+        assert!(s.delete_points(&[p[1]]), "delete works on a bezier loop");
+        assert_eq!(s.points.len(), 3, "a triangle remains");
+        // The untouched top curve survives as a bezier; the bridged gap is a line.
+        assert_eq!(s.beziers.len(), 1, "the untouched curve is preserved");
+        assert!(s.profile_elements().is_some(), "still one closed loop");
     }
 
     #[test]

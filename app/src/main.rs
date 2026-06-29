@@ -1520,10 +1520,8 @@ impl Modeler {
                             // Keep an adjacent bezier's handle mirrored → smooth node.
                             s.sketch.mirror_partner_handle(i, is_c1);
                         } else if let Some(pid) = s.dragging {
-                            if let Some(p) = s.sketch.points.get_mut(pid.0) {
-                                p.x = u;
-                                p.y = v;
-                            }
+                            // Carry the anchor's handles with it (keeps the curve).
+                            s.sketch.move_point(pid, u, v);
                         }
                     }
                 }
