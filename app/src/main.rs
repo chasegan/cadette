@@ -1022,7 +1022,7 @@ impl Modeler {
         let Some(session) = self.sketch_session.take() else {
             return false;
         };
-        if session.sketch.profile_loop().is_none() {
+        if session.sketch.profile_elements().is_none() {
             // Not a closed loop — discard rather than commit something invalid.
             return false;
         }
@@ -2973,6 +2973,31 @@ mod tests {
         assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
         let (_, max) = bounds(&mesh);
         assert!((max[0] - 40.0).abs() < 0.5, "moved corner widened the prism: {}", max[0]);
+    }
+
+    #[test]
+    fn a_sketch_with_a_bezier_side_extrudes_into_a_curved_solid() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("bez");
+        // A square whose bottom edge bulges down as a cubic bezier.
+        let mut s = Sketch2d::new();
+        let p: Vec<_> = [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]
+            .iter()
+            .map(|&(x, y)| s.add_point(x, y))
+            .collect();
+        s.add_bezier(p[0], p[1], [5.0, -10.0], [15.0, -10.0]);
+        s.add_line(p[1], p[2]);
+        s.add_line(p[2], p[3]);
+        s.add_line(p[3], p[0]);
+        let sk =
+            m.doc.add("Sketch", FeatureKind::ConstraintSketch { plane: SketchPlane::Xy, sketch: s });
+        m.doc.add("Extrude", FeatureKind::Extrude { source: sk, distance: 10.0 });
+
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "bezier profile rebuilds: {:?}", m.ui.errors);
+        let (min, max) = bounds(&mesh);
+        assert!((max[1] - 20.0).abs() < 0.3, "straight top at y=20");
+        assert!(min[1] < -5.0, "bezier bottom bulges past y=−5, got {}", min[1]);
     }
 
     #[test]

@@ -33,9 +33,13 @@ impl GeometryBackend for Counting {
         self.ops += 1;
         Ok("sketch".into())
     }
-    fn sketch_loop(&mut self, _p: SketchPlane, pts: &[[f64; 2]]) -> Result<String, String> {
+    fn sketch_profile(
+        &mut self,
+        _p: SketchPlane,
+        elements: &[rmf_core::ProfileElem],
+    ) -> Result<String, String> {
         self.ops += 1;
-        Ok(format!("loop({})", pts.len()))
+        Ok(format!("loop({})", elements.len()))
     }
     fn extrude(&mut self, b: &String, d: f64) -> Result<String, String> {
         self.ops += 1;

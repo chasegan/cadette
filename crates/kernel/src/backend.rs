@@ -6,7 +6,9 @@
 //! [`KernelError`], so a failed operation surfaces as a per-feature regen error
 //! rather than aborting the whole rebuild.
 
-use rmf_core::{BooleanOp, DVec3, EdgeAnchor, FaceAnchor, GeometryBackend, Profile, SketchPlane};
+use rmf_core::{
+    BooleanOp, DVec3, EdgeAnchor, FaceAnchor, GeometryBackend, Profile, ProfileElem, SketchPlane,
+};
 
 use crate::{KernelError, Solid};
 
@@ -46,17 +48,32 @@ impl GeometryBackend for KernelBackend {
         }
     }
 
-    fn sketch_loop(
+    fn sketch_profile(
         &mut self,
         plane: SketchPlane,
-        points: &[[f64; 2]],
+        elements: &[ProfileElem],
     ) -> Result<Solid, KernelError> {
-        let flat: Vec<f64> = points.iter().flat_map(|p| [p[0], p[1]]).collect();
-        Solid::polygon_face(
+        // Flatten to the FFI shape: the loop vertices (each element's start) and
+        // 5 doubles per segment ([is_bezier, c1x, c1y, c2x, c2y]).
+        let mut points: Vec<f64> = Vec::with_capacity(elements.len() * 2);
+        let mut segs: Vec<f64> = Vec::with_capacity(elements.len() * 5);
+        for e in elements {
+            let [px, py] = e.start();
+            points.push(px);
+            points.push(py);
+            match *e {
+                ProfileElem::Line { .. } => segs.extend([0.0, 0.0, 0.0, 0.0, 0.0]),
+                ProfileElem::Bezier { c1, c2, .. } => {
+                    segs.extend([1.0, c1[0], c1[1], c2[0], c2[1]])
+                }
+            }
+        }
+        Solid::profile_face(
             plane.origin().to_array(),
             plane.x_dir().to_array(),
             plane.y_dir().to_array(),
-            &flat,
+            &points,
+            &segs,
         )
     }
 

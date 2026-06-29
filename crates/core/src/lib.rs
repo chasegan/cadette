@@ -30,7 +30,7 @@ pub use history::{DependencyError, History};
 pub use regen::{regenerate, RegenCache, RegenError, Regeneration};
 pub use selection::Pick;
 pub use sketch::{
-    CircleId, Constraint, LineId, PointId, Profile, Sketch2d, SketchCircle, SketchLine,
-    SketchPlane, SketchPoint,
+    CircleId, Constraint, LineId, PointId, Profile, ProfileElem, Sketch2d, SketchBezier,
+    SketchCircle, SketchLine, SketchPlane, SketchPoint,
 };
 pub use units::LengthUnit;

@@ -277,8 +277,8 @@ where
         FeatureKind::Sketch { plane, profile } => {
             backend.sketch(*plane, *profile).map_err(backend_err)
         }
-        FeatureKind::ConstraintSketch { plane, sketch } => match sketch.profile_loop() {
-            Some(points) => backend.sketch_loop(*plane, &points).map_err(backend_err),
+        FeatureKind::ConstraintSketch { plane, sketch } => match sketch.profile_elements() {
+            Some(elements) => backend.sketch_profile(*plane, &elements).map_err(backend_err),
             None => Err(RegenError::Invalid {
                 feature,
                 reason: "sketch has no closed loop to build a profile",

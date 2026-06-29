@@ -139,6 +139,33 @@ pub struct SketchCircle {
     pub radius: f64,
 }
 
+/// A cubic bezier segment between two loop points, with two off-curve control
+/// handles `c1` (near `a`) and `c2` (near `b`) in plane coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SketchBezier {
+    pub a: PointId,
+    pub b: PointId,
+    pub c1: [f64; 2],
+    pub c2: [f64; 2],
+}
+
+/// One segment of a resolved profile boundary, in plane coordinates — a
+/// straight edge or a cubic bezier. Consecutive elements share endpoints.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ProfileElem {
+    Line { a: [f64; 2], b: [f64; 2] },
+    Bezier { a: [f64; 2], c1: [f64; 2], c2: [f64; 2], b: [f64; 2] },
+}
+
+impl ProfileElem {
+    /// The segment's start vertex (shared with the previous element's end).
+    pub fn start(self) -> [f64; 2] {
+        match self {
+            ProfileElem::Line { a, .. } | ProfileElem::Bezier { a, .. } => a,
+        }
+    }
+}
+
 /// A geometric or dimensional constraint relating sketch entities.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Constraint {
@@ -169,6 +196,10 @@ pub struct Sketch2d {
     pub lines: Vec<SketchLine>,
     pub circles: Vec<SketchCircle>,
     pub constraints: Vec<Constraint>,
+    /// Cubic-bezier boundary segments. `#[serde(default)]` so projects saved
+    /// before beziers existed still load.
+    #[serde(default)]
+    pub beziers: Vec<SketchBezier>,
 }
 
 impl Sketch2d {
@@ -189,6 +220,11 @@ impl Sketch2d {
     pub fn add_circle(&mut self, center: PointId, radius: f64) -> CircleId {
         self.circles.push(SketchCircle { center, radius });
         CircleId(self.circles.len() - 1)
+    }
+
+    /// Add a cubic-bezier segment between two points, with control handles.
+    pub fn add_bezier(&mut self, a: PointId, b: PointId, c1: [f64; 2], c2: [f64; 2]) {
+        self.beziers.push(SketchBezier { a, b, c1, c2 });
     }
 
     pub fn add_constraint(&mut self, constraint: Constraint) {
@@ -239,6 +275,57 @@ impl Sketch2d {
 
         // A single closed loop returns to its start after visiting every line.
         (current == start).then_some(loop_points)
+    }
+
+    /// The closed profile boundary as ordered segments (straight or bezier),
+    /// walking the loop over BOTH lines and beziers. `None` unless they form
+    /// exactly one closed loop. This is the canonical profile for the kernel.
+    pub fn profile_elements(&self) -> Option<Vec<ProfileElem>> {
+        struct Conn {
+            a: PointId,
+            b: PointId,
+            bez: Option<([f64; 2], [f64; 2])>,
+        }
+        let mut conns: Vec<Conn> = Vec::new();
+        for l in &self.lines {
+            conns.push(Conn { a: l.a, b: l.b, bez: None });
+        }
+        for bz in &self.beziers {
+            conns.push(Conn { a: bz.a, b: bz.b, bez: Some((bz.c1, bz.c2)) });
+        }
+        let n = conns.len();
+        if n < 3 {
+            return None;
+        }
+        let coord = |p: PointId| {
+            let q = self.point(p);
+            [q.x, q.y]
+        };
+
+        let start = conns[0].a;
+        let mut current = start;
+        let mut visited = vec![false; n];
+        let mut elems = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (idx, conn) = conns
+                .iter()
+                .enumerate()
+                .find(|(i, c)| !visited[*i] && (c.a == current || c.b == current))?;
+            visited[idx] = true;
+            let forward = conn.a == current;
+            let next = if forward { conn.b } else { conn.a };
+            let (a, b) = (coord(current), coord(next));
+            match conn.bez {
+                None => elems.push(ProfileElem::Line { a, b }),
+                // Traversing the bezier b→a swaps its handles.
+                Some((c1, c2)) => {
+                    let (c1, c2) = if forward { (c1, c2) } else { (c2, c1) };
+                    elems.push(ProfileElem::Bezier { a, c1, c2, b });
+                }
+            }
+            current = next;
+        }
+        (current == start).then_some(elems)
     }
 
     /// The point ids of the single closed loop in traversal order (`None` unless
@@ -342,6 +429,32 @@ mod edit_tests {
         assert_eq!(s.points.len(), 3, "a triangle remains");
         assert_eq!(s.lines.len(), 3);
         assert!(s.loop_order().is_some(), "still one closed loop");
+    }
+
+    #[test]
+    fn profile_elements_walks_lines_and_beziers() {
+        let mut s = Sketch2d::new();
+        let p: Vec<_> = [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]
+            .iter()
+            .map(|&(x, y)| s.add_point(x, y))
+            .collect();
+        // Bottom edge is a bezier; the other three are straight.
+        s.add_bezier(p[0], p[1], [5.0, -5.0], [15.0, -5.0]);
+        s.add_line(p[1], p[2]);
+        s.add_line(p[2], p[3]);
+        s.add_line(p[3], p[0]);
+
+        let elems = s.profile_elements().unwrap();
+        assert_eq!(elems.len(), 4);
+        let beziers = elems.iter().filter(|e| matches!(e, ProfileElem::Bezier { .. })).count();
+        assert_eq!(beziers, 1, "one bezier segment in the loop");
+        // The loop is continuous: each element's end is the next's start.
+        for i in 0..4 {
+            let end = match elems[i] {
+                ProfileElem::Line { b, .. } | ProfileElem::Bezier { b, .. } => b,
+            };
+            assert_eq!(end, elems[(i + 1) % 4].start(), "continuity at {i}");
+        }
     }
 
     #[test]

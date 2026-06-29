@@ -9,7 +9,7 @@
 use glam::DVec3;
 
 use crate::features::{BooleanOp, EdgeAnchor, FaceAnchor};
-use crate::sketch::{Profile, SketchPlane};
+use crate::sketch::{ProfileElem, Profile, SketchPlane};
 
 /// A geometry engine capable of producing and combining solid bodies.
 ///
@@ -29,12 +29,12 @@ pub trait GeometryBackend {
     /// Build a planar face from a closed profile on a base plane.
     fn sketch(&mut self, plane: SketchPlane, profile: Profile) -> Result<Self::Body, Self::Error>;
 
-    /// Build a planar face from an ordered closed loop of 2D points (in plane
-    /// coordinates) — the resolved geometry of a constraint sketch.
-    fn sketch_loop(
+    /// Build a planar face from a constraint sketch's resolved boundary — an
+    /// ordered closed loop of segments (straight or cubic bezier).
+    fn sketch_profile(
         &mut self,
         plane: SketchPlane,
-        points: &[[f64; 2]],
+        elements: &[ProfileElem],
     ) -> Result<Self::Body, Self::Error>;
 
     /// Extrude a planar face (`profile`) along its normal by `distance`.

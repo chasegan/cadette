@@ -33,12 +33,16 @@ impl GeometryBackend for Recording {
     fn extrude(&mut self, profile: &String, distance: f64) -> Result<String, String> {
         Ok(format!("extrude({profile},{distance:.0})"))
     }
-    fn sketch_loop(
+    fn sketch_profile(
         &mut self,
         plane: rmf_core::SketchPlane,
-        points: &[[f64; 2]],
+        elements: &[rmf_core::ProfileElem],
     ) -> Result<String, String> {
-        Ok(format!("loop({},{}pts)", plane.label(), points.len()))
+        let curves = elements
+            .iter()
+            .filter(|e| matches!(e, rmf_core::ProfileElem::Bezier { .. }))
+            .count();
+        Ok(format!("loop({},{}seg,{}bez)", plane.label(), elements.len(), curves))
     }
     fn translate(&mut self, body: &String, offset: DVec3) -> Result<String, String> {
         Ok(format!("xlat({body},{:.0},{:.0},{:.0})", offset.x, offset.y, offset.z))
