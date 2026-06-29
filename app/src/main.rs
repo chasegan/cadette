@@ -137,6 +137,8 @@ enum SketchTool {
     Select,
     /// Click a segment to insert a vertex (split it).
     Insert,
+    /// Place anchors: click = corner, click-drag = smooth (pull out a handle).
+    Pen,
 }
 
 /// An in-progress interactive sketch. Kept out of the document until finished,
@@ -163,6 +165,12 @@ struct SketchSession {
     dragging: Option<PointId>,
     /// The bezier control handle being dragged: `(bezier index, is_c1)`.
     dragging_handle: Option<(usize, bool)>,
+    /// Pen tool: the out-handle of `last` (the next segment's `c1`); `None` at a
+    /// corner anchor.
+    pen_out: Option<[f64; 2]>,
+    /// Pen tool: where a smooth-anchor drag began (the anchor goes here; the
+    /// drag pulls out its handle).
+    pen_press: Option<[f64; 2]>,
 }
 
 /// A deferred edit to the sketch session, collected during egui drawing and
@@ -187,6 +195,15 @@ enum SketchAction {
     DeleteSelected,
     /// Convert the (single) selected line into a bezier.
     CurveSelected,
+    /// Pen: a smooth-anchor drag began at this plane coordinate.
+    PenPress([f64; 2]),
+    /// Pen: place a corner anchor (a plain click) at this coordinate.
+    PenCorner([f64; 2]),
+    /// Pen: finish a smooth anchor — handle dragged out to this coordinate
+    /// (the anchor sits at the earlier `PenPress`).
+    PenSmooth([f64; 2]),
+    /// Pen: close the loop back to the first anchor.
+    PenClose,
     Finish,
     Cancel,
 }
@@ -980,6 +997,8 @@ impl Modeler {
             editing: None,
             dragging: None,
             dragging_handle: None,
+            pen_out: None,
+            pen_press: None,
         });
     }
 
@@ -1004,6 +1023,8 @@ impl Modeler {
             editing: Some(id),
             dragging: None,
             dragging_handle: None,
+            pen_out: None,
+            pen_press: None,
         });
         self.selection.clear();
         true
@@ -1114,6 +1135,7 @@ impl Modeler {
                 ui.separator();
                 for (tool, label) in [
                     (SketchTool::Line, "✏ Line"),
+                    (SketchTool::Pen, "✒ Pen"),
                     (SketchTool::Select, "◉ Select"),
                     (SketchTool::Insert, "✚ Insert"),
                 ] {
@@ -1175,6 +1197,9 @@ impl Modeler {
                         "Select: click points/lines to constrain; drag a point to move it."
                     }
                     SketchTool::Insert => "Insert: click a segment to add a vertex on it.",
+                    SketchTool::Pen => {
+                        "Pen: click for a corner, click-drag for a smooth curve; click the first point to close."
+                    }
                 })
                 .small()
                 .weak(),
@@ -1335,6 +1360,51 @@ impl Modeler {
                     }
                 }
 
+                // Pen tool: rubber-band + symmetric-handle preview; drag places a
+                // smooth anchor (pull a handle out), click places a corner.
+                if session.tool == SketchTool::Pen {
+                    if let (Some(last), Some(cursor)) = (session.last, response.hover_pos()) {
+                        let lp = session.sketch.point(last);
+                        if let Some(a) = proj(lp.x, lp.y) {
+                            painter.line_segment([a, cursor], egui::Stroke::new(1.0, egui::Color32::from_gray(150)));
+                        }
+                    }
+                    if let Some(start) = session.start {
+                        let s = session.sketch.point(start);
+                        if let Some(sp) = proj(s.x, s.y) {
+                            painter.circle_stroke(sp, 6.0, egui::Stroke::new(1.5, accent));
+                        }
+                    }
+                    if let (Some(press), Some(cursor)) = (session.pen_press, response.hover_pos()) {
+                        if let Some(pp) = proj(press[0], press[1]) {
+                            let mirror = egui::pos2(2.0 * pp.x - cursor.x, 2.0 * pp.y - cursor.y);
+                            let arm = egui::Stroke::new(0.8, egui::Color32::from_gray(120));
+                            painter.line_segment([pp, cursor], arm);
+                            painter.line_segment([pp, mirror], arm);
+                            let hc = egui::Color32::from_rgb(150, 220, 130);
+                            painter.circle_filled(cursor, 3.0, hc);
+                            painter.circle_filled(mirror, 3.0, hc);
+                            painter.circle_filled(pp, 3.0, accent);
+                        }
+                    }
+                    if response.drag_started() {
+                        if let Some(uv) = response
+                            .interact_pointer_pos()
+                            .and_then(|p| view.cursor_on_plane(p, o, xd, yd, nd))
+                        {
+                            actions.push(SketchAction::PenPress(uv));
+                        }
+                    }
+                    if response.drag_stopped() {
+                        if let Some(uv) = response
+                            .interact_pointer_pos()
+                            .and_then(|p| view.cursor_on_plane(p, o, xd, yd, nd))
+                        {
+                            actions.push(SketchAction::PenSmooth(uv));
+                        }
+                    }
+                }
+
                 if response.clicked() {
                     if let Some(pos) = response.interact_pointer_pos() {
                         match session.tool {
@@ -1358,6 +1428,21 @@ impl Modeler {
                                     (nearest_line(pos), view.cursor_on_plane(pos, o, xd, yd, nd))
                                 {
                                     actions.push(SketchAction::InsertOnLine(line, uv));
+                                }
+                            }
+                            SketchTool::Pen => {
+                                let near_start = !session.closed
+                                    && session
+                                        .start
+                                        .map(|id| session.sketch.point(id))
+                                        .and_then(|p| proj(p.x, p.y))
+                                        .is_some_and(|sp| sp.distance(pos) < 10.0);
+                                let n_segs =
+                                    session.sketch.lines.len() + session.sketch.beziers.len();
+                                if near_start && n_segs >= 2 {
+                                    actions.push(SketchAction::PenClose);
+                                } else if let Some(uv) = view.cursor_on_plane(pos, o, xd, yd, nd) {
+                                    actions.push(SketchAction::PenCorner(uv));
                                 }
                             }
                         }
@@ -1473,6 +1558,53 @@ impl Modeler {
                         s.selected_points.clear();
                     }
                 }
+                SketchAction::PenPress(uv) => {
+                    if let Some(s) = self.sketch_session.as_mut() {
+                        s.pen_press = Some(uv);
+                    }
+                }
+                SketchAction::PenCorner([u, v]) => {
+                    if let Some(s) = self.sketch_session.as_mut() {
+                        let pid = s.sketch.add_point(u, v);
+                        if let Some(last) = s.last {
+                            connect_pen(&mut s.sketch, last, pid, s.pen_out, None);
+                        }
+                        if s.start.is_none() {
+                            s.start = Some(pid);
+                        }
+                        s.last = Some(pid);
+                        s.pen_out = None; // a corner anchor has no out-handle
+                    }
+                }
+                SketchAction::PenSmooth([hu, hv]) => {
+                    if let Some(s) = self.sketch_session.as_mut() {
+                        if let Some([pu, pv]) = s.pen_press.take() {
+                            let pid = s.sketch.add_point(pu, pv);
+                            // The in-handle mirrors the out-handle (symmetric node).
+                            let in_handle = [2.0 * pu - hu, 2.0 * pv - hv];
+                            if let Some(last) = s.last {
+                                connect_pen(&mut s.sketch, last, pid, s.pen_out, Some(in_handle));
+                            }
+                            if s.start.is_none() {
+                                s.start = Some(pid);
+                            }
+                            s.last = Some(pid);
+                            s.pen_out = Some([hu, hv]); // out-handle for the next segment
+                        }
+                    }
+                }
+                SketchAction::PenClose => {
+                    if let Some(s) = self.sketch_session.as_mut() {
+                        if let (Some(last), Some(start)) = (s.last, s.start) {
+                            connect_pen(&mut s.sketch, last, start, s.pen_out, None);
+                            s.closed = true;
+                            s.tool = SketchTool::Select;
+                            s.pen_out = None;
+                            s.pen_press = None;
+                        }
+                    }
+                    self.resolve_session();
+                }
                 SketchAction::Apply(constraint) => {
                     if let Some(s) = self.sketch_session.as_mut() {
                         s.sketch.add_constraint(constraint);
@@ -1528,6 +1660,27 @@ impl Modeler {
 
         s.selected_points.clear();
         s.selected_lines.clear();
+    }
+}
+
+/// Pen tool: connect anchor `a` to `b` as a straight line, or a bezier when
+/// either end carries a handle (`a`'s out-handle / `b`'s in-handle). A missing
+/// handle collapses onto its own endpoint.
+fn connect_pen(
+    sketch: &mut Sketch2d,
+    a: PointId,
+    b: PointId,
+    a_out: Option<[f64; 2]>,
+    b_in: Option<[f64; 2]>,
+) {
+    if a_out.is_none() && b_in.is_none() {
+        sketch.add_line(a, b);
+    } else {
+        let ap = sketch.point(a);
+        let bp = sketch.point(b);
+        let c1 = a_out.unwrap_or([ap.x, ap.y]);
+        let c2 = b_in.unwrap_or([bp.x, bp.y]);
+        sketch.add_bezier(a, b, c1, c2);
     }
 }
 
@@ -2624,6 +2777,36 @@ fn main() -> anyhow::Result<()> {
     // Verification aid: an in-progress rotation, so the gizmo readout (an egui
     // overlay only shown mid-drag) renders headlessly. Uses a negative angle to
     // exercise the worst-case width.
+    if std::env::args().any(|a| a == "--pen-demo") {
+        // A smooth closed loop of four cubic beziers (a circle-ish blob) — what
+        // the pen tool produces with smooth anchors — opened for editing.
+        let mut s = Sketch2d::new();
+        let anchors = [(20.0, 0.0), (0.0, 20.0), (-20.0, 0.0), (0.0, -20.0)];
+        let ids: Vec<_> = anchors.iter().map(|&(x, y)| s.add_point(x, y)).collect();
+        // Tangent handles (~0.55 r) make each node smooth; out/in are mirrored.
+        let h = 11.0;
+        let handles = [
+            ([20.0, h], [h, 20.0]),
+            ([-h, 20.0], [-20.0, h]),
+            ([-20.0, -h], [-h, -20.0]),
+            ([h, -20.0], [20.0, -h]),
+        ];
+        for i in 0..4 {
+            let (c1, c2) = handles[i];
+            s.add_bezier(ids[i], ids[(i + 1) % 4], c1, c2);
+        }
+        let mut doc = Document::new("pen");
+        let sk = doc.add("Sketch", FeatureKind::ConstraintSketch { plane: SketchPlane::Xy, sketch: s });
+        std::mem::swap(&mut modeler.doc, &mut doc);
+        let _ = modeler.mesh();
+        modeler.edit_sketch(sk);
+        let path = "out/pen-demo.png";
+        std::fs::create_dir_all("out")?;
+        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        println!("wrote {path}");
+        return Ok(());
+    }
+
     if std::env::args().any(|a| a == "--bezier-demo") {
         // A square sketch whose bottom edge is a bezier, opened for editing so
         // the curve + control handles show in the sketch canvas.
@@ -3080,6 +3263,30 @@ mod tests {
         assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
         let (_, max) = bounds(&mesh);
         assert!((max[0] - 40.0).abs() < 0.5, "moved corner widened the prism: {}", max[0]);
+    }
+
+    #[test]
+    fn pen_connect_makes_lines_for_corners_and_beziers_for_handles() {
+        // Three corner anchors → a triangle of straight lines.
+        let mut s = Sketch2d::new();
+        let a = s.add_point(0.0, 0.0);
+        let b = s.add_point(20.0, 0.0);
+        let c = s.add_point(10.0, 20.0);
+        connect_pen(&mut s, a, b, None, None);
+        connect_pen(&mut s, b, c, None, None);
+        connect_pen(&mut s, c, a, None, None);
+        assert_eq!(s.lines.len(), 3);
+        assert!(s.beziers.is_empty());
+        assert!(s.profile_elements().is_some(), "a closed triangle loop");
+
+        // A segment with handles becomes a bezier carrying them.
+        let mut s2 = Sketch2d::new();
+        let a = s2.add_point(0.0, 0.0);
+        let b = s2.add_point(20.0, 0.0);
+        connect_pen(&mut s2, a, b, Some([5.0, 5.0]), Some([15.0, -5.0]));
+        assert_eq!(s2.beziers.len(), 1);
+        assert_eq!(s2.beziers[0].c1, [5.0, 5.0]);
+        assert_eq!(s2.beziers[0].c2, [15.0, -5.0]);
     }
 
     #[test]
