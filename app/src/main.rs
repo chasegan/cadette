@@ -161,6 +161,8 @@ struct SketchSession {
     editing: Option<FeatureId>,
     /// The point currently being dragged (Select tool), if any.
     dragging: Option<PointId>,
+    /// The bezier control handle being dragged: `(bezier index, is_c1)`.
+    dragging_handle: Option<(usize, bool)>,
 }
 
 /// A deferred edit to the sketch session, collected during egui drawing and
@@ -173,14 +175,18 @@ enum SketchAction {
     Apply(Constraint),
     /// Begin dragging an existing point (Select tool).
     GrabPoint(PointId),
-    /// Move the grabbed point to a new plane coordinate.
-    DragPointTo([f64; 2]),
-    /// End the point drag (re-solve).
-    ReleasePoint,
+    /// Begin dragging a bezier control handle `(bezier index, is_c1)`.
+    GrabHandle((usize, bool)),
+    /// Move whatever is grabbed (point or handle) to a new plane coordinate.
+    DragTo([f64; 2]),
+    /// End the drag (re-solve).
+    ReleaseDrag,
     /// Insert a vertex at the given plane coordinate on `line`, splitting it.
     InsertOnLine(LineId, [f64; 2]),
     /// Delete the selected points, healing the loop.
     DeleteSelected,
+    /// Convert the (single) selected line into a bezier.
+    CurveSelected,
     Finish,
     Cancel,
 }
@@ -973,6 +979,7 @@ impl Modeler {
             dof: 0,
             editing: None,
             dragging: None,
+            dragging_handle: None,
         });
     }
 
@@ -996,6 +1003,7 @@ impl Modeler {
             dof: 0,
             editing: Some(id),
             dragging: None,
+            dragging_handle: None,
         });
         self.selection.clear();
         true
@@ -1120,6 +1128,13 @@ impl Modeler {
                 {
                     actions.push(SketchAction::DeleteSelected);
                 }
+                if ui
+                    .add_enabled(nl == 1, egui::Button::new("⤸ Curve"))
+                    .on_hover_text("Turn the selected line into a bezier — then drag its handles")
+                    .clicked()
+                {
+                    actions.push(SketchAction::CurveSelected);
+                }
                 ui.separator();
                 let dof = session.dof;
                 let status = if dof == 0 {
@@ -1225,6 +1240,22 @@ impl Modeler {
                     best.1
                 };
 
+                // Nearest bezier control handle to a screen position.
+                let nearest_handle = |pos: egui::Pos2| -> Option<(usize, bool)> {
+                    let mut best = (10.0_f32, None);
+                    for (i, bz) in session.sketch.beziers.iter().enumerate() {
+                        for (is_c1, c) in [(true, bz.c1), (false, bz.c2)] {
+                            if let Some(sp) = proj(c[0], c[1]) {
+                                let d = sp.distance(pos);
+                                if d < best.0 {
+                                    best = (d, Some((i, is_c1)));
+                                }
+                            }
+                        }
+                    }
+                    best.1
+                };
+
                 for (i, line) in session.sketch.lines.iter().enumerate() {
                     let a = session.sketch.point(line.a);
                     let b = session.sketch.point(line.b);
@@ -1232,6 +1263,31 @@ impl Modeler {
                         let sel = session.selected_lines.contains(&LineId(i));
                         let color = if sel { selected } else { accent };
                         painter.line_segment([pa, pb], egui::Stroke::new(if sel { 2.5 } else { 1.5 }, color));
+                    }
+                }
+                // Bezier segments (sampled polyline) + their control handles.
+                let handle_col = egui::Color32::from_rgb(150, 220, 130);
+                for bz in &session.sketch.beziers {
+                    let mut prev: Option<egui::Pos2> = None;
+                    for k in 0..=24 {
+                        let uv = Sketch2d::bezier_at(bz, &session.sketch.points, k as f64 / 24.0);
+                        if let Some(sp) = proj(uv[0], uv[1]) {
+                            if let Some(pp) = prev {
+                                painter.line_segment([pp, sp], egui::Stroke::new(1.5, accent));
+                            }
+                            prev = Some(sp);
+                        }
+                    }
+                    let a = session.sketch.point(bz.a);
+                    let b = session.sketch.point(bz.b);
+                    let arm = egui::Stroke::new(0.8, egui::Color32::from_gray(120));
+                    if let (Some(pa), Some(c)) = (proj(a.x, a.y), proj(bz.c1[0], bz.c1[1])) {
+                        painter.line_segment([pa, c], arm);
+                        painter.circle_filled(c, 3.0, handle_col);
+                    }
+                    if let (Some(pb), Some(c)) = (proj(b.x, b.y), proj(bz.c2[0], bz.c2[1])) {
+                        painter.line_segment([pb, c], arm);
+                        painter.circle_filled(c, 3.0, handle_col);
                     }
                 }
                 for (i, p) in session.sketch.points.iter().enumerate() {
@@ -1256,12 +1312,13 @@ impl Modeler {
                     }
                 }
 
-                // Select tool: drag an existing point to move it.
+                // Select tool: drag a bezier handle (priority) or an existing point.
                 if session.tool == SketchTool::Select {
                     if response.drag_started() {
-                        if let Some(pid) =
-                            response.interact_pointer_pos().and_then(nearest_point)
-                        {
+                        let pos = response.interact_pointer_pos();
+                        if let Some(h) = pos.and_then(nearest_handle) {
+                            actions.push(SketchAction::GrabHandle(h));
+                        } else if let Some(pid) = pos.and_then(nearest_point) {
                             actions.push(SketchAction::GrabPoint(pid));
                         }
                     }
@@ -1270,11 +1327,11 @@ impl Modeler {
                             .interact_pointer_pos()
                             .and_then(|pos| view.cursor_on_plane(pos, o, xd, yd, nd))
                         {
-                            actions.push(SketchAction::DragPointTo(uv));
+                            actions.push(SketchAction::DragTo(uv));
                         }
                     }
                     if response.drag_stopped() {
-                        actions.push(SketchAction::ReleasePoint);
+                        actions.push(SketchAction::ReleaseDrag);
                     }
                 }
 
@@ -1357,11 +1414,25 @@ impl Modeler {
                         s.dragging = Some(pid);
                     }
                 }
-                SketchAction::DragPointTo([u, v]) => {
-                    // Move the grabbed point directly (the session is a working
-                    // copy; the doc only changes on Finish).
+                SketchAction::GrabHandle(h) => {
                     if let Some(s) = self.sketch_session.as_mut() {
-                        if let Some(pid) = s.dragging {
+                        s.dragging_handle = Some(h);
+                    }
+                }
+                SketchAction::DragTo([u, v]) => {
+                    // Move whatever is grabbed — a bezier handle takes priority
+                    // over a point. (The session is a working copy; the doc only
+                    // changes on Finish.)
+                    if let Some(s) = self.sketch_session.as_mut() {
+                        if let Some((i, is_c1)) = s.dragging_handle {
+                            if let Some(bz) = s.sketch.beziers.get_mut(i) {
+                                if is_c1 {
+                                    bz.c1 = [u, v];
+                                } else {
+                                    bz.c2 = [u, v];
+                                }
+                            }
+                        } else if let Some(pid) = s.dragging {
                             if let Some(p) = s.sketch.points.get_mut(pid.0) {
                                 p.x = u;
                                 p.y = v;
@@ -1369,9 +1440,10 @@ impl Modeler {
                         }
                     }
                 }
-                SketchAction::ReleasePoint => {
+                SketchAction::ReleaseDrag => {
                     if let Some(s) = self.sketch_session.as_mut() {
                         s.dragging = None;
+                        s.dragging_handle = None;
                     }
                     self.resolve_session(); // settle any constraints
                 }
@@ -1389,6 +1461,15 @@ impl Modeler {
                         s.selected_lines.clear();
                     }
                     self.resolve_session();
+                }
+                SketchAction::CurveSelected => {
+                    if let Some(s) = self.sketch_session.as_mut() {
+                        if let Some(&line) = s.selected_lines.first() {
+                            s.sketch.curve_line(line);
+                        }
+                        s.selected_lines.clear();
+                        s.selected_points.clear();
+                    }
                 }
                 SketchAction::Apply(constraint) => {
                     if let Some(s) = self.sketch_session.as_mut() {
@@ -2541,6 +2622,30 @@ fn main() -> anyhow::Result<()> {
     // Verification aid: an in-progress rotation, so the gizmo readout (an egui
     // overlay only shown mid-drag) renders headlessly. Uses a negative angle to
     // exercise the worst-case width.
+    if std::env::args().any(|a| a == "--bezier-demo") {
+        // A square sketch whose bottom edge is a bezier, opened for editing so
+        // the curve + control handles show in the sketch canvas.
+        let mut s = Sketch2d::new();
+        let p: Vec<_> = [(-20.0, -15.0), (20.0, -15.0), (20.0, 15.0), (-20.0, 15.0)]
+            .iter()
+            .map(|&(x, y)| s.add_point(x, y))
+            .collect();
+        s.add_bezier(p[0], p[1], [-10.0, -32.0], [10.0, -32.0]);
+        s.add_line(p[1], p[2]);
+        s.add_line(p[2], p[3]);
+        s.add_line(p[3], p[0]);
+        let mut doc = Document::new("bezier");
+        let sk = doc.add("Sketch", FeatureKind::ConstraintSketch { plane: SketchPlane::Xy, sketch: s });
+        std::mem::swap(&mut modeler.doc, &mut doc);
+        let _ = modeler.mesh();
+        modeler.edit_sketch(sk);
+        let path = "out/bezier-demo.png";
+        std::fs::create_dir_all("out")?;
+        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        println!("wrote {path}");
+        return Ok(());
+    }
+
     if std::env::args().any(|a| a == "--multiface-demo") {
         // Select several faces of one box; all should highlight (multi-select).
         let mut doc = Document::new("multiface");

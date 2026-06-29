@@ -227,6 +227,33 @@ impl Sketch2d {
         self.beziers.push(SketchBezier { a, b, c1, c2 });
     }
 
+    /// Convert a straight `line` into a bezier with default handles at 1/3 and
+    /// 2/3 along it (so it starts looking straight, ready to be shaped). Returns
+    /// false if the id is invalid.
+    pub fn curve_line(&mut self, line: LineId) -> bool {
+        let Some(l) = self.lines.get(line.0).copied() else {
+            return false;
+        };
+        let (a, b) = (self.point(l.a), self.point(l.b));
+        let c1 = [a.x + (b.x - a.x) / 3.0, a.y + (b.y - a.y) / 3.0];
+        let c2 = [a.x + 2.0 * (b.x - a.x) / 3.0, a.y + 2.0 * (b.y - a.y) / 3.0];
+        self.lines.remove(line.0);
+        self.add_bezier(l.a, l.b, c1, c2);
+        true
+    }
+
+    /// A point on the cubic bezier `segment` at parameter `t ∈ [0,1]`.
+    pub fn bezier_at(seg: &SketchBezier, points: &[SketchPoint], t: f64) -> [f64; 2] {
+        let a = points[seg.a.0];
+        let b = points[seg.b.0];
+        let u = 1.0 - t;
+        let w = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+        [
+            w[0] * a.x + w[1] * seg.c1[0] + w[2] * seg.c2[0] + w[3] * b.x,
+            w[0] * a.y + w[1] * seg.c1[1] + w[2] * seg.c2[1] + w[3] * b.y,
+        ]
+    }
+
     pub fn add_constraint(&mut self, constraint: Constraint) {
         self.constraints.push(constraint);
     }
@@ -429,6 +456,22 @@ mod edit_tests {
         assert_eq!(s.points.len(), 3, "a triangle remains");
         assert_eq!(s.lines.len(), 3);
         assert!(s.loop_order().is_some(), "still one closed loop");
+    }
+
+    #[test]
+    fn curve_line_replaces_a_segment_with_a_bezier() {
+        let mut s = square();
+        let n_lines = s.lines.len();
+        assert!(s.curve_line(LineId(0)));
+        assert_eq!(s.lines.len(), n_lines - 1, "the straight line is gone");
+        assert_eq!(s.beziers.len(), 1, "replaced by a bezier");
+        // Still one closed loop of four segments, one of them curved.
+        let elems = s.profile_elements().unwrap();
+        assert_eq!(elems.len(), 4);
+        assert_eq!(
+            elems.iter().filter(|e| matches!(e, ProfileElem::Bezier { .. })).count(),
+            1
+        );
     }
 
     #[test]
