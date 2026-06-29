@@ -1,0 +1,267 @@
+/* ============================================================
+   Cadette — landing page
+   Palette & type from the Cadette Brand Guide.
+   ============================================================ */
+
+:root {
+  --navy:   #182241;  /* deep space — primary text & lines       */
+  --paper:  #F3ECDC;  /* warm paper — background                 */
+  --cream:  #FCF8EF;  /* off-white — cards                       */
+  --coral:  #E8633C;  /* accent — primary signal light          */
+  --amber:  #E6A92E;  /* accent — gold sparkle                   */
+  --teal:   #2BA39C;  /* accent — secondary signal              */
+
+  --ink-70: rgba(24, 34, 65, 0.72);
+  --ink-55: rgba(24, 34, 65, 0.55);
+  --line:   rgba(24, 34, 65, 0.14);
+
+  --maxw: 1080px;
+  --radius: 16px;
+  --font-display: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'Space Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+html, body { max-width: 100%; overflow-x: hidden; }
+
+body {
+  font-family: var(--font-display);
+  background: var(--paper);
+  color: var(--navy);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a { color: inherit; }
+
+/* ----------------------------- HEADER ----------------------------- */
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 22px 24px;
+}
+.brand { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+.brand-word {
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: -0.03em;
+}
+.site-nav { display: flex; align-items: center; gap: 26px; }
+.site-nav a {
+  text-decoration: none;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink-70);
+  transition: color 0.15s ease;
+}
+.site-nav a:hover { color: var(--navy); }
+.nav-cta {
+  border: 1.5px solid var(--navy);
+  border-radius: 999px;
+  padding: 7px 16px;
+  color: var(--navy) !important;
+}
+.nav-cta:hover { background: var(--navy); color: var(--paper) !important; }
+
+/* ------------------------------ HERO ------------------------------ */
+.hero {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 48px 24px 64px;
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 48px;
+  align-items: center;
+}
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--coral);
+  margin-bottom: 18px;
+}
+.hero h1 {
+  font-size: clamp(32px, 8vw, 76px);
+  line-height: 1.02;
+  letter-spacing: -0.04em;
+  font-weight: 700;
+  margin-bottom: 22px;
+}
+.lede {
+  font-size: 19px;
+  line-height: 1.55;
+  color: var(--ink-70);
+  max-width: 30em;
+  margin-bottom: 34px;
+}
+
+/* downloads */
+.downloads { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--font-display);
+  font-size: 15.5px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 13px 22px;
+  text-decoration: none;
+  cursor: pointer;
+  border: 1.5px solid transparent;
+  transition: transform 0.12s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.btn-primary {
+  background: var(--coral);
+  color: var(--cream);
+  box-shadow: 0 6px 18px rgba(232, 99, 60, 0.28);
+}
+.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 9px 24px rgba(232, 99, 60, 0.36); }
+.btn-ghost { border-color: var(--navy); color: var(--navy); }
+.btn-ghost:hover { background: var(--navy); color: var(--paper); }
+
+.btn-stub-group { display: flex; gap: 10px; }
+.btn-stub {
+  background: transparent;
+  border: 1.5px dashed var(--line);
+  color: var(--ink-55);
+  cursor: not-allowed;
+  font-weight: 500;
+  padding: 13px 18px;
+}
+.btn-stub em { font-style: normal; font-family: var(--font-mono); font-size: 12px; opacity: 0.8; }
+
+.dl-note {
+  margin-top: 16px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--ink-55);
+}
+
+/* hero art */
+.hero-art { position: relative; display: flex; align-items: center; justify-content: center; }
+.orbit { width: 100%; max-width: 360px; height: auto; }
+.readout {
+  position: absolute;
+  bottom: 4px;
+  right: 6px;
+  display: flex;
+  gap: 14px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink-70);
+  background: var(--cream);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 12px;
+}
+
+/* --------------------------- POSITIONING -------------------------- */
+.strip {
+  background: var(--navy);
+  color: var(--paper);
+  text-align: center;
+}
+.strip p {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 26px 24px;
+  font-size: 17px;
+  color: rgba(243, 236, 220, 0.85);
+}
+.strip strong { color: var(--paper); font-weight: 600; }
+
+/* ---------------------------- FEATURES ---------------------------- */
+.features { max-width: var(--maxw); margin: 0 auto; padding: 72px 24px 24px; }
+.section-title {
+  font-size: 14px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--ink-55);
+  text-align: center;
+  margin-bottom: 40px;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+}
+.card {
+  background: var(--cream);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 28px 26px 30px;
+  transition: transform 0.15s ease, box-shadow 0.2s ease;
+}
+.card:hover { transform: translateY(-3px); box-shadow: 0 14px 30px rgba(24, 34, 65, 0.08); }
+.ico { width: 44px; height: 44px; margin-bottom: 18px; display: block; }
+.card h3 { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 9px; }
+.card p { font-size: 15px; color: var(--ink-70); line-height: 1.55; }
+
+/* ----------------------------- ABOUT ------------------------------ */
+.about { padding: 80px 24px 88px; }
+.about-inner {
+  max-width: 680px;
+  margin: 0 auto;
+  background: var(--navy);
+  color: var(--paper);
+  border-radius: 28px;
+  padding: 56px 48px;
+  text-align: center;
+}
+.about-mark { width: 64px; height: 64px; margin: 0 auto 22px; display: block; }
+.about h2 { font-size: clamp(28px, 4vw, 38px); letter-spacing: -0.03em; margin-bottom: 18px; }
+.about p { font-size: 17px; line-height: 1.6; color: rgba(243, 236, 220, 0.82); max-width: 52ch; margin: 0 auto 16px; }
+.about .voice {
+  font-style: italic;
+  color: rgba(243, 236, 220, 0.62);
+  font-size: 16px;
+}
+.about-cta { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 32px; }
+.about .btn-ghost { border-color: rgba(243, 236, 220, 0.55); color: var(--paper); }
+.about .btn-ghost:hover { background: var(--paper); color: var(--navy); }
+
+/* ----------------------------- FOOTER ----------------------------- */
+.site-footer {
+  background: var(--navy);
+  color: var(--paper);
+  padding: 36px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.foot-brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; letter-spacing: -0.02em; }
+.foot-meta { font-family: var(--font-mono); font-size: 13px; color: rgba(243, 236, 220, 0.7); text-align: center; }
+.foot-meta a { color: var(--coral); text-decoration: none; }
+.foot-meta a:hover { text-decoration: underline; }
+
+/* --------------------------- RESPONSIVE --------------------------- */
+@media (max-width: 860px) {
+  .hero { grid-template-columns: 1fr; gap: 28px; padding-top: 28px; }
+  .hero-art { order: -1; flex-direction: column; gap: 14px; }
+  .orbit { max-width: 240px; }
+  .readout { position: static; align-self: center; }
+  .grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 560px) {
+  .site-nav { gap: 16px; }
+  .site-nav a:not(.nav-cta) { display: none; }
+  .grid { grid-template-columns: 1fr; }
+  .about-inner { padding: 40px 26px; }
+  .downloads { gap: 10px; }
+  .btn-stub-group { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { scroll-behavior: auto !important; transition: none !important; }
+}

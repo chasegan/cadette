@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cadette — Free, open-source CAD for 3D printing</title>
+  <meta name="description" content="Cadette is free, open-source CAD that turns your ideas into print-ready STLs. Grab a face and drag — on a real B-rep CAD kernel. Parametric, editable, print-ready.">
+
+  <!-- Open Graph / social -->
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Cadette — Free, open-source CAD for 3D printing">
+  <meta property="og:description" content="The directness of Tinkercad, on a real CAD kernel. Sketch, constrain, build — then export print-ready STLs.">
+  <meta property="og:url" content="https://cadette.org">
+  <meta name="twitter:card" content="summary_large_image">
+
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- ============================ HEADER ============================ -->
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="Cadette home">
+      <svg class="brand-mark" viewBox="0 0 100 100" width="34" height="34" aria-hidden="true">
+        <path d="M16 13 L18.2 19.4 L24.5 22 L18.2 24.6 L16 31 L13.8 24.6 L7.5 22 L13.8 19.4 Z" fill="#E6A92E"></path>
+        <ellipse cx="50" cy="52" rx="44" ry="20" fill="none" stroke="#182241" stroke-width="3" transform="rotate(-22 50 52)"></ellipse>
+        <circle cx="50" cy="52" r="13.5" fill="#E8633C"></circle>
+        <circle cx="90.5" cy="35.4" r="5.5" fill="#182241"></circle>
+      </svg>
+      <span class="brand-word">Cadette</span>
+    </a>
+    <nav class="site-nav">
+      <a href="#features">Features</a>
+      <a href="#about">About</a>
+      <a class="nav-cta" href="https://github.com/chasegan/cadette" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+
+  <!-- ============================ HERO ============================ -->
+  <main>
+  <section class="hero">
+    <div class="hero-copy">
+      <p class="eyebrow">Free &amp; open-source CAD · MPL 2.0</p>
+      <h1>Sketch, constrain,<br>build.</h1>
+      <p class="lede">
+        Grab a face and just drag it — but underneath it's a real B-rep CAD kernel.
+        Parametric, editable, and print-ready. The directness of Tinkercad, on the
+        foundation real CAD is built from.
+      </p>
+
+      <div class="downloads">
+        <a class="btn btn-primary" href="https://github.com/chasegan/cadette/releases/latest/download/Cadette-macOS.dmg" rel="noopener">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="currentColor"><path d="M16.5 1.7c0 1.1-.4 2.1-1.2 3-.8.9-1.8 1.5-2.9 1.4-.1-1.1.4-2.2 1.1-3 .8-.9 2-1.5 3-1.4zM20 17.3c-.5 1.2-.8 1.8-1.5 2.9-1 1.5-2.4 3.4-4.1 3.4-1.5 0-1.9-1-4-1-2 0-2.5 1-4 1-1.7 0-3-1.7-4-3.2-2.8-4.3-3.1-9.3-1.4-12 1.2-1.9 3.1-3 4.9-3 1.8 0 3 1 4.5 1 1.5 0 2.4-1 4.5-1 1.6 0 3.3.9 4.5 2.4-4 2.2-3.3 7.9.1 9.5z"/></svg>
+          Download for macOS
+        </a>
+        <div class="btn-stub-group">
+          <span class="btn btn-stub" aria-disabled="true">Windows <em>· soon</em></span>
+          <span class="btn btn-stub" aria-disabled="true">Linux <em>· soon</em></span>
+        </div>
+      </div>
+      <p class="dl-note">Apple silicon &amp; Intel · no account, no telemetry, no cost.</p>
+    </div>
+
+    <div class="hero-art" aria-hidden="true">
+      <!-- Large Orbit mark, the primary brand mark -->
+      <svg class="orbit" viewBox="0 0 100 100">
+        <path d="M16 13 L18.2 19.4 L24.5 22 L18.2 24.6 L16 31 L13.8 24.6 L7.5 22 L13.8 19.4 Z" fill="#E6A92E"></path>
+        <ellipse cx="50" cy="52" rx="44" ry="20" fill="none" stroke="#182241" stroke-width="2.4" transform="rotate(-22 50 52)"></ellipse>
+        <ellipse cx="50" cy="52" rx="44" ry="20" fill="none" stroke="#182241" stroke-width="1" opacity="0.4" transform="rotate(28 50 52)"></ellipse>
+        <circle cx="50" cy="52" r="13.5" fill="#E8633C"></circle>
+        <circle cx="90.5" cy="35.4" r="5.5" fill="#182241"></circle>
+        <circle cx="9" cy="64" r="3.4" fill="#2BA39C"></circle>
+      </svg>
+      <!-- console readout, in the brand's mono voice -->
+      <div class="readout"><span>X 124.50</span><span>Y 88.00</span><span>&#8960; 12</span></div>
+    </div>
+  </section>
+
+  <!-- ======================= POSITIONING ======================= -->
+  <section class="strip">
+    <p>A step up from <strong>Tinkercad</strong>. Closer to <strong>Shapr3D</strong> and <strong>Fusion</strong> in capability — with grab-it-and-drag directness.</p>
+  </section>
+
+  <!-- ========================= FEATURES ========================= -->
+  <section id="features" class="features">
+    <h2 class="section-title">What's inside</h2>
+    <div class="grid">
+
+      <article class="card">
+        <svg class="ico" viewBox="0 0 48 48" aria-hidden="true">
+          <path d="M14 26 L14 40 L34 40 L34 26" fill="none" stroke="#182241" stroke-width="2.5" stroke-linejoin="round"/>
+          <path d="M14 26 L20 20 L40 20 L34 26 Z" fill="none" stroke="#182241" stroke-width="2.5" stroke-linejoin="round"/>
+          <line x1="24" y1="16" x2="24" y2="5" stroke="#E8633C" stroke-width="2.5" stroke-linecap="round"/>
+          <path d="M20 9 L24 4 L28 9" fill="none" stroke="#E8633C" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="34" cy="40" r="2.6" fill="#E8633C"/>
+        </svg>
+        <h3>Grab it and drag</h3>
+        <p>Select a face and push/pull it, resize with handles, snap to a grid, group objects and move them together. Direct and immediate — no menu-diving.</p>
+      </article>
+
+      <article class="card">
+        <svg class="ico" viewBox="0 0 48 48" aria-hidden="true">
+          <path d="M24 6 L40 15 L40 33 L24 42 L8 33 L8 15 Z" fill="none" stroke="#182241" stroke-width="2.5" stroke-linejoin="round"/>
+          <path d="M24 6 L24 24 L8 15 M24 24 L40 15 M24 24 L24 42" fill="none" stroke="#182241" stroke-width="1.4" opacity="0.55"/>
+          <circle cx="24" cy="24" r="3" fill="#E8633C"/>
+        </svg>
+        <h3>A real CAD kernel</h3>
+        <p>Built on OpenCASCADE — the engine behind FreeCAD. True B-rep solids with exact faces, edges, fillets and booleans. Real geometry, not meshes.</p>
+      </article>
+
+      <article class="card">
+        <svg class="ico" viewBox="0 0 48 48" aria-hidden="true">
+          <line x1="24" y1="8" x2="24" y2="40" stroke="#182241" stroke-width="2.5"/>
+          <circle cx="24" cy="11" r="4.5" fill="none" stroke="#182241" stroke-width="2.5"/>
+          <circle cx="24" cy="24" r="5.5" fill="#E8633C"/>
+          <circle cx="24" cy="37" r="4.5" fill="none" stroke="#182241" stroke-width="2.5"/>
+        </svg>
+        <h3>Everything is parametric</h3>
+        <p>Every action lives in a history you can re-open, tweak, re-order, or roll back. Change an early step and the model rebuilds. Nothing is baked.</p>
+      </article>
+
+      <article class="card">
+        <svg class="ico" viewBox="0 0 48 48" aria-hidden="true">
+          <path d="M8 36 C 16 36, 18 12, 28 12 S 40 24, 40 24" fill="none" stroke="#182241" stroke-width="2.5" stroke-linecap="round"/>
+          <circle cx="8" cy="36" r="3" fill="none" stroke="#182241" stroke-width="2.2"/>
+          <circle cx="28" cy="12" r="3" fill="#E8633C"/>
+          <line x1="28" y1="12" x2="38" y2="8" stroke="#182241" stroke-width="1.4"/>
+          <rect x="37" y="6.5" width="3.5" height="3.5" fill="#182241"/>
+        </svg>
+        <h3>A proper sketcher</h3>
+        <p>A real pen and Bézier tool with dimensional constraints drives extrudes and revolves. Sketch the intent; let the solver hold it.</p>
+      </article>
+
+      <article class="card">
+        <svg class="ico" viewBox="0 0 48 48" aria-hidden="true">
+          <path d="M10 30 L10 40 L38 40 L38 30" fill="none" stroke="#182241" stroke-width="2.5" stroke-linejoin="round"/>
+          <line x1="24" y1="6" x2="24" y2="28" stroke="#E8633C" stroke-width="2.5" stroke-linecap="round"/>
+          <path d="M17 21 L24 29 L31 21" fill="none" stroke="#E8633C" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <h3>Print-ready output</h3>
+        <p>Export watertight STLs straight to your slicer — and save the whole parametric project, not a flattened mesh you can never edit again.</p>
+      </article>
+
+      <article class="card">
+        <svg class="ico" viewBox="0 0 48 48" aria-hidden="true">
+          <circle cx="24" cy="24" r="17" fill="none" stroke="#182241" stroke-width="2.5"/>
+          <circle cx="24" cy="24" r="11" fill="none" stroke="#182241" stroke-width="1.3" opacity="0.55"/>
+          <path d="M24 12 L26.6 21.4 L36 24 L26.6 26.6 L24 36 L21.4 26.6 L12 24 L21.4 21.4 Z" fill="#E8633C"/>
+        </svg>
+        <h3>Free &amp; open source</h3>
+        <p>Released under MPL 2.0 — yours to use, study, and build on. No account, no telemetry, no cost. Community-driven.</p>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ========================== ABOUT ========================== -->
+  <section id="about" class="about">
+    <div class="about-inner">
+      <svg class="about-mark" viewBox="0 0 100 100" aria-hidden="true">
+        <circle cx="50" cy="50" r="46" fill="none" stroke="#F3ECDC" stroke-width="3"></circle>
+        <circle cx="50" cy="50" r="38" fill="none" stroke="#F3ECDC" stroke-width="1.4" opacity="0.6"></circle>
+        <path d="M50 26 L55 45 L74 50 L55 55 L50 74 L45 55 L26 50 L45 45 Z" fill="#E8633C"></path>
+      </svg>
+      <h2>Early days, industrial foundations</h2>
+      <p>
+        Cadette is an early, single-developer build, so it's lean on features for now —
+        there's no STL import or sweep yet. But the foundation isn't a toy: it's the same
+        industrial-grade B-rep kernel that serious CAD is built on. The plan is to keep the
+        directness while the capability grows.
+      </p>
+      <p class="voice">
+        Cadette is meant to be the calm voice in your headset — encouraging, precise, and
+        never above explaining the basics.
+      </p>
+      <div class="about-cta">
+        <a class="btn btn-primary" href="https://github.com/chasegan/cadette/releases/latest/download/Cadette-macOS.dmg" rel="noopener">Download for macOS</a>
+        <a class="btn btn-ghost" href="https://github.com/chasegan/cadette" rel="noopener">View source on GitHub</a>
+      </div>
+    </div>
+  </section>
+  </main>
+
+  <!-- ========================== FOOTER ========================== -->
+  <footer class="site-footer">
+    <div class="foot-brand">
+      <svg viewBox="0 0 100 100" width="26" height="26" aria-hidden="true">
+        <ellipse cx="50" cy="52" rx="44" ry="20" fill="none" stroke="#F3ECDC" stroke-width="3" transform="rotate(-22 50 52)"></ellipse>
+        <circle cx="50" cy="52" r="13.5" fill="#E8633C"></circle>
+        <circle cx="90.5" cy="35.4" r="5.5" fill="#F3ECDC"></circle>
+      </svg>
+      <span>Cadette</span>
+    </div>
+    <p class="foot-meta">
+      Free &amp; open source · MPL 2.0 ·
+      <a href="https://github.com/chasegan/cadette" rel="noopener">github.com/chasegan/cadette</a>
+    </p>
+  </footer>
+
+</body>
+</html>
