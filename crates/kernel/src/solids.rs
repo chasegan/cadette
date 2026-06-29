@@ -86,6 +86,22 @@ impl Solid {
         )?))
     }
 
+    /// A planar face whose closed boundary mixes line and cubic-bezier segments.
+    /// `points` is the flat 2D loop (in plane coords); `segs` carries 5 doubles
+    /// per segment `i` (vertex `i`→`i+1`): `[is_bezier, c1x, c1y, c2x, c2y]`.
+    pub fn profile_face(
+        origin: [f64; 3],
+        x_dir: [f64; 3],
+        y_dir: [f64; 3],
+        points: &[f64],
+        segs: &[f64],
+    ) -> Result<Self> {
+        Ok(Self::wrap(ffi::profile_face(
+            origin[0], origin[1], origin[2], x_dir[0], x_dir[1], x_dir[2], y_dir[0], y_dir[1],
+            y_dir[2], points, segs,
+        )?))
+    }
+
     // --- Transforms ---------------------------------------------------------
 
     /// A copy of this solid translated by `(dx, dy, dz)`.

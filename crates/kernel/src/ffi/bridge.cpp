@@ -24,6 +24,8 @@
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <Geom_Plane.hxx>
 #include <GeomLib_IsPlanarSurface.hxx>
+#include <Geom_BezierCurve.hxx>
+#include <TColgp_Array1OfPnt.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Circ.hxx>
@@ -167,6 +169,50 @@ std::unique_ptr<Shape> make_polygon_face(double ox, double oy, double oz,
     }
     poly.Close();
     BRepBuilderAPI_MakeFace face(poly.Wire());
+    return std::make_unique<Shape>(face.Shape());
+  });
+}
+
+// A planar face whose closed boundary mixes straight and cubic-bezier segments.
+// `points` is the flat 2D loop vertices (in plane coords); `segs` has 5 doubles
+// per segment i (from vertex i to vertex i+1): [is_bezier, c1x, c1y, c2x, c2y]
+// where the control points are used only when is_bezier != 0.
+std::unique_ptr<Shape> profile_face(double ox, double oy, double oz,
+                                    double xx, double xy, double xz,
+                                    double yx, double yy, double yz,
+                                    rust::Slice<const double> points,
+                                    rust::Slice<const double> segs) {
+  return guard("profile_face", [&] {
+    const std::size_t n = points.size() / 2;
+    if (n < 3 || segs.size() != n * 5) {
+      throw std::runtime_error("profile_face: bad point/segment counts");
+    }
+    const gp_Vec o(ox, oy, oz), x(xx, xy, xz), y(yx, yy, yz);
+    auto to3d = [&](double u, double v) {
+      const gp_Vec p = o + x * u + y * v;
+      return gp_Pnt(p.X(), p.Y(), p.Z());
+    };
+
+    BRepBuilderAPI_MakeWire wire;
+    for (std::size_t i = 0; i < n; ++i) {
+      const std::size_t j = (i + 1) % n;
+      const gp_Pnt a = to3d(points[2 * i], points[2 * i + 1]);
+      const gp_Pnt b = to3d(points[2 * j], points[2 * j + 1]);
+      if (segs[5 * i] != 0.0) {
+        const gp_Pnt c1 = to3d(segs[5 * i + 1], segs[5 * i + 2]);
+        const gp_Pnt c2 = to3d(segs[5 * i + 3], segs[5 * i + 4]);
+        TColgp_Array1OfPnt poles(1, 4);
+        poles.SetValue(1, a);
+        poles.SetValue(2, c1);
+        poles.SetValue(3, c2);
+        poles.SetValue(4, b);
+        Handle(Geom_BezierCurve) curve = new Geom_BezierCurve(poles);
+        wire.Add(BRepBuilderAPI_MakeEdge(curve).Edge());
+      } else {
+        wire.Add(BRepBuilderAPI_MakeEdge(a, b).Edge());
+      }
+    }
+    BRepBuilderAPI_MakeFace face(wire.Wire(), /*OnlyPlane=*/Standard_True);
     return std::make_unique<Shape>(face.Shape());
   });
 }

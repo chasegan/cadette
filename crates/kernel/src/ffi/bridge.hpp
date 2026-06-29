@@ -42,6 +42,11 @@ std::unique_ptr<Shape> make_polygon_face(double ox, double oy, double oz,
                                          double xx, double xy, double xz,
                                          double yx, double yy, double yz,
                                          rust::Slice<const double> points);
+std::unique_ptr<Shape> profile_face(double ox, double oy, double oz,
+                                    double xx, double xy, double xz,
+                                    double yx, double yy, double yz,
+                                    rust::Slice<const double> points,
+                                    rust::Slice<const double> segs);
 
 // --- Extrude ----------------------------------------------------------------
 std::unique_ptr<Shape> extrude(const Shape& s, double distance);

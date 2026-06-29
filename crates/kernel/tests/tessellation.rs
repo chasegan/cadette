@@ -178,6 +178,35 @@ fn fillet_edges_rounds_several_at_once() {
 }
 
 #[test]
+fn profile_face_builds_a_curved_boundary() {
+    // A 20×20 square whose BOTTOM edge is a cubic bezier bulging down to ~y=-7.5
+    // (controls at y=-10). The other three sides stay straight.
+    let points = [0.0, 0.0, 20.0, 0.0, 20.0, 20.0, 0.0, 20.0];
+    #[rustfmt::skip]
+    let segs = [
+        1.0, 5.0, -10.0, 15.0, -10.0, // seg 0: bezier
+        0.0, 0.0, 0.0, 0.0, 0.0,       // seg 1: line
+        0.0, 0.0, 0.0, 0.0, 0.0,       // seg 2: line
+        0.0, 0.0, 0.0, 0.0, 0.0,       // seg 3: line
+    ];
+    let face =
+        Solid::profile_face([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], &points, &segs)
+            .unwrap();
+    let prism = face.extrude(10.0).unwrap();
+    let mesh = prism.tessellate(0.1).unwrap();
+    assert!(!mesh.indices.is_empty(), "curved profile extrudes to a solid");
+
+    let (mut ymin, mut ymax) = (f32::MAX, f32::MIN);
+    for p in mesh.positions.chunks_exact(3) {
+        ymin = ymin.min(p[1]);
+        ymax = ymax.max(p[1]);
+    }
+    // The straight top stays at y=20; the bezier bottom dips well below 0.
+    assert!((ymax - 20.0).abs() < 0.2, "top straight at y=20, got {ymax}");
+    assert!(ymin < -5.0, "bottom edge bulges down past y=−5, got {ymin}");
+}
+
+#[test]
 fn mirror_reflects_a_box_into_a_valid_oriented_solid() {
     let cube = Solid::cuboid(10.0, 10.0, 10.0).unwrap(); // [0,10]^3
     // Reflect across the x=10 plane.

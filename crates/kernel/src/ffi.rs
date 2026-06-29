@@ -85,6 +85,17 @@ pub mod ffi {
             yx: f64, yy: f64, yz: f64,
             points: &[f64],
         ) -> Result<UniquePtr<Shape>>;
+        /// A planar face whose boundary mixes line and cubic-bezier segments.
+        /// `points` is the flat 2D loop; `segs` has 5 doubles per segment:
+        /// `[is_bezier, c1x, c1y, c2x, c2y]`.
+        #[allow(clippy::too_many_arguments)]
+        fn profile_face(
+            ox: f64, oy: f64, oz: f64,
+            xx: f64, xy: f64, xz: f64,
+            yx: f64, yy: f64, yz: f64,
+            points: &[f64],
+            segs: &[f64],
+        ) -> Result<UniquePtr<Shape>>;
 
         // --- Extrude ------------------------------------------------------
         /// Extrude a planar face along its normal by `distance` into a solid.
