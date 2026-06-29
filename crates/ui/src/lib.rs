@@ -1,16 +1,16 @@
-//! # rmf-ui
+//! # cdt-ui
 //!
 //! Minimal-chrome egui panels. This first panel is the **history tree**: the
 //! ordered feature list with selection, suppression, reordering, a rollback
 //! bar, and an inline editor for the selected feature's parameters.
 //!
 //! The panel mutates the [`Document`] directly (all the structural operations
-//! are already validated in `rmf-core`) and reports whether anything changed so
+//! are already validated in `cdt-core`) and reports whether anything changed so
 //! the host can regenerate geometry. It depends only on egui + core — no wgpu,
 //! no kernel.
 
 use egui::{Color32, Context, RichText, Ui};
-use rmf_core::{
+use cdt_core::{
     BooleanOp, Constraint, Document, FeatureId, FeatureKind, Profile, SketchPlane, DVec3,
 };
 

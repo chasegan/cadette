@@ -1,8 +1,8 @@
 //! End-to-end constraint-solving tests: build a sketch, solve it, and assert
 //! the geometry lands where the constraints demand.
 
-use rmf_core::{Constraint, Sketch2d};
-use rmf_solver::solve_sketch;
+use cdt_core::{Constraint, Sketch2d};
+use cdt_solver::solve_sketch;
 
 fn close(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-5

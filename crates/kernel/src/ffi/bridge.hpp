@@ -6,10 +6,10 @@
 #include <memory>
 #include <TopoDS_Shape.hxx>
 
-namespace rmf {
+namespace cdt {
 
 // Forward declarations of the cxx-generated shared structs. Their full
-// definitions live in the generated "rmf-kernel/src/ffi.rs.h" header, which
+// definitions live in the generated "cdt-kernel/src/ffi.rs.h" header, which
 // bridge.cpp includes. A forward declaration is sufficient for these by-value
 // declarations; only the definitions (in bridge.cpp) need the full type.
 struct Mesh;
@@ -93,4 +93,4 @@ void write_stl(const Shape& s, rust::Str path, double deflection);
 PlaneFrame face_plane(const Shape& s, uint32_t index);
 rust::Vec<double> face_edge_midpoints(const Shape& s, uint32_t index);
 
-}  // namespace rmf
+}  // namespace cdt

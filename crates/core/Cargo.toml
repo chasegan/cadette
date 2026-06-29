@@ -1,10 +1,10 @@
 [package]
-name = "rmf-core"
+name = "cdt-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Pure-Rust domain logic for Riemanifold: document, history, sketch, features, units. No GPU, no kernel."
+description = "Pure-Rust domain logic for Cadette: document, history, sketch, features, units. No GPU, no kernel."
 
 [dependencies]
 thiserror = { workspace = true }

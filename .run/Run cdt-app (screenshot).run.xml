@@ -1,6 +1,6 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="Run rmf-app (screenshot)" type="CargoCommandRunConfiguration" factoryName="Cargo Command">
-    <option name="command" value="run --package rmf-app --bin rmf-app -- --screenshot" />
+  <configuration default="false" name="Run cdt-app (screenshot)" type="CargoCommandRunConfiguration" factoryName="Cargo Command">
+    <option name="command" value="run --package cdt-app --bin cdt-app -- --screenshot" />
     <option name="workingDirectory" value="file://$PROJECT_DIR$" />
     <option name="channel" value="DEFAULT" />
     <option name="requiredFeatures" value="true" />

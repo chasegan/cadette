@@ -1,13 +1,13 @@
 [package]
-name = "rmf-kernel"
+name = "cdt-kernel"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "OpenCASCADE (OCCT) FFI boundary and safe B-rep wrappers for Riemanifold."
+description = "OpenCASCADE (OCCT) FFI boundary and safe B-rep wrappers for Cadette."
 
 [dependencies]
-rmf-core = { workspace = true }
+cdt-core = { workspace = true }
 cxx = "1"
 thiserror = { workspace = true }
 

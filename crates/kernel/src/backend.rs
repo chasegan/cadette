@@ -1,12 +1,12 @@
 //! OCCT implementation of the pure-core [`GeometryBackend`] trait.
 //!
-//! This is the seam where `rmf-core`'s data-described features become real
-//! B-rep solids. The replay engine in `rmf-core` calls these methods; we
+//! This is the seam where `cdt-core`'s data-described features become real
+//! B-rep solids. The replay engine in `cdt-core` calls these methods; we
 //! forward each to the safe [`Solid`] API. Bodies are `Solid` and errors are
 //! [`KernelError`], so a failed operation surfaces as a per-feature regen error
 //! rather than aborting the whole rebuild.
 
-use rmf_core::{
+use cdt_core::{
     BooleanOp, DVec3, EdgeAnchor, FaceAnchor, GeometryBackend, Profile, ProfileElem, SketchPlane,
 };
 

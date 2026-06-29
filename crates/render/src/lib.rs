@@ -1,4 +1,4 @@
-//! # rmf-render
+//! # cdt-render
 //!
 //! The wgpu viewport: render graph, mesh buffers, camera, ray-cast picking,
 //! gizmos, grid, and measurement overlays. Milestone B brings up a live window
@@ -9,7 +9,7 @@ pub mod camera;
 mod view;
 mod viewer;
 
-// Re-export egui so `rmf-ui` and the app share exactly this version.
+// Re-export egui so `cdt-ui` and the app share exactly this version.
 pub use egui;
 
 pub use camera::OrbitCamera;
@@ -22,7 +22,7 @@ pub use viewer::{
 use bytemuck::{Pod, Zeroable};
 
 /// A single render vertex: world-space position + normal + source face id.
-/// Matches the flat arrays produced by `rmf_kernel::Mesh`. The `face_id` drives
+/// Matches the flat arrays produced by `cdt_kernel::Mesh`. The `face_id` drives
 /// GPU picking and face highlighting.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]

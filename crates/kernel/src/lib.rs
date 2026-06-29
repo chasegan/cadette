@@ -1,6 +1,6 @@
-//! # rmf-kernel
+//! # cdt-kernel
 //!
-//! The OpenCASCADE (OCCT) boundary for Riemanifold and the **only** crate that
+//! The OpenCASCADE (OCCT) boundary for Cadette and the **only** crate that
 //! crosses into C++. Downstream code never sees raw FFI: it works with the safe
 //! [`Solid`] type and plain Rust [`Mesh`] data.
 //!

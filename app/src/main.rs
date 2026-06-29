@@ -1,4 +1,4 @@
-//! Riemanifold — Phase 1 interactive shell.
+//! Cadette — Phase 1 interactive shell.
 //!
 //! A live modeler window: the **history panel** (egui) on the left shows the
 //! parametric feature tree with selection, suppression, reordering, a rollback
@@ -11,18 +11,18 @@
 
 use std::collections::HashMap;
 
-use rmf_core::{
+use cdt_core::{
     regenerate, BooleanOp, Constraint, Document, EdgeAnchor, FaceAnchor, FeatureId, FeatureKind,
     LineId, PointId, Profile, RegenCache, RegenError, Sketch2d, SketchPlane, DVec3,
 };
-use rmf_interaction::Selection;
-use rmf_kernel::{KernelBackend, Solid};
-use rmf_render::egui;
-use rmf_render::{
+use cdt_interaction::Selection;
+use cdt_kernel::{KernelBackend, Solid};
+use cdt_render::egui;
+use cdt_render::{
     Axis3, Controller, Gizmo, GizmoHandle, Highlights, MeshData, Pick, ResizeBox, TransformDelta,
     ViewContext,
 };
-use rmf_ui::{history_panel, HistoryState};
+use cdt_ui::{history_panel, HistoryState};
 
 const DEFLECTION_MM: f64 = 0.1;
 /// Finer mesh tolerance for STL export than for the on-screen preview.
@@ -67,7 +67,7 @@ fn constraint_rectangle(width: f64, height: f64) -> Sketch2d {
 fn solve_sketches(doc: &mut Document) {
     for feature in doc.history.features_mut() {
         if let FeatureKind::ConstraintSketch { sketch, .. } = &mut feature.kind {
-            rmf_solver::solve_sketch(sketch);
+            cdt_solver::solve_sketch(sketch);
         }
     }
 }
@@ -558,7 +558,7 @@ impl Modeler {
         let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
         let entry = archive
             .by_name("document.json")
-            .map_err(|e| format!("not a Riemanifold project: {e}"))?;
+            .map_err(|e| format!("not a Cadette project: {e}"))?;
         let value: serde_json::Value =
             serde_json::from_reader(entry).map_err(|e| e.to_string())?;
         let version = value.get("format_version").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -586,7 +586,7 @@ impl Modeler {
     /// Prompt for a path and save the project.
     fn save_project(&mut self) {
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("Riemanifold project", &["cdt"])
+            .add_filter("Cadette project", &["cdt"])
             .set_file_name(format!("{}.cdt", self.doc.name))
             .save_file()
         else {
@@ -603,7 +603,7 @@ impl Modeler {
     /// (so the host re-meshes).
     fn open_project(&mut self) -> bool {
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("Riemanifold project", &["cdt"])
+            .add_filter("Cadette project", &["cdt"])
             .pick_file()
         else {
             return false; // cancelled
@@ -1062,7 +1062,7 @@ impl Modeler {
     /// Re-solve the session sketch and record its remaining DOF.
     fn resolve_session(&mut self) {
         if let Some(session) = self.sketch_session.as_mut() {
-            let solution = rmf_solver::solve_sketch(&mut session.sketch);
+            let solution = cdt_solver::solve_sketch(&mut session.sketch);
             session.dof = solution.degrees_of_freedom;
         }
     }
@@ -2213,7 +2213,7 @@ impl Controller for Modeler {
                     let base = mesh.vertices.len() as u32;
                     let face_ids: Vec<u32> =
                         part.face_ids.iter().map(|f| f + face_offset).collect();
-                    mesh.vertices.extend(rmf_render::interleave(
+                    mesh.vertices.extend(cdt_render::interleave(
                         &part.positions,
                         &part.normals,
                         &face_ids,
@@ -2225,7 +2225,7 @@ impl Controller for Modeler {
                     let edge_base = mesh.edge_vertices.len() as u32;
                     let edge_ids: Vec<u32> =
                         part.edge_ids.iter().map(|e| e + edge_offset).collect();
-                    mesh.edge_vertices.extend(rmf_render::interleave_edges(
+                    mesh.edge_vertices.extend(cdt_render::interleave_edges(
                         &part.edge_positions,
                         &edge_ids,
                     ));
@@ -2236,7 +2236,7 @@ impl Controller for Modeler {
                 Err(e) => {
                     self.body_centers.push([0.0; 3]); // keep aligned with visible
                     self.body_bounds.push(([0.0; 3], [0.0; 3]));
-                    self.ui.errors.push((rmf_core::FeatureId(0), e.to_string()));
+                    self.ui.errors.push((cdt_core::FeatureId(0), e.to_string()));
                 }
             }
         }
@@ -2395,8 +2395,8 @@ impl Controller for Modeler {
         }
     }
 
-    fn grid(&self) -> rmf_render::GridSpec {
-        rmf_render::GridSpec {
+    fn grid(&self) -> cdt_render::GridSpec {
+        cdt_render::GridSpec {
             spacing: self.ui.grid_spacing as f32,
             half_extent: (self.ui.grid_extent / 2.0) as f32,
             visible: self.ui.show_grid,
@@ -2783,7 +2783,7 @@ impl Controller for Modeler {
     }
 }
 
-fn error_message(err: &RegenError<rmf_kernel::KernelError>, doc: &Document) -> String {
+fn error_message(err: &RegenError<cdt_kernel::KernelError>, doc: &Document) -> String {
     match err {
         RegenError::Backend { source, .. } => source.to_string(),
         RegenError::MissingInput { input, .. } => match doc.history.get(*input) {
@@ -2818,7 +2818,7 @@ fn main() -> anyhow::Result<()> {
         modeler.finish_sketch(); // commits + selects the sketch
         let path = "out/sketch-demo.png";
         std::fs::create_dir_all("out")?;
-        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        cdt_render::screenshot(modeler, 1280, 820, path)?;
         println!("wrote {path}");
         return Ok(());
     }
@@ -2854,7 +2854,7 @@ fn main() -> anyhow::Result<()> {
         modeler.resolve_session();
         let path = "out/constrain-demo.png";
         std::fs::create_dir_all("out")?;
-        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        cdt_render::screenshot(modeler, 1280, 820, path)?;
         println!("wrote {path}");
         return Ok(());
     }
@@ -2956,7 +2956,7 @@ fn main() -> anyhow::Result<()> {
         modeler.selection.hover(Some(Pick::Edge(0))); // hovered edge
         let path = "out/highlight-demo.png";
         std::fs::create_dir_all("out")?;
-        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        cdt_render::screenshot(modeler, 1280, 820, path)?;
         println!("wrote {path}");
         return Ok(());
     }
@@ -2989,7 +2989,7 @@ fn main() -> anyhow::Result<()> {
         modeler.edit_sketch(sk);
         let path = "out/pen-demo.png";
         std::fs::create_dir_all("out")?;
-        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        cdt_render::screenshot(modeler, 1280, 820, path)?;
         println!("wrote {path}");
         return Ok(());
     }
@@ -3013,7 +3013,7 @@ fn main() -> anyhow::Result<()> {
         modeler.edit_sketch(sk);
         let path = "out/bezier-demo.png";
         std::fs::create_dir_all("out")?;
-        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        cdt_render::screenshot(modeler, 1280, 820, path)?;
         println!("wrote {path}");
         return Ok(());
     }
@@ -3029,7 +3029,7 @@ fn main() -> anyhow::Result<()> {
         modeler.on_pick(Some(Pick::Face(4)), None, true);
         let path = "out/multiface-demo.png";
         std::fs::create_dir_all("out")?;
-        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        cdt_render::screenshot(modeler, 1280, 820, path)?;
         println!("wrote {path}");
         return Ok(());
     }
@@ -3058,7 +3058,7 @@ fn main() -> anyhow::Result<()> {
         let _ = modeler.mesh();
         let path = "out/group-demo.png";
         std::fs::create_dir_all("out")?;
-        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        cdt_render::screenshot(modeler, 1280, 820, path)?;
         println!("wrote {path}");
         return Ok(());
     }
@@ -3090,7 +3090,7 @@ fn main() -> anyhow::Result<()> {
         let _ = modeler.mesh();
         let path = "out/mirror-demo.png";
         std::fs::create_dir_all("out")?;
-        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        cdt_render::screenshot(modeler, 1280, 820, path)?;
         println!("wrote {path}");
         return Ok(());
     }
@@ -3128,7 +3128,7 @@ fn main() -> anyhow::Result<()> {
         let _ = modeler.mesh();
         let path = "out/revolve-demo.png";
         std::fs::create_dir_all("out")?;
-        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        cdt_render::screenshot(modeler, 1280, 820, path)?;
         println!("wrote {path}");
         return Ok(());
     }
@@ -3140,7 +3140,7 @@ fn main() -> anyhow::Result<()> {
         let _ = modeler.mesh();
         let path = "out/planes-demo.png";
         std::fs::create_dir_all("out")?;
-        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        cdt_render::screenshot(modeler, 1280, 820, path)?;
         println!("wrote {path}");
         return Ok(());
     }
@@ -3152,7 +3152,7 @@ fn main() -> anyhow::Result<()> {
         modeler.on_pick(Some(Pick::Face(0)), None, false);
         let path = "out/resize-demo.png";
         std::fs::create_dir_all("out")?;
-        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        cdt_render::screenshot(modeler, 1280, 820, path)?;
         println!("wrote {path}");
         return Ok(());
     }
@@ -3174,7 +3174,7 @@ fn main() -> anyhow::Result<()> {
         }
         let path = "out/gizmo-readout-demo.png";
         std::fs::create_dir_all("out")?;
-        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        cdt_render::screenshot(modeler, 1280, 820, path)?;
         println!("wrote {path}");
         return Ok(());
     }
@@ -3184,15 +3184,15 @@ fn main() -> anyhow::Result<()> {
         modeler.ui.selected = modeler.doc.history.features().first().map(|f| f.id);
         let path = "out/modeler.png";
         std::fs::create_dir_all("out")?;
-        rmf_render::screenshot(modeler, 1280, 820, path)?;
+        cdt_render::screenshot(modeler, 1280, 820, path)?;
         println!("wrote {path}");
         return Ok(());
     }
 
-    println!("Riemanifold — interactive modeler");
+    println!("Cadette — interactive modeler");
     println!("  history panel: edit/suppress/reorder features, drag the rollback bar");
     println!("  viewport: left-drag orbit, right/middle-drag pan, scroll zoom\n");
-    rmf_render::run(modeler)?;
+    cdt_render::run(modeler)?;
     Ok(())
 }
 
@@ -3346,7 +3346,7 @@ mod tests {
 
     #[test]
     fn push_pull_feature_extends_a_box() {
-        use rmf_core::FaceAnchor;
+        use cdt_core::FaceAnchor;
         let mut doc = Document::new("pp");
         let b = doc.add(
             "Box",
@@ -3375,7 +3375,7 @@ mod tests {
 
     #[test]
     fn repeated_pushes_of_one_face_coalesce_instead_of_splitting() {
-        use rmf_core::FaceAnchor;
+        use cdt_core::FaceAnchor;
         use std::collections::BTreeSet;
         // The real starting shape: a filleted block with a bored hole. Stacking a
         // fresh PushPull per drag leaves coplanar bands the kernel can't remerge
@@ -3420,7 +3420,7 @@ mod tests {
         // A non-uniform Scale turns planar faces into b-splines; without the
         // planarity fallback in the kernel, push/pull and sketch-on-face stop
         // recognizing them. Here the +Z face of a scaled box must still push.
-        use rmf_core::FaceAnchor;
+        use cdt_core::FaceAnchor;
         let mut doc = Document::new("ppscale");
         let b = doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
         let s = doc.add(
@@ -3609,7 +3609,7 @@ mod tests {
 
     #[test]
     fn revolve_a_sketch_profile_makes_a_solid_of_revolution() {
-        use rmf_core::EdgeAnchor;
+        use cdt_core::EdgeAnchor;
         use std::f64::consts::TAU;
         // A 10×20 rectangle on the XZ plane with its left edge (u=0) on the Z
         // axis — plane coords (u,v) map to world (u, 0, v).
@@ -3719,7 +3719,7 @@ mod tests {
 
     #[test]
     fn flip_mirrors_a_body_in_place_keeping_its_bounds() {
-        use rmf_render::Axis3;
+        use cdt_render::Axis3;
         let mut m = Modeler::new();
         m.doc = Document::new("one");
         // A stepped (asymmetric) block: a small box on top of one end of a big one.
@@ -3852,7 +3852,7 @@ mod tests {
 
     #[test]
     fn gizmo_shows_on_face_selection_and_drag_moves_the_body() {
-        use rmf_render::{Axis3, GizmoHandle, TransformDelta};
+        use cdt_render::{Axis3, GizmoHandle, TransformDelta};
         let mut m = Modeler::new();
         m.doc = Document::new("one");
         let b = m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
@@ -3886,7 +3886,7 @@ mod tests {
 
     #[test]
     fn resize_grips_show_on_a_box_and_a_drag_grows_one_dimension() {
-        use rmf_render::Axis3;
+        use cdt_render::Axis3;
         let mut m = Modeler::new();
         m.doc = Document::new("one");
         m.doc.add("Box", FeatureKind::Box { size: DVec3::new(10.0, 10.0, 10.0) });
@@ -3919,7 +3919,7 @@ mod tests {
 
     #[test]
     fn cancelled_resize_restores_the_original_size_and_undo() {
-        use rmf_render::Axis3;
+        use cdt_render::Axis3;
         let mut m = Modeler::new();
         m.doc = Document::new("one");
         let id = m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
@@ -3941,7 +3941,7 @@ mod tests {
 
     #[test]
     fn resizing_a_cylinder_edits_radius_and_height_staying_circular() {
-        use rmf_render::Axis3;
+        use cdt_render::Axis3;
         let mut m = Modeler::new();
         m.doc = Document::new("cyl");
         let c = m.doc.add("Cyl", FeatureKind::Cylinder { radius: 10.0, height: 20.0 });
@@ -3983,7 +3983,7 @@ mod tests {
 
     #[test]
     fn resizing_a_box_from_the_negative_face_pins_the_opposite_side() {
-        use rmf_render::Axis3;
+        use cdt_render::Axis3;
         let mut m = Modeler::new();
         m.doc = Document::new("one");
         m.doc.add("Box", FeatureKind::Box { size: DVec3::new(10.0, 10.0, 10.0) });
@@ -4009,7 +4009,7 @@ mod tests {
 
     #[test]
     fn resizing_a_cylinder_from_a_radial_negative_face_stays_parametric() {
-        use rmf_render::Axis3;
+        use cdt_render::Axis3;
         let mut m = Modeler::new();
         m.doc = Document::new("cyl");
         let c = m.doc.add("Cyl", FeatureKind::Cylinder { radius: 10.0, height: 20.0 });
@@ -4032,7 +4032,7 @@ mod tests {
 
     #[test]
     fn resizing_a_sphere_edits_its_one_radius() {
-        use rmf_render::Axis3;
+        use cdt_render::Axis3;
         let mut m = Modeler::new();
         m.doc = Document::new("sph");
         let s = m.doc.add("Sph", FeatureKind::Sphere { radius: 10.0 });
@@ -4062,7 +4062,7 @@ mod tests {
 
     #[test]
     fn a_non_primitive_body_resizes_via_a_scale_feature() {
-        use rmf_render::Axis3;
+        use cdt_render::Axis3;
         let mut m = Modeler::new();
         m.doc = Document::new("one");
         let b = m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
@@ -4102,7 +4102,7 @@ mod tests {
     fn a_second_resize_edits_the_one_scale_instead_of_stacking() {
         // Regression: two GTransforms in a row segfault OCCT on complex bodies,
         // so a second resize must reuse the existing Scale, not add another.
-        use rmf_render::Axis3;
+        use cdt_render::Axis3;
         let mut m = Modeler::new(); // the default filleted + bored part
         let _ = m.mesh();
         m.on_pick(Some(Pick::Face(0)), None, false);
@@ -4141,7 +4141,7 @@ mod tests {
 
     #[test]
     fn a_cancelled_scale_resize_is_discarded() {
-        use rmf_render::Axis3;
+        use cdt_render::Axis3;
         let mut m = Modeler::new();
         m.doc = Document::new("one");
         let b = m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
@@ -4161,7 +4161,7 @@ mod tests {
 
     #[test]
     fn gizmo_ring_drag_rotates_the_body_about_a_pinned_pivot() {
-        use rmf_render::{Axis3, GizmoHandle, TransformDelta};
+        use cdt_render::{Axis3, GizmoHandle, TransformDelta};
         let mut m = Modeler::new();
         m.doc = Document::new("one");
         // A 20x10x10 bar so a 90° turn about Z visibly swaps its footprint.
@@ -4201,7 +4201,7 @@ mod tests {
 
     #[test]
     fn gizmo_drag_with_no_movement_is_discarded() {
-        use rmf_render::{Axis3, GizmoHandle};
+        use cdt_render::{Axis3, GizmoHandle};
         let mut m = Modeler::new();
         m.doc = Document::new("one");
         m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
@@ -4351,7 +4351,7 @@ mod tests {
 
     #[test]
     fn subtract_removes_the_selected_body_from_the_other() {
-        use rmf_core::BooleanOp;
+        use cdt_core::BooleanOp;
         // Box A spans x[0,10]; box B spans x[5,15] (overlapping in x[5,10]).
         let mut m = Modeler::new();
         m.doc = Document::new("two");
@@ -4377,7 +4377,7 @@ mod tests {
 
     #[test]
     fn subtract_carves_the_selection_out_of_every_other_body() {
-        use rmf_core::BooleanOp;
+        use cdt_core::BooleanOp;
         // A carver at the origin overlapping two separate boxes.
         let mut m = Modeler::new();
         m.doc = Document::new("three");
@@ -4406,7 +4406,7 @@ mod tests {
 
     #[test]
     fn union_folds_the_selection_with_the_others_into_one() {
-        use rmf_core::BooleanOp;
+        use cdt_core::BooleanOp;
         let mut m = Modeler::new();
         m.doc = Document::new("u");
         let a = m.doc.add("A", FeatureKind::Box { size: DVec3::splat(10.0) });
@@ -4424,8 +4424,8 @@ mod tests {
     }
 
     #[test]
-    fn project_round_trips_through_an_rmf_file() {
-        let path = std::env::temp_dir().join("rmf-roundtrip-test.cdt");
+    fn project_round_trips_through_an_cdt_file() {
+        let path = std::env::temp_dir().join("cdt-roundtrip-test.cdt");
         let path = path.to_str().unwrap();
         let mut m = Modeler::new();
         let (features, name) = (m.doc.history.len(), m.doc.name.clone());
@@ -4491,7 +4491,7 @@ mod tests {
 
     #[test]
     fn sketch_extrude_makes_a_prism_of_the_right_size() {
-        use rmf_core::{Profile, SketchPlane};
+        use cdt_core::{Profile, SketchPlane};
         let mut doc = Document::new("prism");
         let sketch = doc.add(
             "Sketch",
@@ -4569,7 +4569,7 @@ mod tests {
 #[cfg(test)]
 mod resize_cache {
     use super::*;
-    use rmf_render::Axis3;
+    use cdt_render::Axis3;
 
     /// Regression: resizing an extruded body (which goes through a Scale on a
     /// CACHED extrude) must not "float" the top face off the walls. The cause

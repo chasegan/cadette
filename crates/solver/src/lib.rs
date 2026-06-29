@@ -1,8 +1,8 @@
-//! # rmf-solver
+//! # cdt-solver
 //!
 //! The 2D sketch constraint solver. A pure-Rust Levenberg-Marquardt
 //! least-squares core ([`lm`]) drives constraint residuals to zero;
-//! [`solve_sketch`] compiles a [`rmf_core::Sketch2d`] into that system and
+//! [`solve_sketch`] compiles a [`cdt_core::Sketch2d`] into that system and
 //! writes the solved geometry back.
 //!
 //! Pure Rust, no FFI — the whole solver is unit-testable without the kernel.

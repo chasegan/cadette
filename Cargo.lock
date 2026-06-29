@@ -509,6 +509,83 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdt-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cdt-core",
+ "cdt-interaction",
+ "cdt-kernel",
+ "cdt-render",
+ "cdt-solver",
+ "cdt-ui",
+ "env_logger",
+ "rfd",
+ "serde_json",
+ "zip",
+]
+
+[[package]]
+name = "cdt-core"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "cdt-interaction"
+version = "0.1.0"
+dependencies = [
+ "cdt-core",
+]
+
+[[package]]
+name = "cdt-kernel"
+version = "0.1.0"
+dependencies = [
+ "cdt-core",
+ "cxx",
+ "cxx-build",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "cdt-render"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "cdt-core",
+ "egui",
+ "egui-wgpu",
+ "egui-winit",
+ "env_logger",
+ "glam",
+ "image",
+ "log",
+ "pollster",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
+name = "cdt-solver"
+version = "0.1.0"
+dependencies = [
+ "cdt-core",
+]
+
+[[package]]
+name = "cdt-ui"
+version = "0.1.0"
+dependencies = [
+ "cdt-core",
+ "egui",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2565,83 +2642,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "rmf-app"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "env_logger",
- "rfd",
- "rmf-core",
- "rmf-interaction",
- "rmf-kernel",
- "rmf-render",
- "rmf-solver",
- "rmf-ui",
- "serde_json",
- "zip",
-]
-
-[[package]]
-name = "rmf-core"
-version = "0.1.0"
-dependencies = [
- "glam",
- "serde",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "rmf-interaction"
-version = "0.1.0"
-dependencies = [
- "rmf-core",
-]
-
-[[package]]
-name = "rmf-kernel"
-version = "0.1.0"
-dependencies = [
- "cxx",
- "cxx-build",
- "rmf-core",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "rmf-render"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "egui",
- "egui-wgpu",
- "egui-winit",
- "env_logger",
- "glam",
- "image",
- "log",
- "pollster",
- "rmf-core",
- "wgpu",
- "winit",
-]
-
-[[package]]
-name = "rmf-solver"
-version = "0.1.0"
-dependencies = [
- "rmf-core",
-]
-
-[[package]]
-name = "rmf-ui"
-version = "0.1.0"
-dependencies = [
- "egui",
- "rmf-core",
 ]
 
 [[package]]

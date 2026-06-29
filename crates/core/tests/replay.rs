@@ -5,7 +5,7 @@
 //! the data-first design: the entire parametric model is verifiable in plain
 //! Rust, independent of OCCT.
 
-use rmf_core::{
+use cdt_core::{
     regenerate, BooleanOp, Document, FeatureId, FeatureKind, GeometryBackend, Profile, RegenError,
     SketchPlane, DVec3,
 };
@@ -35,12 +35,12 @@ impl GeometryBackend for Recording {
     }
     fn sketch_profile(
         &mut self,
-        plane: rmf_core::SketchPlane,
-        elements: &[rmf_core::ProfileElem],
+        plane: cdt_core::SketchPlane,
+        elements: &[cdt_core::ProfileElem],
     ) -> Result<String, String> {
         let curves = elements
             .iter()
-            .filter(|e| matches!(e, rmf_core::ProfileElem::Bezier { .. }))
+            .filter(|e| matches!(e, cdt_core::ProfileElem::Bezier { .. }))
             .count();
         Ok(format!("loop({},{}seg,{}bez)", plane.label(), elements.len(), curves))
     }
@@ -64,7 +64,7 @@ impl GeometryBackend for Recording {
     fn fillet_edges(
         &mut self,
         body: &String,
-        anchors: &[rmf_core::EdgeAnchor],
+        anchors: &[cdt_core::EdgeAnchor],
         radius: f64,
     ) -> Result<String, String> {
         if radius <= 0.0 {
@@ -75,7 +75,7 @@ impl GeometryBackend for Recording {
     fn push_pull(
         &mut self,
         body: &String,
-        _anchor: rmf_core::FaceAnchor,
+        _anchor: cdt_core::FaceAnchor,
         distance: f64,
     ) -> Result<String, String> {
         Ok(format!("pushpull({body},{distance:.0})"))

@@ -1,6 +1,6 @@
-#include "rmf-kernel/src/ffi/bridge.hpp"
-// cxx-generated header: defines rmf::Mesh and the extern shims.
-#include "rmf-kernel/src/ffi.rs.h"
+#include "cdt-kernel/src/ffi/bridge.hpp"
+// cxx-generated header: defines cdt::Mesh and the extern shims.
+#include "cdt-kernel/src/ffi.rs.h"
 
 #include <cmath>
 #include <stdexcept>
@@ -62,7 +62,7 @@
 #include <gp_XYZ.hxx>
 #include <gp_Vec.hxx>
 
-namespace rmf {
+namespace cdt {
 namespace {
 
 // OCCT signals errors by throwing Standard_Failure, which does not reliably
@@ -749,4 +749,4 @@ void write_stl(const Shape& s, rust::Str path, double deflection) {
   });
 }
 
-}  // namespace rmf
+}  // namespace cdt

@@ -1,5 +1,5 @@
 [package]
-name = "rmf-render"
+name = "cdt-render"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,7 +7,7 @@ rust-version.workspace = true
 description = "wgpu viewport: scene buffers, camera, picking, gizmos, overlays."
 
 [dependencies]
-rmf-core = { workspace = true }
+cdt-core = { workspace = true }
 glam = { workspace = true }
 bytemuck = { workspace = true }
 anyhow = { workspace = true }

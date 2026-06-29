@@ -100,7 +100,7 @@ impl Profile {
 // Constraint-based 2D sketch
 //
 // The richer sketcher: points, lines, and circles related by geometric and
-// dimensional constraints, solved numerically (see the `rmf-solver` crate).
+// dimensional constraints, solved numerically (see the `cdt-solver` crate).
 // `Profile` above is the simple shortcut still used by the current extrude
 // path; this model is what grows into real CAD sketching.
 // ---------------------------------------------------------------------------

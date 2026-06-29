@@ -2,7 +2,7 @@
 //! exactly the edited feature plus everything downstream — never the unchanged
 //! upstream, and never stale geometry.
 
-use rmf_core::{
+use cdt_core::{
     DVec3, Document, FeatureKind, GeometryBackend, Profile, RegenCache, SketchPlane,
 };
 
@@ -36,7 +36,7 @@ impl GeometryBackend for Counting {
     fn sketch_profile(
         &mut self,
         _p: SketchPlane,
-        elements: &[rmf_core::ProfileElem],
+        elements: &[cdt_core::ProfileElem],
     ) -> Result<String, String> {
         self.ops += 1;
         Ok(format!("loop({})", elements.len()))
@@ -51,7 +51,7 @@ impl GeometryBackend for Counting {
     }
     fn boolean(
         &mut self,
-        _op: rmf_core::BooleanOp,
+        _op: cdt_core::BooleanOp,
         a: &String,
         b: &String,
     ) -> Result<String, String> {
@@ -65,7 +65,7 @@ impl GeometryBackend for Counting {
     fn fillet_edges(
         &mut self,
         b: &String,
-        e: &[rmf_core::EdgeAnchor],
+        e: &[cdt_core::EdgeAnchor],
         r: f64,
     ) -> Result<String, String> {
         self.ops += 1;
@@ -74,7 +74,7 @@ impl GeometryBackend for Counting {
     fn push_pull(
         &mut self,
         b: &String,
-        _a: rmf_core::FaceAnchor,
+        _a: cdt_core::FaceAnchor,
         d: f64,
     ) -> Result<String, String> {
         self.ops += 1;
@@ -109,7 +109,7 @@ impl GeometryBackend for Counting {
 }
 
 /// A 3-step chain: box -> move -> fillet. Returns (doc, [box, move, fillet]).
-fn chain() -> (Document, [rmf_core::FeatureId; 3]) {
+fn chain() -> (Document, [cdt_core::FeatureId; 3]) {
     let mut doc = Document::new("chain");
     let b = doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
     let m = doc.add("Move", FeatureKind::Translate { source: b, offset: DVec3::X * 5.0 });
@@ -183,7 +183,7 @@ fn suppress_then_unsuppress_rebuilds_only_when_needed() {
     let c = doc.add("C", FeatureKind::Cylinder { radius: 2.0, height: 20.0 });
     let u = doc.add(
         "U",
-        FeatureKind::Boolean { op: rmf_core::BooleanOp::Union, target: a, tool: c },
+        FeatureKind::Boolean { op: cdt_core::BooleanOp::Union, target: a, tool: c },
     );
     let mut cache = RegenCache::new();
     let mut backend = Counting::default();

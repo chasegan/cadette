@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use rmf_kernel::Solid;
+use cdt_kernel::Solid;
 
 #[test]
 fn box_tessellation_tags_six_faces() {

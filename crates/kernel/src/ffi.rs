@@ -11,7 +11,7 @@
 //!   side, which cxx surfaces to Rust as `Err` because every fallible function
 //!   returns `Result`.
 
-#[cxx::bridge(namespace = "rmf")]
+#[cxx::bridge(namespace = "cdt")]
 pub mod ffi {
     /// A tessellated, render-ready triangle mesh produced from a B-rep `Shape`.
     ///
@@ -50,7 +50,7 @@ pub mod ffi {
     }
 
     unsafe extern "C++" {
-        include!("rmf-kernel/src/ffi/bridge.hpp");
+        include!("cdt-kernel/src/ffi/bridge.hpp");
 
         /// Opaque handle to an OCCT `TopoDS_Shape`.
         type Shape;

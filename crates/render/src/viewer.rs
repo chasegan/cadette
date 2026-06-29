@@ -294,7 +294,7 @@ const PICK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 /// Second pick target: the front-surface depth (NDC z), for edge occlusion.
 const PICK_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 
-pub use rmf_core::Pick;
+pub use cdt_core::Pick;
 
 /// How close (pixels) the cursor must be to an edge to pick it over a face.
 const EDGE_PICK_PX: f32 = 6.0;
@@ -433,13 +433,13 @@ impl Scene {
         mesh: &MeshData,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rmf-shader"),
+            label: Some("cdt-shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
         let bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("rmf-globals-layout"),
+                label: Some("cdt-globals-layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
@@ -453,14 +453,14 @@ impl Scene {
             });
 
         let globals_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rmf-globals"),
+            label: Some("cdt-globals"),
             size: std::mem::size_of::<Globals>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("rmf-globals-bind"),
+            label: Some("cdt-globals-bind"),
             layout: &bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
@@ -469,7 +469,7 @@ impl Scene {
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("rmf-pipeline-layout"),
+            label: Some("cdt-pipeline-layout"),
             bind_group_layouts: &[Some(&bind_group_layout)],
             immediate_size: 0,
         });
@@ -490,7 +490,7 @@ impl Scene {
         };
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("rmf-pipeline"),
+            label: Some("cdt-pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -521,11 +521,11 @@ impl Scene {
 
         // Picking pipeline: same geometry, writes face ids to an R32Uint target.
         let pick_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rmf-pick-shader"),
+            label: Some("cdt-pick-shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("pick.wgsl").into()),
         });
         let pick_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("rmf-pick-pipeline"),
+            label: Some("cdt-pick-pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &pick_shader,
@@ -564,7 +564,7 @@ impl Scene {
         // Edge pipeline: line list, dark, biased slightly toward the camera so
         // the lines sit crisply on the shaded surface without z-fighting.
         let edge_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rmf-edge-shader"),
+            label: Some("cdt-edge-shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("edges.wgsl").into()),
         });
         const EDGE_ATTRS: [wgpu::VertexAttribute; 2] =
@@ -575,7 +575,7 @@ impl Scene {
             attributes: &EDGE_ATTRS,
         };
         let edge_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("rmf-edge-pipeline"),
+            label: Some("cdt-edge-pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &edge_shader,
@@ -614,7 +614,7 @@ impl Scene {
         // Gizmo pipeline: colored line list, always drawn on top (depth test
         // disabled) so handles stay visible and grabbable through the model.
         let gizmo_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rmf-gizmo-shader"),
+            label: Some("cdt-gizmo-shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("gizmo.wgsl").into()),
         });
         const GIZMO_ATTRS: [wgpu::VertexAttribute; 2] =
@@ -625,7 +625,7 @@ impl Scene {
             attributes: &GIZMO_ATTRS,
         };
         let gizmo_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("rmf-gizmo-pipeline"),
+            label: Some("cdt-gizmo-pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &gizmo_shader,
@@ -666,7 +666,7 @@ impl Scene {
         // Grid pipeline: same colored-vertex shader, but a depth-tested line
         // list so the model occludes the ground-plane grid behind it.
         let grid_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("rmf-grid-pipeline"),
+            label: Some("cdt-grid-pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &gizmo_shader,
@@ -788,7 +788,7 @@ impl Scene {
             .write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("rmf-3d-pass"),
+            label: Some("cdt-3d-pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: color_view,
                 resolve_target: None,
@@ -872,18 +872,18 @@ impl Scene {
                 view_formats: &[],
             })
         };
-        let id_texture = make_target(PICK_FORMAT, "rmf-pick-id");
-        let depth_texture = make_target(PICK_DEPTH_FORMAT, "rmf-pick-depth");
+        let id_texture = make_target(PICK_FORMAT, "cdt-pick-id");
+        let depth_texture = make_target(PICK_DEPTH_FORMAT, "cdt-pick-depth");
         let id_view = id_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let depth_color_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let depth = create_depth(&self.device, width, height);
 
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("rmf-pick") });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("cdt-pick") });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("rmf-pick-pass"),
+                label: Some("cdt-pick-pass"),
                 color_attachments: &[
                     Some(wgpu::RenderPassColorAttachment {
                         view: &id_view,
@@ -934,8 +934,8 @@ impl Scene {
                 mapped_at_creation: false,
             })
         };
-        let id_rb = make_readback("rmf-pick-id-readback");
-        let depth_rb = make_readback("rmf-pick-depth-readback");
+        let id_rb = make_readback("cdt-pick-id-readback");
+        let depth_rb = make_readback("cdt-pick-depth-readback");
         let copy_pixel = |encoder: &mut wgpu::CommandEncoder, tex: &wgpu::Texture, buf: &wgpu::Buffer| {
             encoder.copy_texture_to_buffer(
                 wgpu::TexelCopyTextureInfo {
@@ -1066,7 +1066,7 @@ impl Scene {
 
         let make = |format: wgpu::TextureFormat, usage: wgpu::TextureUsages| {
             self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("rmf-depth-pick"),
+                label: Some("cdt-depth-pick"),
                 size: wgpu::Extent3d {
                     width,
                     height,
@@ -1097,7 +1097,7 @@ impl Scene {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("rmf-depth-pick-pass"),
+                label: Some("cdt-depth-pick-pass"),
                 color_attachments: &[
                     Some(wgpu::RenderPassColorAttachment {
                         view: &color_view,
@@ -1142,7 +1142,7 @@ impl Scene {
         let padded = (width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
             * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rmf-depth-readback"),
+            label: Some("cdt-depth-readback"),
             size: (padded * height) as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
@@ -1797,7 +1797,7 @@ const GIZMO_MAX_VERTS: u64 = 8192;
 /// rewrites it each frame via `write_buffer` (no per-frame allocation).
 fn make_gizmo_buffer(device: &wgpu::Device) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("rmf-gizmo"),
+        label: Some("cdt-gizmo"),
         size: GIZMO_MAX_VERTS * std::mem::size_of::<GizmoVertex>() as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
@@ -1815,7 +1815,7 @@ const GRID_MAX_VERTS: u64 = 12288;
 
 fn make_grid_buffer(device: &wgpu::Device) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("rmf-grid"),
+        label: Some("cdt-grid"),
         size: GRID_MAX_VERTS * std::mem::size_of::<GizmoVertex>() as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
@@ -1887,24 +1887,24 @@ fn make_mesh_buffers(
     // single dummy vertex/index and draw nothing (index_count = 0).
     if mesh.vertices.is_empty() || mesh.indices.is_empty() {
         let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("rmf-vertices-empty"),
+            label: Some("cdt-vertices-empty"),
             contents: bytemuck::bytes_of(&Vertex::default()),
             usage: wgpu::BufferUsages::VERTEX,
         });
         let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("rmf-indices-empty"),
+            label: Some("cdt-indices-empty"),
             contents: bytemuck::cast_slice(&[0u32]),
             usage: wgpu::BufferUsages::INDEX,
         });
         return (vbuf, ibuf, 0);
     }
     let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("rmf-vertices"),
+        label: Some("cdt-vertices"),
         contents: bytemuck::cast_slice(&mesh.vertices),
         usage: wgpu::BufferUsages::VERTEX,
     });
     let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("rmf-indices"),
+        label: Some("cdt-indices"),
         contents: bytemuck::cast_slice(&mesh.indices),
         usage: wgpu::BufferUsages::INDEX,
     });
@@ -1915,24 +1915,24 @@ fn make_edge_buffers(device: &wgpu::Device, mesh: &MeshData) -> (wgpu::Buffer, w
     use wgpu::util::DeviceExt;
     if mesh.edge_vertices.is_empty() || mesh.edge_indices.is_empty() {
         let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("rmf-edge-vertices-empty"),
+            label: Some("cdt-edge-vertices-empty"),
             contents: bytemuck::bytes_of(&EdgeVertex::default()),
             usage: wgpu::BufferUsages::VERTEX,
         });
         let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("rmf-edge-indices-empty"),
+            label: Some("cdt-edge-indices-empty"),
             contents: bytemuck::cast_slice(&[0u32]),
             usage: wgpu::BufferUsages::INDEX,
         });
         return (vbuf, ibuf, 0);
     }
     let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("rmf-edge-vertices"),
+        label: Some("cdt-edge-vertices"),
         contents: bytemuck::cast_slice(&mesh.edge_vertices),
         usage: wgpu::BufferUsages::VERTEX,
     });
     let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("rmf-edge-indices"),
+        label: Some("cdt-edge-indices"),
         contents: bytemuck::cast_slice(&mesh.edge_indices),
         usage: wgpu::BufferUsages::INDEX,
     });
@@ -1941,7 +1941,7 @@ fn make_edge_buffers(device: &wgpu::Device, mesh: &MeshData) -> (wgpu::Buffer, w
 
 fn create_depth(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("rmf-depth"),
+        label: Some("cdt-depth"),
         size: wgpu::Extent3d {
             width: width.max(1),
             height: height.max(1),
@@ -1987,7 +1987,7 @@ async fn request_device(
         .expect("no suitable GPU adapter");
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
-            label: Some("rmf-device"),
+            label: Some("cdt-device"),
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::default(),
             experimental_features: wgpu::ExperimentalFeatures::default(),
@@ -2021,7 +2021,7 @@ fn encode_egui(
     screen: &ScreenDescriptor,
 ) {
     let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("rmf-egui-pass"),
+        label: Some("cdt-egui-pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: color_view,
             resolve_target: None,
@@ -2177,7 +2177,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
             return;
         }
         let attrs = winit::window::Window::default_attributes()
-            .with_title("Riemanifold")
+            .with_title("Cadette")
             .with_inner_size(PhysicalSize::new(1280, 820));
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
 
@@ -2874,7 +2874,7 @@ pub fn screenshot(
     };
 
     let color = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("rmf-offscreen-color"),
+        label: Some("cdt-offscreen-color"),
         size: wgpu::Extent3d {
             width,
             height,
@@ -2936,7 +2936,7 @@ fn save_texture_png(
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let padded = unpadded.div_ceil(align) * align;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("rmf-readback"),
+        label: Some("cdt-readback"),
         size: (padded * height) as u64,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,

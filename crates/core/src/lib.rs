@@ -1,4 +1,4 @@
-//! # rmf-core
+//! # cdt-core
 //!
 //! Pure domain logic with **no** dependency on the geometry kernel or GPU.
 //! Features are described as *data* ([`FeatureKind`]); the [`regenerate`] engine

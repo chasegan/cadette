@@ -1,5 +1,5 @@
 [package]
-name = "rmf-interaction"
+name = "cdt-interaction"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,4 +7,4 @@ rust-version.workspace = true
 description = "The UX brain: tool state machine, selection model, snapping/inference."
 
 [dependencies]
-rmf-core = { workspace = true }
+cdt-core = { workspace = true }

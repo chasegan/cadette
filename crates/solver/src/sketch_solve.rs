@@ -6,7 +6,7 @@
 //! (variables minus Jacobian rank) classifies the sketch as under-, well-, or
 //! over-constrained.
 
-use rmf_core::{CircleId, Constraint, LineId, PointId, Sketch2d};
+use cdt_core::{CircleId, Constraint, LineId, PointId, Sketch2d};
 
 use crate::lm::{solve, Residual, SolveOptions, SolveReport};
 

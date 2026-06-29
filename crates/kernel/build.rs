@@ -1,7 +1,7 @@
 //! Compiles the C++ cxx bridge and links it against a system OpenCASCADE.
 //!
 //! OCCT is located via (in order):
-//!   1. `RMF_OCCT_PREFIX` env var, if set,
+//!   1. `CDT_OCCT_PREFIX` env var, if set,
 //!   2. `<prefix>/include/opencascade` + `<prefix>/lib` under the Homebrew
 //!      default `/opt/homebrew/opt/opencascade` (Apple Silicon).
 //!
@@ -31,7 +31,7 @@ const OCCT_LIBS: &[&str] = &[
 ];
 
 fn main() {
-    let prefix = std::env::var("RMF_OCCT_PREFIX")
+    let prefix = std::env::var("CDT_OCCT_PREFIX")
         .unwrap_or_else(|_| "/opt/homebrew/opt/opencascade".to_string());
 
     let include = format!("{prefix}/include/opencascade");
@@ -40,7 +40,7 @@ fn main() {
     if !Path::new(&include).is_dir() {
         panic!(
             "OpenCASCADE headers not found at {include}.\n\
-             Install with `brew install opencascade`, or set RMF_OCCT_PREFIX to \
+             Install with `brew install opencascade`, or set CDT_OCCT_PREFIX to \
              your OCCT install prefix."
         );
     }
@@ -50,12 +50,12 @@ fn main() {
         .include(&include)
         .std("c++17")
         .warnings(false)
-        .compile("rmf_kernel_bridge");
+        .compile("cdt_kernel_bridge");
 
     println!("cargo:rerun-if-changed=src/ffi.rs");
     println!("cargo:rerun-if-changed=src/ffi/bridge.cpp");
     println!("cargo:rerun-if-changed=src/ffi/bridge.hpp");
-    println!("cargo:rerun-if-env-changed=RMF_OCCT_PREFIX");
+    println!("cargo:rerun-if-env-changed=CDT_OCCT_PREFIX");
 
     println!("cargo:rustc-link-search=native={libdir}");
     // Embed an rpath so the resulting binary finds the OCCT dylibs at runtime.

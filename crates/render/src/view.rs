@@ -5,7 +5,7 @@
 //! plane and its screen position, and casts a screen position back onto a plane
 //! — everything the interactive sketcher needs to draw an overlay and to place
 //! geometry under the cursor. Planes are passed as plain `[f64; 3]` arrays so
-//! this stays free of `rmf-core` types.
+//! this stays free of `cdt-core` types.
 
 use egui::{Pos2, Vec2};
 use glam::{Mat4, Vec3, Vec4};

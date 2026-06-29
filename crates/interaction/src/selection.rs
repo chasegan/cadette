@@ -5,7 +5,7 @@
 //! replaces. A set is kept homogeneous (all faces, or all edges) — picking a
 //! different kind replaces, since mixed selections map to no real operation.
 
-use rmf_core::{Pick, SketchPlane};
+use cdt_core::{Pick, SketchPlane};
 
 /// What the user has selected and is hovering in the viewport.
 #[derive(Clone, Default)]

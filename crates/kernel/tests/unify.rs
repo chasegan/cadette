@@ -1,7 +1,7 @@
 //! Same-domain face merging: booleans should not leave coplanar neighbours
 //! split by a seam edge.
 
-use rmf_kernel::Solid;
+use cdt_kernel::Solid;
 
 #[test]
 fn fusing_stacked_boxes_merges_the_coplanar_sides() {

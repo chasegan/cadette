@@ -14,17 +14,17 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MPL-2.0"
-repository = "https://github.com/chas/Riemanifold"
+repository = "https://github.com/chas/cadette"
 rust-version = "1.85"
 
 # Shared dependency versions, referenced by member crates with `workspace = true`.
 [workspace.dependencies]
-rmf-core = { path = "crates/core" }
-rmf-kernel = { path = "crates/kernel" }
-rmf-solver = { path = "crates/solver" }
-rmf-render = { path = "crates/render" }
-rmf-interaction = { path = "crates/interaction" }
-rmf-ui = { path = "crates/ui" }
+cdt-core = { path = "crates/core" }
+cdt-kernel = { path = "crates/kernel" }
+cdt-solver = { path = "crates/solver" }
+cdt-render = { path = "crates/render" }
+cdt-interaction = { path = "crates/interaction" }
+cdt-ui = { path = "crates/ui" }
 
 anyhow = "1"
 thiserror = "2"

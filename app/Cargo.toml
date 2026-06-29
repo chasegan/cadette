@@ -1,23 +1,23 @@
 [package]
-name = "rmf-app"
+name = "cdt-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Riemanifold application shell and entry point."
-default-run = "rmf-app"
+description = "Cadette application shell and entry point."
+default-run = "cdt-app"
 
 [dependencies]
-rmf-core = { workspace = true }
-rmf-kernel = { workspace = true }
-rmf-render = { workspace = true }
-rmf-solver = { workspace = true }
-rmf-interaction = { workspace = true }
-rmf-ui = { workspace = true }
+cdt-core = { workspace = true }
+cdt-kernel = { workspace = true }
+cdt-render = { workspace = true }
+cdt-solver = { workspace = true }
+cdt-interaction = { workspace = true }
+cdt-ui = { workspace = true }
 anyhow = { workspace = true }
 env_logger = { workspace = true }
 # Native file dialogs for STL export / project save-load.
 rfd = "0.15"
-# Project files (.rmf): a zip holding the serialized document (+ future imports).
+# Project files (.cdt): a zip holding the serialized document (+ future imports).
 zip = { version = "2", default-features = false, features = ["deflate"] }
 serde_json = "1"
