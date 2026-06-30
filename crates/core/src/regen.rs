@@ -288,6 +288,16 @@ where
             let body = input(*source)?;
             backend.extrude(body, *distance).map_err(backend_err)
         }
+        FeatureKind::Sweep { profile, plane, path } => {
+            let face = input(*profile)?;
+            match path.path_elements() {
+                Some(elements) => backend.sweep(face, *plane, &elements).map_err(backend_err),
+                None => Err(RegenError::Invalid {
+                    feature,
+                    reason: "sweep path is not a single open chain",
+                }),
+            }
+        }
         FeatureKind::Translate { source, offset } => {
             let body = input(*source)?;
             backend.translate(body, *offset).map_err(backend_err)

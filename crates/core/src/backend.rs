@@ -40,6 +40,16 @@ pub trait GeometryBackend {
     /// Extrude a planar face (`profile`) along its normal by `distance`.
     fn extrude(&mut self, profile: &Self::Body, distance: f64) -> Result<Self::Body, Self::Error>;
 
+    /// Sweep a planar face (`profile`) along an OPEN path — the resolved open
+    /// chain `path` of segments on `path_plane` — keeping the profile normal to
+    /// the path (corrected-Frenet).
+    fn sweep(
+        &mut self,
+        profile: &Self::Body,
+        path_plane: SketchPlane,
+        path: &[ProfileElem],
+    ) -> Result<Self::Body, Self::Error>;
+
     /// Revolve a planar `profile` by `angle` radians about the straight edge
     /// nearest `axis_point` (one of the profile's own segments or a model edge).
     fn revolve(

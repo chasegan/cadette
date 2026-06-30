@@ -143,6 +143,15 @@ pub enum FeatureKind {
     /// keeps each member distinct (a compound, not a fuse). Ungrouping deletes
     /// this feature, and the members become independently visible again.
     Group { members: Vec<FeatureId> },
+
+    /// Sweep the planar profile `profile` (a sketch face) along an open `path`
+    /// curve lying on `plane`, keeping the profile normal to the path. The path
+    /// is stored inline as an open sketch chain.
+    Sweep {
+        profile: FeatureId,
+        plane: SketchPlane,
+        path: Sketch2d,
+    },
 }
 
 impl FeatureKind {
@@ -166,6 +175,7 @@ impl FeatureKind {
             FeatureKind::Mirror { source, .. } => vec![*source],
             FeatureKind::Boolean { target, tool, .. } => vec![*target, *tool],
             FeatureKind::Group { members } => members.clone(),
+            FeatureKind::Sweep { profile, .. } => vec![*profile],
         }
     }
 
@@ -182,7 +192,8 @@ impl FeatureKind {
             | FeatureKind::Rotate { source, .. }
             | FeatureKind::Scale { source, .. }
             | FeatureKind::Revolve { source, .. }
-            | FeatureKind::Mirror { source, .. } => Some(*source),
+            | FeatureKind::Mirror { source, .. }
+            | FeatureKind::Sweep { profile: source, .. } => Some(*source),
             // Heal to the kept body of a boolean.
             FeatureKind::Boolean { target, .. } => Some(*target),
             // Heal to the first member (ungroup proper bakes any group transform
@@ -208,7 +219,8 @@ impl FeatureKind {
             | FeatureKind::Rotate { source, .. }
             | FeatureKind::Scale { source, .. }
             | FeatureKind::Revolve { source, .. }
-            | FeatureKind::Mirror { source, .. } => swap(source),
+            | FeatureKind::Mirror { source, .. }
+            | FeatureKind::Sweep { profile: source, .. } => swap(source),
             FeatureKind::Boolean { target, tool, .. } => {
                 swap(target);
                 swap(tool);
@@ -237,6 +249,7 @@ impl FeatureKind {
             FeatureKind::Revolve { .. } => "Revolve",
             FeatureKind::Mirror { .. } => "Mirror",
             FeatureKind::Group { .. } => "Group",
+            FeatureKind::Sweep { .. } => "Sweep",
         }
     }
 }

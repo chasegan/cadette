@@ -81,6 +81,41 @@ impl GeometryBackend for KernelBackend {
         profile.extrude(distance)
     }
 
+    fn sweep(
+        &mut self,
+        profile: &Solid,
+        path_plane: SketchPlane,
+        path: &[ProfileElem],
+    ) -> Result<Solid, KernelError> {
+        // Flatten the open chain to path_wire's shape: the chain vertices (each
+        // element's start, plus the final element's end) and 5 doubles per
+        // segment ([is_bezier, c1x, c1y, c2x, c2y]).
+        let mut points: Vec<f64> = Vec::with_capacity((path.len() + 1) * 2);
+        let mut segs: Vec<f64> = Vec::with_capacity(path.len() * 5);
+        for e in path {
+            let [px, py] = e.start();
+            points.push(px);
+            points.push(py);
+            match *e {
+                ProfileElem::Line { .. } => segs.extend([0.0, 0.0, 0.0, 0.0, 0.0]),
+                ProfileElem::Bezier { c1, c2, .. } => segs.extend([1.0, c1[0], c1[1], c2[0], c2[1]]),
+            }
+        }
+        if let Some(last) = path.last() {
+            let [ex, ey] = last.end();
+            points.push(ex);
+            points.push(ey);
+        }
+        let spine = Solid::path_wire(
+            path_plane.origin().to_array(),
+            path_plane.x_dir().to_array(),
+            path_plane.y_dir().to_array(),
+            &points,
+            &segs,
+        )?;
+        profile.sweep(&spine)
+    }
+
     fn translate(&mut self, body: &Solid, offset: DVec3) -> Result<Solid, KernelError> {
         body.translate(offset.x, offset.y, offset.z)
     }

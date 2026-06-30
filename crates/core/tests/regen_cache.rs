@@ -45,6 +45,15 @@ impl GeometryBackend for Counting {
         self.ops += 1;
         Ok(format!("extrude({b},{d})"))
     }
+    fn sweep(
+        &mut self,
+        profile: &String,
+        _plane: SketchPlane,
+        path: &[cdt_core::ProfileElem],
+    ) -> Result<String, String> {
+        self.ops += 1;
+        Ok(format!("sweep({profile},{})", path.len()))
+    }
     fn translate(&mut self, b: &String, o: DVec3) -> Result<String, String> {
         self.ops += 1;
         Ok(format!("move({b},{},{},{})", o.x, o.y, o.z))

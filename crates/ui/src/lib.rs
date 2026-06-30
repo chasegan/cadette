@@ -566,6 +566,10 @@ fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
         FeatureKind::Group { members } => {
             ui.label(RichText::new(format!("{} members", members.len())).small().weak());
         }
+        FeatureKind::Sweep { path, .. } => {
+            let segs = path.lines.len() + path.beziers.len();
+            ui.label(RichText::new(format!("path: {segs} segments")).small().weak());
+        }
     }
 
     changed

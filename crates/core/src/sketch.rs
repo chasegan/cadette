@@ -164,6 +164,13 @@ impl ProfileElem {
             ProfileElem::Line { a, .. } | ProfileElem::Bezier { a, .. } => a,
         }
     }
+
+    /// The segment's end vertex (the last element's end closes an open chain).
+    pub fn end(self) -> [f64; 2] {
+        match self {
+            ProfileElem::Line { b, .. } | ProfileElem::Bezier { b, .. } => b,
+        }
+    }
 }
 
 /// A geometric or dimensional constraint relating sketch entities.
@@ -492,6 +499,69 @@ impl Sketch2d {
     /// The closed profile boundary as ordered segments (straight or bezier),
     /// walking the loop over BOTH lines and beziers. `None` unless they form
     /// exactly one closed loop. This is the canonical profile for the kernel.
+    /// Resolve this sketch as an OPEN chain — a sweep PATH — walking its segments
+    /// from one endpoint to the other and emitting one [`ProfileElem`] each.
+    /// Returns `None` unless the segments form a single open chain: a closed loop
+    /// (no degree-1 endpoints) or a branch (a point on 3+ segments) is rejected.
+    pub fn path_elements(&self) -> Option<Vec<ProfileElem>> {
+        struct Conn {
+            a: PointId,
+            b: PointId,
+            bez: Option<([f64; 2], [f64; 2])>,
+        }
+        let conns: Vec<Conn> = self
+            .lines
+            .iter()
+            .map(|l| Conn { a: l.a, b: l.b, bez: None })
+            .chain(self.beziers.iter().map(|bz| Conn { a: bz.a, b: bz.b, bez: Some((bz.c1, bz.c2)) }))
+            .collect();
+        let n = conns.len();
+        if n == 0 {
+            return None;
+        }
+        // Degree of each point; an open chain has exactly two degree-1 endpoints
+        // and no point on more than two segments.
+        let mut degree: std::collections::HashMap<PointId, usize> = std::collections::HashMap::new();
+        for c in &conns {
+            *degree.entry(c.a).or_default() += 1;
+            *degree.entry(c.b).or_default() += 1;
+        }
+        if degree.values().any(|d| *d > 2) {
+            return None;
+        }
+        let mut ends: Vec<PointId> = degree.iter().filter(|(_, d)| **d == 1).map(|(p, _)| *p).collect();
+        if ends.len() != 2 {
+            return None;
+        }
+        ends.sort_by_key(|p| p.0); // deterministic start
+        let coord = |p: PointId| {
+            let q = self.point(p);
+            [q.x, q.y]
+        };
+        let mut current = ends[0];
+        let mut visited = vec![false; n];
+        let mut elems = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (idx, conn) = conns
+                .iter()
+                .enumerate()
+                .find(|(i, c)| !visited[*i] && (c.a == current || c.b == current))?;
+            visited[idx] = true;
+            let forward = conn.a == current;
+            let next = if forward { conn.b } else { conn.a };
+            let (a, b) = (coord(current), coord(next));
+            match conn.bez {
+                None => elems.push(ProfileElem::Line { a, b }),
+                Some((c1, c2)) => {
+                    let (c1, c2) = if forward { (c1, c2) } else { (c2, c1) };
+                    elems.push(ProfileElem::Bezier { a, c1, c2, b });
+                }
+            }
+            current = next;
+        }
+        Some(elems)
+    }
+
     pub fn profile_elements(&self) -> Option<Vec<ProfileElem>> {
         struct Conn {
             a: PointId,
@@ -769,6 +839,28 @@ mod edit_tests {
         // A lone point (no two beziers) can't be smoothed.
         assert_eq!(s.node_smoothness(a), None);
         assert!(!s.smooth_node(a));
+    }
+
+    #[test]
+    fn path_elements_walks_an_open_chain_and_rejects_loops() {
+        // An open 3-point chain: p0 -> p1 (line) -> p2 (bezier).
+        let mut s = Sketch2d::new();
+        let p0 = s.add_point(0.0, 0.0);
+        let p1 = s.add_point(0.0, 10.0);
+        let p2 = s.add_point(5.0, 15.0);
+        s.add_line(p0, p1);
+        s.add_bezier(p1, p2, [0.0, 13.0], [3.0, 15.0]);
+        let path = s.path_elements().expect("a single open chain");
+        assert_eq!(path.len(), 2);
+        // Walk starts at an endpoint and is continuous.
+        assert_eq!(path[0].start(), [0.0, 0.0]);
+        assert_eq!(path[0].end(), path[1].start());
+        assert!(matches!(path[0], ProfileElem::Line { .. }));
+        assert!(matches!(path[1], ProfileElem::Bezier { .. }));
+
+        // Close it into a triangle → no endpoints → not a path.
+        s.add_line(p2, p0);
+        assert!(s.path_elements().is_none(), "a closed loop is not an open path");
     }
 
     #[test]

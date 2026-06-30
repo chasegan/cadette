@@ -3345,6 +3345,32 @@ mod tests {
     }
 
     #[test]
+    fn sweep_feature_builds_a_tube_along_its_path() {
+        // Circle profile on XY at the origin, swept up a straight +Z path.
+        let mut doc = Document::new("sweep");
+        let prof = doc.add(
+            "Profile",
+            FeatureKind::Sketch { plane: SketchPlane::Xy, profile: Profile::Circle { radius: 2.0 } },
+        );
+        // The path lives on the XZ plane (local v -> world Z), so the open chain
+        // (0,0)->(0,10) runs straight up from the origin — tangent +Z at the
+        // start, matching the profile normal.
+        let mut path = Sketch2d::new();
+        let a = path.add_point(0.0, 0.0);
+        let b = path.add_point(0.0, 10.0);
+        path.add_line(a, b);
+        doc.add("Sweep", FeatureKind::Sweep { profile: prof, plane: SketchPlane::Xz, path });
+
+        let mut m = Modeler::new();
+        m.doc = doc;
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        let (min, max) = bounds(&mesh);
+        assert!(min[2].abs() < 0.5 && (max[2] - 10.0).abs() < 0.5, "tube spans z 0..10");
+        assert!((span(&mesh, 0) - 4.0).abs() < 0.5, "tube ⌀4 in x: {}", span(&mesh, 0));
+    }
+
+    #[test]
     fn push_pull_feature_extends_a_box() {
         use cdt_core::FaceAnchor;
         let mut doc = Document::new("pp");

@@ -33,6 +33,14 @@ impl GeometryBackend for Recording {
     fn extrude(&mut self, profile: &String, distance: f64) -> Result<String, String> {
         Ok(format!("extrude({profile},{distance:.0})"))
     }
+    fn sweep(
+        &mut self,
+        profile: &String,
+        _plane: SketchPlane,
+        path: &[cdt_core::ProfileElem],
+    ) -> Result<String, String> {
+        Ok(format!("sweep({profile},{})", path.len()))
+    }
     fn sketch_profile(
         &mut self,
         plane: cdt_core::SketchPlane,
