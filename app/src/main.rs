@@ -1490,28 +1490,64 @@ impl Modeler {
                 // Pen tool: rubber-band + symmetric-handle preview; drag places a
                 // smooth anchor (pull a handle out), click places a corner.
                 if session.tool == SketchTool::Pen {
-                    if let (Some(last), Some(cursor)) = (session.last, response.hover_pos()) {
-                        let lp = session.sketch.point(last);
-                        if let Some(a) = proj(lp.x, lp.y) {
-                            painter.line_segment([a, cursor], egui::Stroke::new(1.0, egui::Color32::from_gray(150)));
+                    let preview = egui::Stroke::new(1.0, egui::Color32::from_gray(150));
+                    let draw_curve = |p0, p1, p2, p3, stroke| {
+                        let mut prev = p0;
+                        for k in 1..=20 {
+                            let pt = cubic_screen(p0, p1, p2, p3, k as f32 / 20.0);
+                            painter.line_segment([prev, pt], stroke);
+                            prev = pt;
                         }
+                    };
+                    match (session.pen_press, response.hover_pos()) {
+                        // Click-dragging a smooth anchor: the cursor is the HANDLE,
+                        // not the next anchor — so preview the actual curve from
+                        // `last` to the new anchor at `press`, plus the handle arms.
+                        (Some(press), Some(cursor)) => {
+                            if let Some(pp) = proj(press[0], press[1]) {
+                                // The drag is the out-handle; the incoming segment
+                                // ends on its mirror (this anchor's in-handle).
+                                let in_handle = egui::pos2(2.0 * pp.x - cursor.x, 2.0 * pp.y - cursor.y);
+                                if let Some(p0) = session
+                                    .last
+                                    .map(|l| session.sketch.point(l))
+                                    .and_then(|lp| proj(lp.x, lp.y))
+                                {
+                                    let p1 = session.pen_out.and_then(|h| proj(h[0], h[1])).unwrap_or(p0);
+                                    draw_curve(p0, p1, in_handle, pp, egui::Stroke::new(1.5, accent));
+                                }
+                                let arm = egui::Stroke::new(0.8, egui::Color32::from_gray(120));
+                                painter.line_segment([pp, cursor], arm);
+                                painter.line_segment([pp, in_handle], arm);
+                                let hc = egui::Color32::from_rgb(150, 220, 130);
+                                painter.circle_filled(cursor, 3.0, hc);
+                                painter.circle_filled(in_handle, 3.0, hc);
+                                painter.circle_filled(pp, 3.0, accent);
+                            }
+                        }
+                        // Hovering (not dragging): rubber-band to where a click
+                        // would drop the next corner — a curve if the previous
+                        // anchor left an out-handle, else a straight line.
+                        (None, Some(cursor)) => {
+                            if let Some(p0) = session
+                                .last
+                                .map(|l| session.sketch.point(l))
+                                .and_then(|lp| proj(lp.x, lp.y))
+                            {
+                                match session.pen_out.and_then(|h| proj(h[0], h[1])) {
+                                    Some(p1) => draw_curve(p0, p1, cursor, cursor, preview),
+                                    None => {
+                                        painter.line_segment([p0, cursor], preview);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                     if let Some(start) = session.start {
                         let s = session.sketch.point(start);
                         if let Some(sp) = proj(s.x, s.y) {
                             painter.circle_stroke(sp, 6.0, egui::Stroke::new(1.5, accent));
-                        }
-                    }
-                    if let (Some(press), Some(cursor)) = (session.pen_press, response.hover_pos()) {
-                        if let Some(pp) = proj(press[0], press[1]) {
-                            let mirror = egui::pos2(2.0 * pp.x - cursor.x, 2.0 * pp.y - cursor.y);
-                            let arm = egui::Stroke::new(0.8, egui::Color32::from_gray(120));
-                            painter.line_segment([pp, cursor], arm);
-                            painter.line_segment([pp, mirror], arm);
-                            let hc = egui::Color32::from_rgb(150, 220, 130);
-                            painter.circle_filled(cursor, 3.0, hc);
-                            painter.circle_filled(mirror, 3.0, hc);
-                            painter.circle_filled(pp, 3.0, accent);
                         }
                     }
                     if response.drag_started() {
@@ -1936,6 +1972,14 @@ fn dist_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
         0.0
     };
     (p - (a + ab * t)).length()
+}
+
+/// A point on the cubic bezier `p0..p3` at `t`, in screen space (for previews).
+fn cubic_screen(p0: egui::Pos2, p1: egui::Pos2, p2: egui::Pos2, p3: egui::Pos2, t: f32) -> egui::Pos2 {
+    let l = |a: egui::Pos2, b: egui::Pos2| egui::pos2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+    let (q0, q1, q2) = (l(p0, p1), l(p1, p2), l(p2, p3));
+    let (r0, r1) = (l(q0, q1), l(q1, q2));
+    l(r0, r1)
 }
 
 impl Controller for Modeler {
@@ -3410,6 +3454,21 @@ mod tests {
         let (min, max) = bounds(&mesh);
         assert!((min[2] - 20.0).abs() < 0.5, "min z {}", min[2]);
         assert!((max[2] - 30.0).abs() < 0.5, "max z {}", max[2]);
+    }
+
+    #[test]
+    fn cubic_screen_hits_endpoints_and_midpoint() {
+        let (p0, p1, p2, p3) = (
+            egui::pos2(0.0, 0.0),
+            egui::pos2(0.0, 10.0),
+            egui::pos2(10.0, 10.0),
+            egui::pos2(10.0, 0.0),
+        );
+        assert_eq!(cubic_screen(p0, p1, p2, p3, 0.0), p0);
+        assert_eq!(cubic_screen(p0, p1, p2, p3, 1.0), p3);
+        // Symmetric control net → midpoint at x=5, y=7.5 (Bernstein at t=0.5).
+        let m = cubic_screen(p0, p1, p2, p3, 0.5);
+        assert!((m.x - 5.0).abs() < 1e-4 && (m.y - 7.5).abs() < 1e-4, "mid {m:?}");
     }
 
     #[test]
