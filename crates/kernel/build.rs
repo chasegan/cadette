@@ -25,6 +25,7 @@ const OCCT_LIBS: &[&str] = &[
     "TKBO",       // Boolean operations (BRepAlgoAPI_*)
     "TKBool",
     "TKFillet",   // BRepFilletAPI_MakeFillet
+    "TKOffset",   // BRepOffsetAPI_MakePipe (sweep)
     "TKShHealing",
     "TKMesh",     // BRepMesh_IncrementalMesh
     "TKDESTL",    // StlAPI_Writer (moved here in OCCT 7.7+)

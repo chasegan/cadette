@@ -51,6 +51,14 @@ std::unique_ptr<Shape> profile_face(double ox, double oy, double oz,
 // --- Extrude ----------------------------------------------------------------
 std::unique_ptr<Shape> extrude(const Shape& s, double distance);
 
+// --- Sweep ------------------------------------------------------------------
+std::unique_ptr<Shape> path_wire(double ox, double oy, double oz,
+                                 double xx, double xy, double xz,
+                                 double yx, double yy, double yz,
+                                 rust::Slice<const double> points,
+                                 rust::Slice<const double> segs);
+std::unique_ptr<Shape> sweep(const Shape& profile, const Shape& spine);
+
 // --- Revolve ----------------------------------------------------------------
 std::unique_ptr<Shape> revolve(const Shape& s, double ax, double ay, double az,
                                double angle);
@@ -68,6 +76,7 @@ std::unique_ptr<Shape> cut(const Shape& a, const Shape& b);
 std::unique_ptr<Shape> common(const Shape& a, const Shape& b);
 std::unique_ptr<Shape> unify(const Shape& s);
 std::size_t count_faces(const Shape& s);
+double volume(const Shape& s);
 
 // --- Edge treatments --------------------------------------------------------
 std::unique_ptr<Shape> rotate(const Shape& s, double cx, double cy, double cz,

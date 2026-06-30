@@ -101,6 +101,22 @@ pub mod ffi {
         /// Extrude a planar face along its normal by `distance` into a solid.
         fn extrude(shape: &Shape, distance: f64) -> Result<UniquePtr<Shape>>;
 
+        // --- Sweep --------------------------------------------------------
+        /// An OPEN planar wire (a sweep path) on the frame `origin + u*xdir +
+        /// v*ydir`. `points` is the flat 2D polyline; `segs` has 5 doubles per
+        /// segment (`n-1` of them): `[is_bezier, c1u, c1v, c2u, c2v]`.
+        #[allow(clippy::too_many_arguments)]
+        fn path_wire(
+            ox: f64, oy: f64, oz: f64,
+            xx: f64, xy: f64, xz: f64,
+            yx: f64, yy: f64, yz: f64,
+            points: &[f64],
+            segs: &[f64],
+        ) -> Result<UniquePtr<Shape>>;
+        /// Sweep the planar `profile` face along the `spine` wire into a solid,
+        /// keeping the profile normal to the path (corrected-Frenet frame).
+        fn sweep(profile: &Shape, spine: &Shape) -> Result<UniquePtr<Shape>>;
+
         // --- Revolve ------------------------------------------------------
         /// Revolve the planar profile `shape` by `angle` radians about the
         /// straight edge nearest `(ax,ay,az)` (a full turn is `2π`).
@@ -170,6 +186,9 @@ pub mod ffi {
 
         /// Count the faces of a shape (for topology assertions/debugging).
         fn count_faces(s: &Shape) -> usize;
+
+        /// Enclosed volume of a solid (model units³), for validating builds.
+        fn volume(s: &Shape) -> f64;
 
         // --- Edge treatments ----------------------------------------------
         /// Fillet every edge of `shape` with a constant `radius`.

@@ -138,6 +138,27 @@ impl Solid {
         Ok(Self::wrap(ffi::extrude(&self.0, distance)?))
     }
 
+    /// An OPEN planar wire (a sweep path) on the frame `origin + u*x_dir +
+    /// v*y_dir`. `points` is the flat 2D polyline, `segs` 5 doubles per segment.
+    pub fn path_wire(
+        origin: [f64; 3],
+        x_dir: [f64; 3],
+        y_dir: [f64; 3],
+        points: &[f64],
+        segs: &[f64],
+    ) -> Result<Self> {
+        Ok(Self::wrap(ffi::path_wire(
+            origin[0], origin[1], origin[2], x_dir[0], x_dir[1], x_dir[2], y_dir[0], y_dir[1],
+            y_dir[2], points, segs,
+        )?))
+    }
+
+    /// Sweep this planar face along `spine` into a solid, keeping the face normal
+    /// to the path (corrected-Frenet frame).
+    pub fn sweep(&self, spine: &Solid) -> Result<Self> {
+        Ok(Self::wrap(ffi::sweep(&self.0, &spine.0)?))
+    }
+
     /// Revolve this planar profile by `angle` radians about the straight edge
     /// nearest `axis_point` (a full turn is `2π`). The axis edge is one of the
     /// profile's own segments or an adjacent model edge.
@@ -188,6 +209,11 @@ impl Solid {
     /// The number of faces in this solid (TopExp order).
     pub fn face_count(&self) -> usize {
         ffi::count_faces(&self.0)
+    }
+
+    /// The enclosed volume of this solid (model units³).
+    pub fn volume(&self) -> f64 {
+        ffi::volume(&self.0)
     }
 
     // --- Edge treatments ----------------------------------------------------

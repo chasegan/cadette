@@ -11,6 +11,7 @@
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
+#include <BRepOffsetAPI_MakePipe.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Common.hxx>
@@ -229,6 +230,48 @@ std::unique_ptr<Shape> profile_face(double ox, double oy, double oz,
   });
 }
 
+// An OPEN planar wire (a sweep path) from a polyline that may include cubic
+// beziers — the same plane mapping and segment encoding as profile_face, but the
+// loop is NOT closed and no face is built. `n` points yield `n-1` segments;
+// `segs` has 5 doubles per segment `[is_bezier, c1u, c1v, c2u, c2v]`.
+std::unique_ptr<Shape> path_wire(double ox, double oy, double oz,
+                                 double xx, double xy, double xz,
+                                 double yx, double yy, double yz,
+                                 rust::Slice<const double> points,
+                                 rust::Slice<const double> segs) {
+  return guard("path_wire", [&] {
+    const std::size_t n = points.size() / 2;
+    if (n < 2 || segs.size() != (n - 1) * 5) {
+      throw std::runtime_error("path_wire: bad point/segment counts");
+    }
+    const gp_Vec o(ox, oy, oz), x(xx, xy, xz), y(yx, yy, yz);
+    auto to3d = [&](double u, double v) {
+      const gp_Vec p = o + x * u + y * v;
+      return gp_Pnt(p.X(), p.Y(), p.Z());
+    };
+
+    BRepBuilderAPI_MakeWire wire;
+    for (std::size_t i = 0; i + 1 < n; ++i) {
+      const gp_Pnt a = to3d(points[2 * i], points[2 * i + 1]);
+      const gp_Pnt b = to3d(points[2 * (i + 1)], points[2 * (i + 1) + 1]);
+      if (segs[5 * i] != 0.0) {
+        const gp_Pnt c1 = to3d(segs[5 * i + 1], segs[5 * i + 2]);
+        const gp_Pnt c2 = to3d(segs[5 * i + 3], segs[5 * i + 4]);
+        TColgp_Array1OfPnt poles(1, 4);
+        poles.SetValue(1, a);
+        poles.SetValue(2, c1);
+        poles.SetValue(3, c2);
+        poles.SetValue(4, b);
+        Handle(Geom_BezierCurve) curve = new Geom_BezierCurve(poles);
+        wire.Add(BRepBuilderAPI_MakeEdge(curve).Edge());
+      } else {
+        wire.Add(BRepBuilderAPI_MakeEdge(a, b).Edge());
+      }
+    }
+    return std::make_unique<Shape>(wire.Wire());
+  });
+}
+
 // --- Extrude ----------------------------------------------------------------
 
 std::unique_ptr<Shape> extrude(const Shape& s, double distance) {
@@ -296,6 +339,37 @@ std::unique_ptr<Shape> revolve(const Shape& s, double ax, double ay, double az,
     const gp_Ax1 axis(p1, gp_Dir(dir));
     const TopoDS_Shape solid = BRepPrimAPI_MakeRevol(s.shape, axis, angle).Shape();
     return std::make_unique<Shape>(solid);
+  });
+}
+
+// --- Sweep ------------------------------------------------------------------
+
+// Sweep the planar `profile` face along the `spine` wire into a solid. Uses
+// BRepOffsetAPI_MakePipe, whose default trihedron is corrected-Frenet: the
+// profile stays normal to the path and rotates to follow it (minimising twist
+// at inflections), so a circle traces a constant round tube.
+std::unique_ptr<Shape> sweep(const Shape& profile, const Shape& spine) {
+  return guard("sweep", [&] {
+    TopoDS_Wire spine_wire;
+    if (spine.shape.ShapeType() == TopAbs_WIRE) {
+      spine_wire = TopoDS::Wire(spine.shape);
+    } else {
+      // Assemble any loose edges of the spine shape into one wire.
+      BRepBuilderAPI_MakeWire mw;
+      for (TopExp_Explorer ex(spine.shape, TopAbs_EDGE); ex.More(); ex.Next()) {
+        mw.Add(TopoDS::Edge(ex.Current()));
+      }
+      if (!mw.IsDone()) {
+        throw std::runtime_error("sweep: spine is not a usable wire");
+      }
+      spine_wire = mw.Wire();
+    }
+    BRepOffsetAPI_MakePipe pipe(spine_wire, profile.shape);
+    pipe.Build();
+    if (!pipe.IsDone()) {
+      throw std::runtime_error("sweep: MakePipe failed");
+    }
+    return std::make_unique<Shape>(pipe.Shape());
   });
 }
 
@@ -473,6 +547,13 @@ std::size_t count_faces(const Shape& s) {
   std::size_t n = 0;
   for (TopExp_Explorer ex(s.shape, TopAbs_FACE); ex.More(); ex.Next()) n++;
   return n;
+}
+
+// Enclosed volume of the solid (model units³) — for validating swept/built bodies.
+double volume(const Shape& s) {
+  GProp_GProps props;
+  BRepGProp::VolumeProperties(s.shape, props);
+  return props.Mass();
 }
 
 // --- Edge treatments --------------------------------------------------------
