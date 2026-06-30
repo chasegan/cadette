@@ -18,10 +18,15 @@ jobs:
     name: macOS (Apple Silicon)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install OpenCASCADE + dylibbundler
-        run: brew install opencascade dylibbundler
+        # The runner image pre-taps aws/tap, which now trips Homebrew's tap-trust
+        # check and prints a warning on every brew command. We don't use it, so
+        # drop it before installing.
+        run: |
+          brew untap aws/tap 2>/dev/null || true
+          brew install opencascade dylibbundler
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -92,6 +97,6 @@ jobs:
             cadette-macos-arm64.dmg
 
       - name: Publish release asset
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: cadette-macos-arm64.dmg
