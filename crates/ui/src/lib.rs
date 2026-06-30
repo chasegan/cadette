@@ -220,17 +220,31 @@ pub fn history_panel(
             resp.changed |= rollback_controls(ui, doc);
             ui.separator();
 
-            resp.changed |= feature_graph(ui, doc, state);
-
-            if let Some(selected) = state.selected {
-                ui.separator();
-                resp.changed |= selected_editor(ui, doc, selected);
+            // Pin the selected-feature editor (and any errors) to the bottom —
+            // declared first so it reserves its space — and let the graph scroll
+            // in the area above, so long histories are fully reachable.
+            if state.selected.is_some() || !state.errors.is_empty() {
+                egui::TopBottomPanel::bottom("history_detail")
+                    .resizable(true)
+                    .default_height(190.0)
+                    .show_inside(ui, |ui| {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            if let Some(selected) = state.selected {
+                                resp.changed |= selected_editor(ui, doc, selected);
+                            }
+                            if !state.errors.is_empty() {
+                                ui.separator();
+                                error_list(ui, doc, state);
+                            }
+                        });
+                    });
             }
 
-            if !state.errors.is_empty() {
-                ui.separator();
-                error_list(ui, doc, state);
-            }
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    resp.changed |= feature_graph(ui, doc, state);
+                });
         });
 
     resp
