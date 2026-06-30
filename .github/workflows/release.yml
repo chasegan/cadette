@@ -82,6 +82,19 @@ jobs:
           </plist>
           PLIST
 
+          # dylibbundler runs install_name_tool, which invalidates the ad-hoc
+          # code signature the linker applied. On Apple Silicon a binary with an
+          # invalid signature is refused by the kernel and macOS reports the app
+          # as "damaged and can't be opened". Re-sign ad-hoc (-s -), inside-out:
+          # every bundled dylib first, then the bundle itself (which signs the
+          # main executable). This is not Developer-ID signing or notarization,
+          # so first launch still needs right-click -> Open, but the app runs.
+          find "$APP/Contents/Frameworks" -name '*.dylib' -exec \
+            codesign --force --timestamp=none --sign - {} +
+          codesign --force --timestamp=none --sign - "$APP/Contents/MacOS/cadette"
+          codesign --force --timestamp=none --sign - "$APP"
+          codesign --verify --deep --strict "$APP"
+
       - name: Package Cadette.app into a .dmg
         # Stage the app alongside an /Applications symlink so the mounted volume
         # offers a drag-to-install layout, then compress to a UDZO disk image.
