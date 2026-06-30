@@ -220,7 +220,7 @@ pub fn history_panel(
             resp.changed |= rollback_controls(ui, doc);
             ui.separator();
 
-            resp.changed |= feature_list(ui, doc, state);
+            resp.changed |= feature_graph(ui, doc, state);
 
             if let Some(selected) = state.selected {
                 ui.separator();
@@ -368,25 +368,98 @@ fn rollback_controls(ui: &mut Ui, doc: &mut Document) -> bool {
     changed
 }
 
-fn feature_list(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> bool {
-    let mut changed = false;
+const LANE_W: f32 = 14.0;
+const GRAPH_ROW_H: f32 = 22.0;
+const NODE_R: f32 = 4.0;
 
-    // Snapshot the rows so we can mutate the document inside the loop.
-    let rows: Vec<(FeatureId, String, &'static str, bool)> = doc
+/// A distinct, muted colour per lane so parallel body lines read apart.
+fn lane_color(lane: usize) -> Color32 {
+    const PALETTE: [Color32; 6] = [
+        Color32::from_rgb(120, 170, 255), // blue
+        Color32::from_rgb(140, 210, 140), // green
+        Color32::from_rgb(230, 170, 110), // orange
+        Color32::from_rgb(200, 140, 220), // purple
+        Color32::from_rgb(220, 200, 120), // yellow
+        Color32::from_rgb(150, 210, 210), // teal
+    ];
+    PALETTE[lane % PALETTE.len()]
+}
+
+/// The history as a git-style lane graph: a column per body line, a node per
+/// feature, lanes converging at a merge (boolean/group) and splitting at a
+/// branch. Each row keeps the list's interactions (suppress / select / delete /
+/// reorder); the gutter on the left is the graph.
+fn feature_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> bool {
+    let mut changed = false;
+    let graph = doc.history.graph();
+    let gutter_w = graph.lane_count.max(1) as f32 * LANE_W;
+    let active = doc.rollback();
+    let last = graph.rows.len().saturating_sub(1);
+
+    // Snapshot rows (with their lane layout) so we can mutate the doc in the loop.
+    let rows: Vec<_> = doc
         .history
         .features()
         .iter()
-        .map(|f| (f.id, f.name.clone(), f.kind.type_name(), f.suppressed))
+        .zip(graph.rows.iter())
+        .map(|(f, gr)| (f.id, f.name.clone(), f.kind.type_name(), f.suppressed, gr.clone()))
         .collect();
-    let active = doc.rollback();
-    let last = rows.len().saturating_sub(1);
 
-    for (index, (id, name, type_name, suppressed)) in rows.into_iter().enumerate() {
+    // Contiguous rows so the lane lines join across rows.
+    ui.spacing_mut().item_spacing.y = 0.0;
+
+    for (index, (id, name, type_name, suppressed, gr)) in rows.into_iter().enumerate() {
         let rolled_back = index >= active;
         let error = state.error_for(id).map(str::to_owned);
+        let selected = state.selected == Some(id);
 
         ui.horizontal(|ui| {
-            // Suppress toggle.
+            // --- Lane gutter -------------------------------------------------
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(gutter_w, GRAPH_ROW_H),
+                egui::Sense::hover(),
+            );
+            let p = ui.painter().clone();
+            let (top, bot, mid) = (rect.top(), rect.bottom(), rect.center().y);
+            let lane_x = |l: usize| rect.left() + l as f32 * LANE_W + LANE_W * 0.5;
+            let node_x = lane_x(gr.lane);
+            let dim = rolled_back || suppressed;
+            let stroke = |l: usize| {
+                let c = lane_color(l);
+                egui::Stroke::new(1.5, if dim { c.gamma_multiply(0.4) } else { c })
+            };
+            // Top half: each incoming lane connects to the node, others pass down.
+            for &l in &gr.top_open {
+                if l == gr.lane || gr.input_lanes.contains(&l) {
+                    p.line_segment([egui::pos2(lane_x(l), top), egui::pos2(node_x, mid)], stroke(l));
+                } else {
+                    p.line_segment([egui::pos2(lane_x(l), top), egui::pos2(lane_x(l), mid)], stroke(l));
+                }
+            }
+            // Bottom half: the node's lane (and any other open lane) flows down.
+            for &l in &gr.open {
+                let x = if l == gr.lane { node_x } else { lane_x(l) };
+                p.line_segment([egui::pos2(x, mid), egui::pos2(x, bot)], stroke(l));
+            }
+            // The node: a ring for a merge, a dot otherwise.
+            let node_c = if error.is_some() {
+                ERROR_COLOR
+            } else if dim {
+                Color32::from_gray(120)
+            } else {
+                lane_color(gr.lane)
+            };
+            let center = egui::pos2(node_x, mid);
+            if gr.is_merge {
+                p.circle(center, NODE_R, Color32::from_gray(40), egui::Stroke::new(2.0, node_c));
+            } else {
+                p.circle_filled(center, NODE_R, node_c);
+            }
+            if selected {
+                p.circle_stroke(center, NODE_R + 3.0, egui::Stroke::new(1.5, Color32::WHITE));
+            }
+
+            // --- Row controls ------------------------------------------------
             let mut sup = suppressed;
             if ui
                 .add(egui::Checkbox::without_text(&mut sup))
@@ -397,14 +470,12 @@ fn feature_list(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> bo
                 changed = true;
             }
 
-            // Selectable label, colored by state.
             let mut text = RichText::new(format!("{name}  ·  {type_name}"));
             if error.is_some() {
                 text = text.color(ERROR_COLOR);
-            } else if rolled_back || suppressed {
+            } else if dim {
                 text = text.weak();
             }
-            let selected = state.selected == Some(id);
             let response = ui.selectable_label(selected, text);
             if let Some(msg) = &error {
                 response.clone().on_hover_text(msg);
@@ -413,7 +484,6 @@ fn feature_list(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> bo
                 state.selected = if selected { None } else { Some(id) };
             }
 
-            // Reorder + delete on the right.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("🗑").on_hover_text("Delete").clicked() {
                     doc.history.remove(id);
@@ -422,17 +492,11 @@ fn feature_list(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> bo
                     }
                     changed = true;
                 }
-                if ui
-                    .add_enabled(index < last, egui::Button::new("↓").small())
-                    .clicked()
-                {
+                if ui.add_enabled(index < last, egui::Button::new("↓").small()).clicked() {
                     let _ = doc.history.reorder(id, index + 1);
                     changed = true;
                 }
-                if ui
-                    .add_enabled(index > 0, egui::Button::new("↑").small())
-                    .clicked()
-                {
+                if ui.add_enabled(index > 0, egui::Button::new("↑").small()).clicked() {
                     let _ = doc.history.reorder(id, index - 1);
                     changed = true;
                 }
