@@ -55,3 +55,30 @@ fn sweeping_around_a_bend_stays_a_valid_solid() {
     let mesh = tube.tessellate(0.2).unwrap();
     assert!(!mesh.positions.is_empty(), "swept solid meshes");
 }
+
+#[test]
+fn the_section_reorients_along_a_polyline_corner() {
+    // The key fix: on a POLYLINE the section must stay normal to the path and
+    // reorient at corners (a plain Frenet frame leaves it facing the first
+    // segment). Sweep up +Z then over +X; the end cap must face +X.
+    let profile = Solid::circle_face([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 1.0).unwrap();
+    let path = Solid::path_wire(
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0], // u -> +X
+        [0.0, 0.0, 1.0], // v -> +Z
+        &[0.0, 0.0, 0.0, 10.0, 10.0, 10.0], // origin -> up Z 10 -> over X 10
+        &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    )
+    .unwrap();
+    let tube = profile.sweep(&path).unwrap();
+    // A round profile swept the full length (≈20) → volume ≈ π·1²·20.
+    assert!((tube.volume() - PI * 20.0).abs() < 3.0, "full-length tube, got {}", tube.volume());
+    // Some planar end cap must face ~+X (the final segment direction).
+    let faces_x = (0..tube.face_count() as u32).any(|i| {
+        tube.face_plane(i).unwrap().is_some_and(|(_, x, y)| {
+            let nx = x[1] * y[2] - x[2] * y[1];
+            nx.abs() > 0.9
+        })
+    });
+    assert!(faces_x, "the section reoriented: an end cap faces +X");
+}

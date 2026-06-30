@@ -12,6 +12,9 @@
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepOffsetAPI_MakePipe.hxx>
+#include <BRepOffsetAPI_MakePipeShell.hxx>
+#include <BRepBuilderAPI_TransitionMode.hxx>
+#include <BRepTools.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Common.hxx>
@@ -364,12 +367,37 @@ std::unique_ptr<Shape> sweep(const Shape& profile, const Shape& spine) {
       }
       spine_wire = mw.Wire();
     }
-    BRepOffsetAPI_MakePipe pipe(spine_wire, profile.shape);
-    pipe.Build();
-    if (!pipe.IsDone()) {
-      throw std::runtime_error("sweep: MakePipe failed");
+    // The profile to sweep is the face's outer boundary wire.
+    TopoDS_Wire profile_wire;
+    if (profile.shape.ShapeType() == TopAbs_FACE) {
+      profile_wire = BRepTools::OuterWire(TopoDS::Face(profile.shape));
+    } else if (profile.shape.ShapeType() == TopAbs_WIRE) {
+      profile_wire = TopoDS::Wire(profile.shape);
+    } else {
+      throw std::runtime_error("sweep: profile is not a face or wire");
     }
-    return std::make_unique<Shape>(pipe.Shape());
+
+    // MakePipeShell (not MakePipe): a plain Frenet frame degenerates on a
+    // polyline — straight segments have zero curvature, so the section never
+    // reorients at a corner. The DISCRETE trihedron computes a frame segment by
+    // segment, keeping the section normal to the path on both polylines and
+    // smooth curves; WithCorrection rotates the profile orthogonal to the spine.
+    BRepOffsetAPI_MakePipeShell shell(spine_wire);
+    shell.SetDiscreteMode();
+    // A polyline's sharp corners need an explicit transition: the default just
+    // transforms the section straight through, so it never turns at a corner
+    // (the section stays normal to the FIRST segment for the whole sweep).
+    // RoundCorner reorients the section onto each next segment with a rounded
+    // bend; unlike RightCorner it also works on smooth (bezier) spines.
+    shell.SetTransitionMode(BRepBuilderAPI_RoundCorner);
+    shell.Add(profile_wire, /*WithContact=*/Standard_False,
+              /*WithCorrection=*/Standard_True);
+    shell.Build();
+    if (!shell.IsDone()) {
+      throw std::runtime_error("sweep: MakePipeShell failed");
+    }
+    shell.MakeSolid();
+    return std::make_unique<Shape>(shell.Shape());
   });
 }
 
