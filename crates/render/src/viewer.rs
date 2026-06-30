@@ -16,7 +16,7 @@ use bytemuck::{Pod, Zeroable};
 use egui_wgpu::{Renderer as EguiRenderer, RendererOptions, ScreenDescriptor};
 use glam::Vec3;
 use winit::application::ApplicationHandler;
-use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::WindowId;
@@ -2176,9 +2176,11 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
         if self.state.is_some() {
             return;
         }
+        // LogicalSize (DPI-independent): PhysicalSize would be only ~640×410
+        // points on a 2× Retina display — hence a tiny window.
         let attrs = winit::window::Window::default_attributes()
             .with_title("Cadette")
-            .with_inner_size(PhysicalSize::new(1280, 820));
+            .with_inner_size(winit::dpi::LogicalSize::new(1440.0, 900.0));
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
 
         let size = window.inner_size();
