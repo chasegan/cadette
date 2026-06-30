@@ -114,8 +114,15 @@ pub mod ffi {
             segs: &[f64],
         ) -> Result<UniquePtr<Shape>>;
         /// Sweep the planar `profile` face along the `spine` wire into a solid,
-        /// keeping the profile normal to the path (corrected-Frenet frame).
-        fn sweep(profile: &Shape, spine: &Shape) -> Result<UniquePtr<Shape>>;
+        /// keeping it normal to the path with its roll locked to the constant
+        /// `binormal` (the path plane's normal), so orientation is preserved.
+        fn sweep(
+            profile: &Shape,
+            spine: &Shape,
+            bnx: f64,
+            bny: f64,
+            bnz: f64,
+        ) -> Result<UniquePtr<Shape>>;
 
         // --- Revolve ------------------------------------------------------
         /// Revolve the planar profile `shape` by `angle` radians about the

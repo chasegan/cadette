@@ -57,7 +57,8 @@ std::unique_ptr<Shape> path_wire(double ox, double oy, double oz,
                                  double yx, double yy, double yz,
                                  rust::Slice<const double> points,
                                  rust::Slice<const double> segs);
-std::unique_ptr<Shape> sweep(const Shape& profile, const Shape& spine);
+std::unique_ptr<Shape> sweep(const Shape& profile, const Shape& spine,
+                             double bnx, double bny, double bnz);
 
 // --- Revolve ----------------------------------------------------------------
 std::unique_ptr<Shape> revolve(const Shape& s, double ax, double ay, double az,

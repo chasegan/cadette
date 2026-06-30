@@ -347,11 +347,10 @@ std::unique_ptr<Shape> revolve(const Shape& s, double ax, double ay, double az,
 
 // --- Sweep ------------------------------------------------------------------
 
-// Sweep the planar `profile` face along the `spine` wire into a solid. Uses
-// BRepOffsetAPI_MakePipe, whose default trihedron is corrected-Frenet: the
-// profile stays normal to the path and rotates to follow it (minimising twist
-// at inflections), so a circle traces a constant round tube.
-std::unique_ptr<Shape> sweep(const Shape& profile, const Shape& spine) {
+// Sweep the planar `profile` face along the `spine` wire into a solid, with the
+// section's roll locked to the constant `binormal` (the path plane's normal).
+std::unique_ptr<Shape> sweep(const Shape& profile, const Shape& spine,
+                             double bnx, double bny, double bnz) {
   return guard("sweep", [&] {
     TopoDS_Wire spine_wire;
     if (spine.shape.ShapeType() == TopAbs_WIRE) {
@@ -377,21 +376,23 @@ std::unique_ptr<Shape> sweep(const Shape& profile, const Shape& spine) {
       throw std::runtime_error("sweep: profile is not a face or wire");
     }
 
-    // MakePipeShell (not MakePipe): a plain Frenet frame degenerates on a
-    // polyline — straight segments have zero curvature, so the section never
-    // reorients at a corner. The DISCRETE trihedron computes a frame segment by
-    // segment, keeping the section normal to the path on both polylines and
-    // smooth curves; WithCorrection rotates the profile orthogonal to the spine.
+    // MakePipeShell with a CONSTANT-BINORMAL trihedron (SetMode(dir)): the
+    // section stays normal to the path AND its roll is locked to a fixed
+    // direction — the path plane's normal. A Frenet/discrete frame instead picks
+    // the roll from curvature, which twists or flips the section unpredictably
+    // (an asymmetric profile lands on the wrong side of a bend). With the
+    // binormal fixed, one section axis always points out of the path plane and
+    // the other stays radial, so the profile's orientation is preserved through
+    // every bend. For a planar path the plane normal is always perpendicular to
+    // the tangent, so it's a valid binormal everywhere.
     BRepOffsetAPI_MakePipeShell shell(spine_wire);
-    shell.SetDiscreteMode();
-    // A polyline's sharp corners need an explicit transition: the default just
-    // transforms the section straight through, so it never turns at a corner
-    // (the section stays normal to the FIRST segment for the whole sweep).
-    // RoundCorner reorients the section onto each next segment with a rounded
-    // bend; unlike RightCorner it also works on smooth (bezier) spines.
+    shell.SetMode(gp_Dir(bnx, bny, bnz));
+    // Sharp polyline corners need an explicit transition (the default transforms
+    // the section straight through). RoundCorner reorients onto each next segment
+    // and, unlike RightCorner, also works on smooth (bezier) spines.
     shell.SetTransitionMode(BRepBuilderAPI_RoundCorner);
     shell.Add(profile_wire, /*WithContact=*/Standard_False,
-              /*WithCorrection=*/Standard_True);
+              /*WithCorrection=*/Standard_False);
     shell.Build();
     if (!shell.IsDone()) {
       throw std::runtime_error("sweep: MakePipeShell failed");

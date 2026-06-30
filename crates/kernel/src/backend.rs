@@ -113,7 +113,9 @@ impl GeometryBackend for KernelBackend {
             &points,
             &segs,
         )?;
-        profile.sweep(&spine)
+        // Lock the section's roll to the path plane's normal so an asymmetric
+        // profile keeps a predictable orientation through bends.
+        profile.sweep(&spine, path_plane.normal().to_array())
     }
 
     fn translate(&mut self, body: &Solid, offset: DVec3) -> Result<Solid, KernelError> {

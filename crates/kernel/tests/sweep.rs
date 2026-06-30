@@ -21,7 +21,7 @@ fn sweeping_a_circle_up_a_straight_path_is_a_cylinder() {
     )
     .unwrap();
 
-    let tube = profile.sweep(&path).unwrap();
+    let tube = profile.sweep(&path, [0.0, 1.0, 0.0]).unwrap();
     // Volume of a cylinder r=2, h=10 = π r² h.
     let expected = PI * 2.0 * 2.0 * 10.0;
     let v = tube.volume();
@@ -49,11 +49,33 @@ fn sweeping_around_a_bend_stays_a_valid_solid() {
     )
     .unwrap();
 
-    let tube = profile.sweep(&path).unwrap();
+    let tube = profile.sweep(&path, [0.0, 1.0, 0.0]).unwrap();
     assert!(tube.volume() > 0.0, "bent sweep encloses a volume");
     // Tessellation must succeed and produce geometry (no degenerate result).
     let mesh = tube.tessellate(0.2).unwrap();
     assert!(!mesh.positions.is_empty(), "swept solid meshes");
+}
+
+#[test]
+fn an_asymmetric_profile_keeps_its_orientation_through_a_bend() {
+    // A small circle OFFSET +2 in the sketch's X, swept along a path that bends
+    // entirely within the XZ plane. With the roll locked to the path-plane normal
+    // the offset stays IN that plane, so the solid's Y-extent never exceeds the
+    // tube radius. A twisting (Frenet) frame would swing the +2 offset out of
+    // plane and blow the Y-extent up toward ±2.5.
+    let profile = Solid::circle_face([2.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.5).unwrap();
+    let path = Solid::path_wire(
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0], // u -> +X
+        [0.0, 0.0, 1.0], // v -> +Z
+        &[0.0, 0.0, 0.0, 10.0, 10.0, 10.0], // up Z 10, then over X 10
+        &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    )
+    .unwrap();
+    let tube = profile.sweep(&path, [0.0, -1.0, 0.0]).unwrap();
+    let mesh = tube.tessellate(0.2).unwrap();
+    let max_y = mesh.positions.chunks(3).map(|p| p[1].abs()).fold(0.0_f32, f32::max);
+    assert!(max_y < 1.0, "offset stayed in the path plane (no twist), max|y| = {max_y}");
 }
 
 #[test]
@@ -70,7 +92,7 @@ fn the_section_reorients_along_a_polyline_corner() {
         &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     )
     .unwrap();
-    let tube = profile.sweep(&path).unwrap();
+    let tube = profile.sweep(&path, [0.0, -1.0, 0.0]).unwrap();
     // A round profile swept the full length (≈20) → volume ≈ π·1²·20.
     assert!((tube.volume() - PI * 20.0).abs() < 3.0, "full-length tube, got {}", tube.volume());
     // Some planar end cap must face ~+X (the final segment direction).

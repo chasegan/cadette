@@ -153,10 +153,12 @@ impl Solid {
         )?))
     }
 
-    /// Sweep this planar face along `spine` into a solid, keeping the face normal
-    /// to the path (corrected-Frenet frame).
-    pub fn sweep(&self, spine: &Solid) -> Result<Self> {
-        Ok(Self::wrap(ffi::sweep(&self.0, &spine.0)?))
+    /// Sweep this planar face along `spine` into a solid, keeping it normal to
+    /// the path with its roll locked to `binormal` (the path plane's normal).
+    pub fn sweep(&self, spine: &Solid, binormal: [f64; 3]) -> Result<Self> {
+        Ok(Self::wrap(ffi::sweep(
+            &self.0, &spine.0, binormal[0], binormal[1], binormal[2],
+        )?))
     }
 
     /// Revolve this planar profile by `angle` radians about the straight edge
