@@ -34,24 +34,64 @@ jobs:
           export CDT_OCCT_PREFIX="$(brew --prefix opencascade)"
           cargo build --release --locked -p cdt-app
 
-      - name: Bundle a self-contained app folder
-        # dylibbundler copies every non-system dylib the binary needs (OCCT and
-        # its deps) into ./libs and rewrites the load paths to @executable_path,
-        # so the result runs without Homebrew installed. -s adds OCCT's lib dir
-        # so @rpath inter-dependencies resolve.
+      - name: Build Cadette.app bundle
+        # Assemble a real .app bundle. dylibbundler copies every non-system dylib
+        # the binary needs (OCCT and its deps) into Contents/Frameworks and
+        # rewrites load paths to @executable_path/../Frameworks, so the app runs
+        # without Homebrew installed. --search-path adds OCCT's lib dir so @rpath
+        # inter-dependencies resolve.
         run: |
-          STAGE="cadette-macos-arm64"
-          mkdir -p "$STAGE/libs"
-          cp target/release/cdt-app "$STAGE/cadette"
+          APP="Cadette.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources"
+          cp target/release/cdt-app "$APP/Contents/MacOS/cadette"
+
           dylibbundler \
             --overwrite-dir --bundle-deps \
-            --fix-file "$STAGE/cadette" \
-            --dest-dir "$STAGE/libs" \
-            --install-path "@executable_path/libs" \
+            --fix-file "$APP/Contents/MacOS/cadette" \
+            --dest-dir "$APP/Contents/Frameworks" \
+            --install-path "@executable_path/../Frameworks" \
             --search-path "$(brew --prefix opencascade)/lib"
-          ditto -c -k --sequesterRsrc --keepParent "$STAGE" "$STAGE.zip"
+
+          # CFBundleShortVersionString is the pushed tag with the leading v stripped.
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          # TODO: add CFBundleIconFile once an .icns exists (only docs/favicon.svg today).
+          cat > "$APP/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>
+            <string>Cadette</string>
+            <key>CFBundleExecutable</key>
+            <string>cadette</string>
+            <key>CFBundleIdentifier</key>
+            <string>org.cadette.app</string>
+            <key>CFBundleShortVersionString</key>
+            <string>${VERSION}</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>11.0</string>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Package Cadette.app into a .dmg
+        # Stage the app alongside an /Applications symlink so the mounted volume
+        # offers a drag-to-install layout, then compress to a UDZO disk image.
+        run: |
+          STAGE="dmg-stage"
+          mkdir -p "$STAGE"
+          cp -R "Cadette.app" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create \
+            -volname Cadette \
+            -srcfolder "$STAGE" \
+            -ov -format UDZO \
+            cadette-macos-arm64.dmg
 
       - name: Publish release asset
         uses: softprops/action-gh-release@v2
         with:
-          files: cadette-macos-arm64.zip
+          files: cadette-macos-arm64.dmg

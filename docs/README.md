@@ -25,11 +25,11 @@ python3 -m http.server 8000
 The macOS button points at a **stable** GitHub "latest release" URL:
 
 ```
-https://github.com/chasegan/cadette/releases/latest/download/cadette-macos-arm64.zip
+https://github.com/chasegan/cadette/releases/latest/download/cadette-macos-arm64.dmg
 ```
 
 This always redirects to the newest release **as long as the release asset is
-named exactly `cadette-macos-arm64.zip`** (no version number in the filename). Make sure
+named exactly `cadette-macos-arm64.dmg`** (no version number in the filename). Make sure
 your release workflow publishes the asset under that stable name. To change the
 platform filenames, edit the `href`s in `index.html`.
 
