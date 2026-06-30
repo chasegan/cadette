@@ -288,9 +288,10 @@ where
             let body = input(*source)?;
             backend.extrude(body, *distance).map_err(backend_err)
         }
-        FeatureKind::Sweep { profile, plane, path } => {
+        FeatureKind::Sweep { profile, path } => {
             let face = input(*profile)?;
-            match path.path_elements() {
+            let crate::SweepPath::Planar { plane, sketch } = path;
+            match sketch.path_elements() {
                 Some(elements) => backend.sweep(face, *plane, &elements).map_err(backend_err),
                 None => Err(RegenError::Invalid {
                     feature,

@@ -567,7 +567,8 @@ fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
             ui.label(RichText::new(format!("{} members", members.len())).small().weak());
         }
         FeatureKind::Sweep { path, .. } => {
-            let segs = path.lines.len() + path.beziers.len();
+            let cdt_core::SweepPath::Planar { sketch, .. } = path;
+            let segs = sketch.lines.len() + sketch.beziers.len();
             ui.label(RichText::new(format!("path: {segs} segments")).small().weak());
         }
     }

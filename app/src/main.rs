@@ -3359,7 +3359,13 @@ mod tests {
         let a = path.add_point(0.0, 0.0);
         let b = path.add_point(0.0, 10.0);
         path.add_line(a, b);
-        doc.add("Sweep", FeatureKind::Sweep { profile: prof, plane: SketchPlane::Xz, path });
+        doc.add(
+            "Sweep",
+            FeatureKind::Sweep {
+                profile: prof,
+                path: cdt_core::SweepPath::Planar { plane: SketchPlane::Xz, sketch: path },
+            },
+        );
 
         let mut m = Modeler::new();
         m.doc = doc;

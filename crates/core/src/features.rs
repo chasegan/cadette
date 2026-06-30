@@ -144,14 +144,19 @@ pub enum FeatureKind {
     /// this feature, and the members become independently visible again.
     Group { members: Vec<FeatureId> },
 
-    /// Sweep the planar profile `profile` (a sketch face) along an open `path`
-    /// curve lying on `plane`, keeping the profile normal to the path. The path
-    /// is stored inline as an open sketch chain.
-    Sweep {
-        profile: FeatureId,
-        plane: SketchPlane,
-        path: Sketch2d,
-    },
+    /// Sweep the planar profile `profile` (a sketch face) along an open `path`,
+    /// keeping the profile normal to the path.
+    Sweep { profile: FeatureId, path: SweepPath },
+}
+
+/// The path a [`FeatureKind::Sweep`] follows. An enum so future path *sources* —
+/// a free-space 3D curve, or references to existing model edges — slot in as new
+/// variants without disturbing the planar case or breaking saved projects.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum SweepPath {
+    /// An open chain drawn on `plane` (the current MVP). The kernel still sweeps
+    /// along a generic spine, so a 3D variant needs no kernel change.
+    Planar { plane: SketchPlane, sketch: Sketch2d },
 }
 
 impl FeatureKind {
