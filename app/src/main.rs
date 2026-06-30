@@ -163,6 +163,9 @@ struct SketchSession {
     /// The feature being re-edited, if this session reopened an existing sketch
     /// — `finish` writes back to it in place. `None` for a brand-new sketch.
     editing: Option<FeatureId>,
+    /// When set, this session draws an OPEN sweep PATH (no auto-close); `finish`
+    /// builds a `Sweep` of this profile feature along the drawn path.
+    sweep_profile: Option<FeatureId>,
     /// The point currently being dragged (Select tool), if any.
     dragging: Option<PointId>,
     /// The bezier control handle being dragged: `(bezier index, is_c1)`.
@@ -1012,6 +1015,7 @@ impl Modeler {
             selected_beziers: Vec::new(),
             dof: 0,
             editing: None,
+            sweep_profile: None,
             dragging: None,
             dragging_handle: None,
             dragging_smooth: true,
@@ -1019,6 +1023,27 @@ impl Modeler {
             pen_press: None,
             pen_start_in: None,
         });
+    }
+
+    /// Begin drawing a sweep PATH: an open chain on `plane` that, on finish,
+    /// sweeps the selected `profile` sketch along it.
+    fn start_sweep_path(&mut self, profile: FeatureId, plane: SketchPlane) {
+        self.start_sketch(plane);
+        if let Some(s) = self.sketch_session.as_mut() {
+            s.sweep_profile = Some(profile);
+        }
+        self.selection.clear();
+    }
+
+    /// The selected body's feature id if it can be a sweep PROFILE — any sketch
+    /// (constraint or simple) that evaluates to a planar face.
+    fn sweepable_profile(&self) -> Option<FeatureId> {
+        let id = self.selected_body()?;
+        matches!(
+            self.doc.history.get(id).map(|f| &f.kind),
+            Some(FeatureKind::ConstraintSketch { .. } | FeatureKind::Sketch { .. })
+        )
+        .then_some(id)
     }
 
     /// Re-open an existing constraint sketch for editing: load its plane and
@@ -1041,6 +1066,7 @@ impl Modeler {
             selected_beziers: Vec::new(),
             dof: 0,
             editing: Some(id),
+            sweep_profile: None,
             dragging: None,
             dragging_handle: None,
             dragging_smooth: true,
@@ -1073,6 +1099,26 @@ impl Modeler {
         let Some(session) = self.sketch_session.take() else {
             return false;
         };
+        // A sweep-path session commits a Sweep of its profile along the open path.
+        if let Some(profile) = session.sweep_profile {
+            if session.sketch.path_elements().is_none() {
+                return false; // not a single open chain — discard
+            }
+            let before = self.doc.clone();
+            let id = self.doc.add(
+                "Sweep",
+                FeatureKind::Sweep {
+                    profile,
+                    path: cdt_core::SweepPath::Planar {
+                        plane: session.plane,
+                        sketch: session.sketch,
+                    },
+                },
+            );
+            self.record_undo(before);
+            self.ui.selected = Some(id);
+            return true;
+        }
         if session.sketch.profile_elements().is_none() {
             // Not a closed loop — discard rather than commit something invalid.
             return false;
@@ -1149,6 +1195,14 @@ impl Modeler {
         #[allow(deprecated)]
         egui::Panel::top("sketch_toolbar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
+                if session.sweep_profile.is_some() {
+                    ui.label(
+                        egui::RichText::new(format!("➿ Sweep path ({})", session.plane.label()))
+                            .strong(),
+                    )
+                    .on_hover_text("Draw an OPEN curve; Finish sweeps the profile along it");
+                    ui.separator();
+                }
                 if ui.button("✓ Finish").clicked() {
                     actions.push(SketchAction::Finish);
                 }
@@ -1482,7 +1536,7 @@ impl Modeler {
                     if let Some(pos) = response.interact_pointer_pos() {
                         match session.tool {
                             SketchTool::Line => {
-                                let near_start = !session.closed
+                                let near_start = !session.closed && session.sweep_profile.is_none()
                                     && session
                                         .start
                                         .map(|id| session.sketch.point(id))
@@ -1519,7 +1573,7 @@ impl Modeler {
                                 }
                             }
                             SketchTool::Pen => {
-                                let near_start = !session.closed
+                                let near_start = !session.closed && session.sweep_profile.is_none()
                                     && session
                                         .start
                                         .map(|id| session.sketch.point(id))
@@ -1902,8 +1956,9 @@ impl Controller for Modeler {
             // If the selected body IS a constraint sketch, offer to re-edit it
             // instead of starting a new sketch on its plane.
             let edit_sketch_id = self.editable_sketch();
-            let (mut sketch, mut fillet, mut mirror, mut ungroup, mut edit) =
-                (false, false, false, false, false);
+            let sweep_profile_id = self.sweepable_profile();
+            let (mut sketch, mut fillet, mut mirror, mut ungroup, mut edit, mut sweep) =
+                (false, false, false, false, false, false);
             let mut flip: Option<Axis3> = None;
             #[allow(deprecated)]
             egui::Panel::top("selection_bar").show(ctx, |ui| {
@@ -1917,6 +1972,14 @@ impl Controller for Modeler {
                             .clicked();
                     } else if can_sketch {
                         sketch = ui.button("✏ Sketch on this face").clicked();
+                    }
+                    if sweep_profile_id.is_some() {
+                        sweep = ui
+                            .button("➿ Sweep")
+                            .on_hover_text(
+                                "Sweep this profile along a path you draw (on the toolbar's sketch plane)",
+                            )
+                            .clicked();
                     }
                     fillet = ui
                         .button("⌒ Fillet face edges")
@@ -1953,6 +2016,11 @@ impl Controller for Modeler {
             }
             if sketch {
                 self.sketch_on_selected_face();
+            }
+            if sweep {
+                if let Some(profile) = sweep_profile_id {
+                    self.start_sweep_path(profile, self.ui.sketch_plane);
+                }
             }
             if fillet {
                 changed |= self.fillet_selected_face_edges();
@@ -3374,6 +3442,38 @@ mod tests {
         let (min, max) = bounds(&mesh);
         assert!(min[2].abs() < 0.5 && (max[2] - 10.0).abs() < 0.5, "tube spans z 0..10");
         assert!((span(&mesh, 0) - 4.0).abs() < 0.5, "tube ⌀4 in x: {}", span(&mesh, 0));
+    }
+
+    #[test]
+    fn sweep_path_session_commits_a_sweep_feature() {
+        // Select a circle profile, start a path session, draw an open chain, and
+        // finishing must add a Sweep (not a sketch) that regenerates into a tube.
+        let mut m = Modeler::new();
+        m.doc = Document::new("sweepui");
+        let prof = m.doc.add(
+            "Profile",
+            FeatureKind::Sketch { plane: SketchPlane::Xy, profile: Profile::Circle { radius: 2.0 } },
+        );
+        m.ui.sketch_plane = SketchPlane::Xz;
+        let n0 = m.doc.history.len();
+
+        m.start_sweep_path(prof, SketchPlane::Xz);
+        let s = m.sketch_session.as_mut().expect("path session");
+        assert!(s.sweep_profile.is_some(), "session is in sweep-path mode");
+        // Draw an open two-point path going up (XZ plane: local v -> world Z).
+        let a = s.sketch.add_point(0.0, 0.0);
+        let b = s.sketch.add_point(0.0, 10.0);
+        s.sketch.add_line(a, b);
+
+        assert!(m.finish_sketch(), "finishing commits the sweep");
+        assert!(m.sketch_session.is_none(), "session ends");
+        assert_eq!(m.doc.history.len(), n0 + 1, "exactly one new feature (the Sweep)");
+        let tip = *m.ui.visible.last().unwrap_or(&prof);
+        let _ = tip;
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        let (min, max) = bounds(&mesh);
+        assert!(min[2].abs() < 0.5 && (max[2] - 10.0).abs() < 0.5, "tube spans z 0..10");
     }
 
     #[test]
