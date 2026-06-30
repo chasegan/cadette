@@ -82,6 +82,32 @@ jobs:
           </plist>
           PLIST
 
+          # dylibbundler can add the same LC_RPATH (@executable_path/../Frameworks/)
+          # to a dylib more than once, because it re-fixes a shared dependency for
+          # each library that pulls it in. Modern dyld treats a duplicate LC_RPATH
+          # as fatal, so a downloaded app crashes at launch with
+          #   Library not loaded: @executable_path/../Frameworks/libtbb.*.dylib
+          #   ... (duplicate LC_RPATH '@executable_path/../Frameworks/')
+          # Collapse any duplicated rpath to a single entry on every Mach-O in the
+          # bundle: for each value seen more than once, delete every copy then add
+          # one back. Must run before codesign, since editing load commands
+          # invalidates the signature.
+          dedup_rpaths() {
+            local f="$1" count value
+            otool -l "$f" \
+              | awk '/^[[:space:]]*cmd LC_RPATH/{rp=1;next} rp&&/^[[:space:]]*path /{print $2;rp=0}' \
+              | sort | uniq -c \
+              | while read -r count value; do
+                  if [ "$count" -gt 1 ]; then
+                    while install_name_tool -delete_rpath "$value" "$f" 2>/dev/null; do :; done
+                    install_name_tool -add_rpath "$value" "$f"
+                  fi
+                done
+          }
+          for f in "$APP/Contents/MacOS/cadette" "$APP/Contents/Frameworks/"*.dylib; do
+            dedup_rpaths "$f"
+          done
+
           # dylibbundler runs install_name_tool, which invalidates the ad-hoc
           # code signature the linker applied. On Apple Silicon a binary with an
           # invalid signature is refused by the kernel and macOS reports the app
