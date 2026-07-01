@@ -404,13 +404,13 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
         .features()
         .iter()
         .zip(graph.rows.iter())
-        .map(|(f, gr)| (f.id, f.name.clone(), f.kind.type_name(), f.suppressed, gr.clone()))
+        .map(|(f, gr)| (f.id, f.name.clone(), f.suppressed, gr.clone()))
         .collect();
 
     // Contiguous rows so the lane lines join across rows.
     ui.spacing_mut().item_spacing.y = 0.0;
 
-    for (index, (id, name, type_name, suppressed, gr)) in rows.into_iter().enumerate() {
+    for (index, (id, name, suppressed, gr)) in rows.into_iter().enumerate() {
         let rolled_back = index >= active;
         let error = state.error_for(id).map(str::to_owned);
         let selected = state.selected == Some(id);
@@ -472,7 +472,7 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
                 changed = true;
             }
 
-            let mut text = RichText::new(format!("{name}  ·  {type_name}"));
+            let mut text = RichText::new(name.clone());
             if error.is_some() {
                 text = text.color(ERROR_COLOR);
             } else if dim {
@@ -509,7 +509,12 @@ pub fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
         return false;
     };
 
-    ui.label(RichText::new(format!("Edit · {}", feature.name)).strong());
+    // Name is primary; the operation kind is a dim secondary (it's dropped from
+    // the Build Graph rows, so this is where you confirm what a step actually is).
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(&feature.name).strong());
+        ui.label(RichText::new(feature.kind.type_name()).weak());
+    });
     ui.add_space(2.0);
 
     match &mut feature.kind {
