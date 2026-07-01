@@ -393,14 +393,33 @@ struct Modeler {
     /// The file this project is bound to (set on Open/Save). The window title
     /// shows its name — "Untitled" until the first save.
     current_path: Option<std::path::PathBuf>,
-    /// Unsaved-changes flag, shown as a leading "•" in the window title.
+    /// Unsaved-changes flag, shown as a leading "●" in the window title. Derived
+    /// (in `mesh`, whenever the doc changes) by comparing the document against
+    /// [`Self::saved_sig`], so undoing back to the saved state clears it.
     dirty: bool,
+    /// Signature of the document as last saved/opened (or the initial baseline);
+    /// `dirty` is `doc_signature(&doc) != saved_sig`.
+    saved_sig: u64,
+}
+
+/// A cheap content signature of the document (a hash of its serialized form),
+/// for detecting whether it differs from the last saved/baseline state.
+fn doc_signature(doc: &Document) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_vec(doc).unwrap_or_default().hash(&mut h);
+    h.finish()
 }
 
 impl Modeler {
     fn new() -> Self {
+        // Store the solved doc so its baseline signature matches what `mesh`
+        // hashes (which is post-solve).
+        let mut doc = build_document();
+        solve_sketches(&mut doc);
+        let saved_sig = doc_signature(&doc);
         Self {
-            doc: build_document(),
+            doc,
             backend: KernelBackend::default(),
             regen_cache: RegenCache::new(),
             status: None,
@@ -422,6 +441,7 @@ impl Modeler {
             clipboard: None,
             current_path: None,
             dirty: false,
+            saved_sig,
         }
     }
 
@@ -619,7 +639,7 @@ impl Modeler {
         self.status = Some(match self.save_project_to(&path_str) {
             Ok(()) => {
                 self.current_path = Some(path);
-                self.dirty = false; // saved → title drops the "•"
+                self.mark_saved(); // new clean baseline
                 format!("Saved {path_str}")
             }
             Err(e) => format!("Save failed: {e}"),
@@ -639,7 +659,7 @@ impl Modeler {
         match self.load_project_from(&path_str) {
             Ok(()) => {
                 self.current_path = Some(path);
-                self.dirty = false; // a freshly-opened file has no unsaved edits
+                self.mark_saved(); // freshly-opened baseline
                 self.status = Some(format!("Opened {path_str}"));
                 true
             }
@@ -1187,7 +1207,21 @@ impl Modeler {
         }
         self.undo.push(before);
         self.redo.clear();
-        self.dirty = true; // an edit happened → unsaved changes
+        // `dirty` is recomputed in `mesh` (whenever the doc changes), so undoing
+        // back to the saved state clears it — no one-way latch here.
+    }
+
+    /// Mark the current document as the clean baseline (on save/open): its
+    /// signature becomes the reference `dirty` is measured against.
+    fn mark_saved(&mut self) {
+        solve_sketches(&mut self.doc); // hash the same (solved) state `mesh` will
+        self.saved_sig = doc_signature(&self.doc);
+        self.dirty = false;
+    }
+
+    /// Recompute the unsaved-changes flag against the saved baseline.
+    fn refresh_dirty(&mut self) {
+        self.dirty = doc_signature(&self.doc) != self.saved_sig;
     }
 
     /// Restore the previous document state. Returns whether anything changed.
@@ -2339,6 +2373,10 @@ impl Controller for Modeler {
     /// into one mesh. Records per-feature errors for the panel.
     fn mesh(&mut self) -> MeshData {
         solve_sketches(&mut self.doc);
+        // The viewer calls this exactly when the doc changed (edit / undo / redo /
+        // drag), so it's the natural place to refresh the unsaved-changes flag.
+        // Compared post-solve, matching the state a save would serialize.
+        self.refresh_dirty();
         let regen = self.regen_cache.regenerate(&self.doc, &mut self.backend);
         self.ui.errors = regen
             .errors()
@@ -3528,6 +3566,7 @@ mod tests {
             clipboard: None,
             current_path: None,
             dirty: false,
+            saved_sig: 0,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());
@@ -3595,6 +3634,38 @@ mod tests {
         assert_eq!(m.title(), "Cadette — bracket.cdt", "app name first, then file, clean");
         m.dirty = true;
         assert_eq!(m.title(), "Cadette — ● bracket.cdt");
+    }
+
+    #[test]
+    fn dirty_clears_when_undoing_back_to_the_saved_state() {
+        let mut m = Modeler::new();
+        m.refresh_dirty();
+        assert!(!m.dirty, "a fresh doc matches its baseline");
+
+        // Edit: snapshot, mutate, record.
+        let before = m.doc.clone();
+        m.doc
+            .add_numbered("Box", FeatureKind::Box { size: DVec3::splat(5.0) });
+        m.record_undo(before);
+        m.refresh_dirty();
+        assert!(m.dirty, "after an edit");
+
+        // Undo back to the baseline → clean again (the reported bug).
+        assert!(m.undo());
+        m.refresh_dirty();
+        assert!(!m.dirty, "undoing to the saved state clears dirty");
+
+        // Redo re-applies the change → dirty again.
+        assert!(m.redo());
+        m.refresh_dirty();
+        assert!(m.dirty, "redo re-dirties");
+
+        // Saving here rebaselines; undoing away from it is dirty again.
+        m.mark_saved();
+        assert!(!m.dirty, "save marks clean");
+        assert!(m.undo());
+        m.refresh_dirty();
+        assert!(m.dirty, "undo away from the saved state is dirty");
     }
 
     #[test]
@@ -4886,6 +4957,7 @@ mod tests {
             clipboard: None,
             current_path: None,
             dirty: false,
+            saved_sig: 0,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());
