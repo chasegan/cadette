@@ -3049,6 +3049,33 @@ fn error_message(err: &RegenError<cdt_kernel::KernelError>, doc: &Document) -> S
     }
 }
 
+/// Give the process a proper macOS identity so the menu bar reads "Cadette"
+/// (winit builds "About/Hide/Quit &lt;processName&gt;" from `NSProcessInfo`) and the
+/// standard About panel shows the name + version — an unbundled dev binary
+/// otherwise shows "cdt-app". The shipped `.app` gets these from its Info.plist;
+/// this makes local runs match.
+#[cfg(target_os = "macos")]
+fn set_macos_app_identity(name: &str, version: &str) {
+    use objc2::msg_send;
+    use objc2_foundation::{NSBundle, NSProcessInfo, NSString};
+    // Safety: correctly-typed main-thread message sends, run once before the
+    // event loop. The main bundle's info dictionary is mutable in-process, so the
+    // standard About panel picks up the injected name/version.
+    unsafe {
+        let ns_name = NSString::from_str(name);
+        let proc = NSProcessInfo::processInfo();
+        let _: () = msg_send![&proc, setProcessName: &*ns_name];
+
+        if let Some(info) = NSBundle::mainBundle().infoDictionary() {
+            let ns_version = NSString::from_str(version);
+            let v_key = NSString::from_str("CFBundleShortVersionString");
+            let _: () = msg_send![&info, setObject: &*ns_version, forKey: &*v_key];
+            let n_key = NSString::from_str("CFBundleName");
+            let _: () = msg_send![&info, setObject: &*ns_name, forKey: &*n_key];
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
@@ -3453,6 +3480,12 @@ fn main() -> anyhow::Result<()> {
     println!("Cadette — interactive modeler");
     println!("  history panel: edit/suppress/reorder features, drag the rollback bar");
     println!("  viewport: left-drag orbit, right/middle-drag pan, scroll zoom\n");
+
+    // Name the app for the macOS menu bar + About panel before the event loop
+    // builds the menu (dev binaries would otherwise show "cdt-app").
+    #[cfg(target_os = "macos")]
+    set_macos_app_identity("Cadette", env!("CARGO_PKG_VERSION"));
+
     cdt_render::run(modeler)?;
     Ok(())
 }
@@ -3634,6 +3667,17 @@ mod tests {
         assert_eq!(m.title(), "Cadette — bracket.cdt", "app name first, then file, clean");
         m.dirty = true;
         assert_eq!(m.title(), "Cadette — ● bracket.cdt");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_app_identity_renames_the_process_without_crashing() {
+        // Exercises the objc message sends headlessly: if the info-dictionary
+        // mutation were to raise (immutable dict), this aborts the test.
+        set_macos_app_identity("Cadette", "9.9.9");
+        use objc2_foundation::NSProcessInfo;
+        let name = NSProcessInfo::processInfo().processName().to_string();
+        assert_eq!(name, "Cadette", "process name drives the macOS app menu");
     }
 
     #[test]
