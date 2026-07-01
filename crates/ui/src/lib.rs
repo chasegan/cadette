@@ -11,11 +11,19 @@
 //! no kernel.
 
 use egui::{Color32, Context, RichText, Ui};
+use egui_phosphor::regular as icon;
 use cdt_core::{
     BooleanOp, Constraint, Document, FeatureId, FeatureKind, Profile, SketchPlane, DVec3,
 };
 
 const ERROR_COLOR: Color32 = Color32::from_rgb(232, 92, 92);
+
+/// An icon-only toolbar button: the Phosphor `glyph` with `tip` as its tooltip.
+fn icon_btn(ui: &mut Ui, glyph: &str, tip: &str, enabled: bool) -> bool {
+    ui.add_enabled(enabled, egui::Button::new(RichText::new(glyph).size(18.0)))
+        .on_hover_text(tip)
+        .clicked()
+}
 
 /// Persistent UI state owned by the host across frames.
 pub struct HistoryState {
@@ -124,6 +132,10 @@ pub fn history_panel(
 ) -> HistoryResponse {
     let mut resp = HistoryResponse::default();
 
+    // Persistent commands live in the top toolbar; the left panel is the Build
+    // Graph + workplane settings + the selected-feature editor.
+    command_bar(ctx, doc, state, &mut resp);
+
     // egui 0.34 is mid-migration to a unified `Panel`; the context-level
     // `.show(ctx)` is deprecated in favor of `show_inside(ui)`, but at the top
     // of a frame we only hold a `&Context`. `.show(ctx)` still works, so allow
@@ -140,39 +152,6 @@ pub fn history_panel(
                     .small()
                     .weak(),
             );
-
-            ui.horizontal(|ui| {
-                if ui.button("Open…").on_hover_text("Open a .cdt project").clicked() {
-                    resp.open_project = true;
-                }
-                if ui.button("Save…").on_hover_text("Save the project (.cdt)").clicked() {
-                    resp.save_project = true;
-                }
-            });
-
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(state.can_undo, egui::Button::new("↶ Undo"))
-                    .on_hover_text("Undo (⌘Z)")
-                    .clicked()
-                {
-                    resp.undo = true;
-                }
-                if ui
-                    .add_enabled(state.can_redo, egui::Button::new("↷ Redo"))
-                    .on_hover_text("Redo (⇧⌘Z)")
-                    .clicked()
-                {
-                    resp.redo = true;
-                }
-                if ui
-                    .button("⬇ Export STL")
-                    .on_hover_text("Export the model as a binary STL for printing")
-                    .clicked()
-                {
-                    resp.export_stl = true;
-                }
-            });
 
             ui.horizontal(|ui| {
                 ui.label("Grid");
@@ -202,20 +181,6 @@ pub fn history_panel(
                 ui.checkbox(&mut state.snap_to_grid, "Snap")
                     .on_hover_text("Snap moves and resizes to the grid (Alt overrides)");
             });
-            ui.separator();
-
-            let mut started = false;
-            resp.changed |= add_feature_toolbar(
-                ui,
-                doc,
-                state,
-                &mut started,
-                &mut resp.boolean,
-                &mut resp.extrude,
-            );
-            if started {
-                resp.start_sketch = Some(state.sketch_plane);
-            }
             ui.separator();
 
             resp.changed |= rollback_controls(ui, doc);
@@ -283,21 +248,18 @@ pub fn history_panel(
     resp
 }
 
-/// Buttons to create new features. Primitives are always available; unary ops
-/// (Move, Fillet) and booleans require visible bodies to act on, so they enable
-/// only when valid inputs exist. New features are selected on creation.
-fn add_feature_toolbar(
-    ui: &mut Ui,
+/// The persistent top command bar: file, edit/export, and create/modify ops as
+/// icon buttons (tooltips carry the labels). Primitives are always available;
+/// unary ops (Move, Fillet) and booleans enable only when valid inputs exist.
+/// New features are selected on creation.
+fn command_bar(
+    ctx: &Context,
     doc: &mut Document,
     state: &mut HistoryState,
-    start_sketch: &mut bool,
-    boolean: &mut Option<BooleanOp>,
-    extrude: &mut Option<FeatureId>,
-) -> bool {
-    let mut changed = false;
-
-    // Pick operation inputs up front (immutable borrows of doc/state) so the
-    // mutating `add` closure can take exclusive borrows afterward.
+    resp: &mut HistoryResponse,
+) {
+    // Operation inputs up front (immutable borrows) so the mutating `add` closure
+    // can take exclusive borrows afterward.
     let unary = state.unary_source();
     let can_bool = state.can_boolean();
     let extrude_source = unary.filter(|id| {
@@ -307,89 +269,74 @@ fn add_feature_toolbar(
         )
     });
 
-    let mut add = |state: &mut HistoryState, name: &str, kind: FeatureKind| {
-        let id = doc.add(name, kind);
-        state.selected = Some(id);
-        changed = true;
-    };
-
-    ui.label(RichText::new("Add").small().weak());
-
-    ui.horizontal_wrapped(|ui| {
-        if ui.button("Box").clicked() {
-            add(state, "Box", FeatureKind::Box { size: DVec3::splat(20.0) });
-        }
-        if ui.button("Cylinder").clicked() {
-            add(state, "Cylinder", FeatureKind::Cylinder { radius: 10.0, height: 20.0 });
-        }
-        if ui.button("Sphere").clicked() {
-            add(state, "Sphere", FeatureKind::Sphere { radius: 10.0 });
-        }
-        if ui
-            .button("Sketch")
-            .on_hover_text("Draw a 2D profile on the chosen plane")
-            .clicked()
-        {
-            *start_sketch = true;
-        }
-        // Which origin plane the sketch starts on (XY/XZ/YZ).
-        plane_picker(ui, &mut state.sketch_plane);
-    });
-
-    ui.horizontal_wrapped(|ui| {
-        if ui
-            .add_enabled(extrude_source.is_some(), egui::Button::new("Extrude"))
-            .on_hover_text("Extrude the selected/last sketch into a solid")
-            .clicked()
-        {
-            // The host builds it (it knows the view, to extrude toward the camera).
-            *extrude = extrude_source;
-        }
-        if ui
-            .add_enabled(unary.is_some(), egui::Button::new("Move"))
-            .on_hover_text("Translate the selected/last body")
-            .clicked()
-        {
-            add(
-                state,
-                "Move",
-                FeatureKind::Translate {
-                    source: unary.unwrap(),
-                    offset: DVec3::new(10.0, 0.0, 0.0),
-                },
-            );
-        }
-        if ui
-            .add_enabled(unary.is_some(), egui::Button::new("Fillet all"))
-            .on_hover_text("Fillet every edge of the selected/last body (to round a single edge, select it and use the action bar)")
-            .clicked()
-        {
-            add(
-                state,
-                "Fillet",
-                FeatureKind::FilletAll {
-                    source: unary.unwrap(),
-                    radius: 2.0,
-                },
-            );
-        }
-        for (label, op, hint) in [
-            ("Union", BooleanOp::Union, "Merge the selected body with the others"),
-            ("Subtract", BooleanOp::Subtract, "Carve the selected body out of the others"),
-            ("Intersect", BooleanOp::Intersect, "Keep where the selected body meets the others"),
-        ] {
-            if ui
-                .add_enabled(can_bool, egui::Button::new(label))
-                .on_hover_text(hint)
-                .clicked()
-            {
-                // The host applies it (it owns the selection + visible set).
-                *boolean = Some(op);
+    egui::TopBottomPanel::top("command_bar").show(ctx, |ui| {
+        ui.add_space(2.0);
+        ui.horizontal_wrapped(|ui| {
+            // File.
+            if icon_btn(ui, icon::FOLDER_OPEN, "Open project (.cdt)", true) {
+                resp.open_project = true;
             }
-        }
-    });
+            if icon_btn(ui, icon::FLOPPY_DISK, "Save project (.cdt)", true) {
+                resp.save_project = true;
+            }
+            ui.separator();
+            // Edit + export.
+            if icon_btn(ui, icon::ARROW_ARC_LEFT, "Undo (⌘Z)", state.can_undo) {
+                resp.undo = true;
+            }
+            if icon_btn(ui, icon::ARROW_ARC_RIGHT, "Redo (⇧⌘Z)", state.can_redo) {
+                resp.redo = true;
+            }
+            if icon_btn(ui, icon::EXPORT, "Export the model as an STL for printing", true) {
+                resp.export_stl = true;
+            }
+            ui.separator();
 
-    changed
+            // Create (always) + modify (selection-gated). `add` passes `state`
+            // per call so `plane_picker` can also borrow it between calls.
+            let mut changed = false;
+            let mut add = |state: &mut HistoryState, name: &str, kind: FeatureKind| {
+                let id = doc.add(name, kind);
+                state.selected = Some(id);
+                changed = true;
+            };
+            if icon_btn(ui, icon::CUBE, "Box", true) {
+                add(state, "Box", FeatureKind::Box { size: DVec3::splat(20.0) });
+            }
+            if icon_btn(ui, icon::CYLINDER, "Cylinder", true) {
+                add(state, "Cylinder", FeatureKind::Cylinder { radius: 10.0, height: 20.0 });
+            }
+            if icon_btn(ui, icon::SPHERE, "Sphere", true) {
+                add(state, "Sphere", FeatureKind::Sphere { radius: 10.0 });
+            }
+            if icon_btn(ui, icon::PENCIL_SIMPLE, "Sketch a 2D profile on the chosen plane", true) {
+                resp.start_sketch = Some(state.sketch_plane);
+            }
+            plane_picker(ui, &mut state.sketch_plane);
+            ui.separator();
+
+            let extrude_ok = extrude_source.is_some();
+            if icon_btn(ui, icon::ARROW_LINE_UP, "Extrude the selected/last sketch into a solid", extrude_ok) {
+                resp.extrude = extrude_source;
+            }
+            if icon_btn(ui, icon::ARROWS_OUT_CARDINAL, "Move the selected/last body", unary.is_some()) {
+                add(state, "Move", FeatureKind::Translate { source: unary.unwrap(), offset: DVec3::new(10.0, 0.0, 0.0) });
+            }
+            if icon_btn(ui, icon::FRAME_CORNERS, "Fillet every edge of the selected/last body", unary.is_some()) {
+                add(state, "Fillet", FeatureKind::FilletAll { source: unary.unwrap(), radius: 2.0 });
+            }
+            for (glyph, op, tip) in [
+                (icon::UNITE, BooleanOp::Union, "Union: merge the selected body with the others"),
+                (icon::SUBTRACT, BooleanOp::Subtract, "Subtract: carve the selected body out of the others"),
+                (icon::INTERSECT, BooleanOp::Intersect, "Intersect: keep where the selected body meets the others"),
+            ] {
+                if icon_btn(ui, glyph, tip, can_bool) {
+                    resp.boolean = Some(op);
+                }
+            }
+            resp.changed |= changed;
+        });
+    });
 }
 
 fn rollback_controls(ui: &mut Ui, doc: &mut Document) -> bool {
