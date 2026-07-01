@@ -18,6 +18,7 @@ use cdt_core::{
 use cdt_interaction::Selection;
 use cdt_kernel::{KernelBackend, Solid};
 use cdt_render::egui;
+use egui_phosphor::regular as phi;
 use cdt_render::{
     Axis3, Controller, Gizmo, GizmoHandle, Highlights, MeshData, Pick, ResizeBox, TransformDelta,
     ViewContext,
@@ -1980,6 +1981,19 @@ fn toggle<T: PartialEq>(v: &mut Vec<T>, item: T) {
     }
 }
 
+/// A full-width contextual action button: Phosphor `icon` + `label`, `tip` on
+/// hover. Used in the right Actions panel.
+fn action_btn(ui: &mut egui::Ui, icon: &str, label: &str, tip: &str, enabled: bool) -> bool {
+    let w = ui.available_width();
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(egui::RichText::new(format!("{icon}  {label}")))
+            .min_size(egui::vec2(w, 0.0)),
+    )
+    .on_hover_text(tip)
+    .clicked()
+}
+
 fn dist_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
     let ab = b - a;
     let len_sq = ab.length_sq();
@@ -2005,71 +2019,108 @@ impl Controller for Modeler {
         let mut changed = false;
         let mut sketch_actions: Vec<SketchAction> = Vec::new();
 
-        // --- Selection action bar: contextual actions for the picked entity ---
-        if self.sketch_session.is_none()
-            && matches!(self.selection.selected(), [Pick::Face(_)])
+        // --- Right dock: contextual Actions for the picked entity + the
+        // selected feature's Properties (replaces the old across-the-top strips).
         {
-            let can_sketch = self.selection.can_sketch_on_face();
-            // A mirror plane needs a planar face — same condition as sketching.
-            let can_mirror = self.selection.face_plane.is_some();
-            let can_ungroup =
-                self.selected_body().is_some_and(|b| self.group_and_chain(b).is_some());
-            // If the selected body IS a constraint sketch, offer to re-edit it
-            // instead of starting a new sketch on its plane.
-            let edit_sketch_id = self.editable_sketch();
-            let sweep_profile_id = self.sweepable_profile();
-            let (mut sketch, mut fillet, mut mirror, mut ungroup, mut edit, mut sweep) =
+            let sel = self.selection.selected();
+            let single_face = self.sketch_session.is_none() && matches!(sel, [Pick::Face(_)]);
+            let multi_face = self.sketch_session.is_none()
+                && sel.len() >= 2
+                && sel.iter().all(|p| matches!(p, Pick::Face(_)));
+            let edges = self.sketch_session.is_none() && self.selection.is_edges();
+            let n_sel = sel.len();
+
+            // Single-face gating.
+            let can_sketch = single_face && self.selection.can_sketch_on_face();
+            let can_mirror = single_face && self.selection.face_plane.is_some();
+            let can_ungroup = single_face
+                && self.selected_body().is_some_and(|b| self.group_and_chain(b).is_some());
+            let edit_sketch_id = single_face.then(|| self.editable_sketch()).flatten();
+            let sweep_profile_id = single_face.then(|| self.sweepable_profile()).flatten();
+            // Multi-face + edge gating.
+            let n_bodies = if multi_face { self.selected_bodies().len() } else { 0 };
+            let can_revolve = edges && self.revolvable_profile().is_some();
+
+            let (mut sketch, mut edit, mut sweep, mut fillet_face, mut mirror, mut ungroup) =
                 (false, false, false, false, false, false);
             let mut flip: Option<Axis3> = None;
-            #[allow(deprecated)]
-            egui::Panel::top("selection_bar").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Face selected");
-                    ui.separator();
-                    if edit_sketch_id.is_some() {
-                        edit = ui
-                            .button("✎ Edit sketch")
-                            .on_hover_text("Re-open this sketch to move its points")
-                            .clicked();
-                    } else if can_sketch {
-                        sketch = ui.button("✏ Sketch on this face").clicked();
-                    }
-                    if sweep_profile_id.is_some() {
-                        sweep = ui
-                            .button("➿ Sweep")
-                            .on_hover_text(
-                                "Sweep this profile along a path you draw (on the toolbar's sketch plane)",
-                            )
-                            .clicked();
-                    }
-                    fillet = ui
-                        .button("⌒ Fillet face edges")
-                        .on_hover_text("Round all edges bounding this face")
-                        .clicked();
-                    if can_mirror {
-                        mirror = ui
-                            .button("⇋ Mirror across this face")
-                            .on_hover_text("Reflect this body across the face — keeps the original")
-                            .clicked();
-                    }
-                    if can_ungroup {
-                        ungroup = ui
-                            .button("⊟ Ungroup")
-                            .on_hover_text("Split this group back into its members (⇧⌘G)")
-                            .clicked();
-                    }
-                    ui.separator();
-                    ui.label("Flip")
-                        .on_hover_text("Mirror this body in place about its center");
-                    for (label, axis) in
-                        [("X", Axis3::X), ("Y", Axis3::Y), ("Z", Axis3::Z)]
-                    {
-                        if ui.small_button(label).clicked() {
-                            flip = Some(axis);
+            let (mut group, mut fillet_edges, mut revolve) = (false, false, false);
+            let mut editor_changed = false;
+
+            egui::SidePanel::right("actions_panel")
+                .resizable(true)
+                .default_width(236.0)
+                .show(ctx, |ui| {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("Actions").strong());
+                    ui.add_space(2.0);
+                    if single_face {
+                        if edit_sketch_id.is_some() {
+                            edit = action_btn(ui, phi::NOTE_PENCIL, "Edit sketch", "Re-open this sketch to move its points", true);
+                        } else if can_sketch {
+                            sketch = action_btn(ui, phi::PENCIL_SIMPLE, "Sketch on face", "Draw a 2D profile on this face", true);
                         }
+                        if sweep_profile_id.is_some() {
+                            sweep = action_btn(ui, phi::PATH, "Sweep", "Sweep this profile along a path you draw (toolbar's sketch plane)", true);
+                        }
+                        fillet_face = action_btn(ui, phi::FRAME_CORNERS, "Fillet face edges", "Round all edges bounding this face", true);
+                        if can_mirror {
+                            mirror = action_btn(ui, phi::FLIP_HORIZONTAL, "Mirror across face", "Reflect this body across the face — keeps the original", true);
+                        }
+                        if can_ungroup {
+                            ungroup = action_btn(ui, phi::STACK_MINUS, "Ungroup", "Split this group back into its members (⇧⌘G)", true);
+                        }
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label("Flip").on_hover_text("Mirror this body in place about its center");
+                            for (l, ax) in [("X", Axis3::X), ("Y", Axis3::Y), ("Z", Axis3::Z)] {
+                                if ui.small_button(l).clicked() {
+                                    flip = Some(ax);
+                                }
+                            }
+                        });
+                    } else if multi_face {
+                        ui.label(egui::RichText::new(format!("{n_sel} faces · {n_bodies} bodies")).small().weak());
+                        ui.add_space(2.0);
+                        if n_bodies == 1 {
+                            fillet_edges = action_btn(ui, phi::FRAME_CORNERS, "Fillet face edges", "Round all edges of the selected faces", true);
+                        }
+                        if n_bodies >= 2 {
+                            group = action_btn(ui, phi::STACK_PLUS, &format!("Group {n_bodies} bodies"), "Combine into one unit that moves/rotates together (⌘G)", true);
+                        }
+                        ui.add_space(2.0);
+                        ui.weak("⇧/⌘-click to add faces");
+                    } else if edges {
+                        let plural = if n_sel == 1 { "" } else { "s" };
+                        ui.label(egui::RichText::new(format!("{n_sel} edge{plural}")).small().weak());
+                        ui.add_space(2.0);
+                        fillet_edges = action_btn(ui, phi::FRAME_CORNERS,
+                            if n_sel == 1 { "Fillet this edge" } else { "Fillet these edges" },
+                            "Round the selected edge(s)", true);
+                        if can_revolve {
+                            revolve = action_btn(ui, phi::ARROW_CLOCKWISE, "Revolve about edge", "Spin the sketch profile a full turn about this edge", true);
+                        }
+                        ui.add_space(2.0);
+                        ui.weak("⇧/⌘-click to add edges");
+                    } else {
+                        ui.weak("Select a face or edge in the viewport for contextual actions.");
+                    }
+
+                    ui.separator();
+                    ui.label(egui::RichText::new("Properties").strong());
+                    ui.add_space(2.0);
+                    if let Some(id) = self.ui.selected {
+                        editor_changed |= cdt_ui::selected_editor(ui, &mut self.doc, id);
+                    } else {
+                        ui.weak("Select a feature to edit its parameters.");
+                    }
+                    if !self.ui.errors.is_empty() {
+                        ui.separator();
+                        cdt_ui::error_list(ui, &self.doc, &self.ui);
                     }
                 });
-            });
+
+            // Apply the collected actions.
             if edit {
                 if let Some(id) = edit_sketch_id {
                     self.edit_sketch(id);
@@ -2079,11 +2130,11 @@ impl Controller for Modeler {
                 self.sketch_on_selected_face();
             }
             if sweep {
-                if let Some(profile) = sweep_profile_id {
-                    self.start_sweep_path(profile, self.ui.sketch_plane);
+                if let Some(p) = sweep_profile_id {
+                    self.start_sweep_path(p, self.ui.sketch_plane);
                 }
             }
-            if fillet {
+            if fillet_face {
                 changed |= self.fillet_selected_face_edges();
             }
             if mirror {
@@ -2092,78 +2143,23 @@ impl Controller for Modeler {
             if ungroup {
                 changed |= self.ungroup_selected();
             }
-            if let Some(axis) = flip {
-                changed |= self.flip_in_place(axis);
-            }
-        } else if self.sketch_session.is_none()
-            && self.selection.selected().len() >= 2
-            && self.selection.selected().iter().all(|p| matches!(p, Pick::Face(_)))
-        {
-            // Multiple faces selected: fillet them (one body) or group the
-            // distinct bodies behind them (≥2 bodies).
-            let bodies = self.selected_bodies();
-            let n_faces = self.selection.selected().len();
-            let n_bodies = bodies.len();
-            let (mut fillet, mut group) = (false, false);
-            #[allow(deprecated)]
-            egui::Panel::top("selection_bar").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(format!("{n_faces} faces · {n_bodies} bodies"));
-                    ui.separator();
-                    if n_bodies == 1 {
-                        fillet = ui
-                            .button("⌒ Fillet face edges")
-                            .on_hover_text("Round all edges of the selected faces")
-                            .clicked();
-                    }
-                    if n_bodies >= 2 {
-                        group = ui
-                            .button(format!("⊞ Group {n_bodies} bodies"))
-                            .on_hover_text("Combine into one unit that moves/rotates together (⌘G)")
-                            .clicked();
-                    }
-                    ui.separator();
-                    ui.weak("⇧/⌘-click to add faces");
-                });
-            });
-            if fillet {
-                changed |= self.fillet_selected_face_edges();
+            if let Some(ax) = flip {
+                changed |= self.flip_in_place(ax);
             }
             if group {
                 changed |= self.group_selected();
             }
-        } else if self.sketch_session.is_none() && self.selection.is_edges() {
-            let n = self.selection.selected().len();
-            let (label, action) = if n == 1 {
-                ("1 edge selected".to_string(), "⌒ Fillet this edge".to_string())
-            } else {
-                (format!("{n} edges selected"), format!("⌒ Fillet these {n} edges"))
-            };
-            let can_revolve = self.revolvable_profile().is_some();
-            let (mut fillet, mut revolve) = (false, false);
-            #[allow(deprecated)]
-            egui::Panel::top("selection_bar").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(label);
-                    ui.separator();
-                    fillet = ui.button(action).clicked();
-                    if can_revolve {
-                        ui.separator();
-                        revolve = ui
-                            .button("⟳ Revolve about this edge")
-                            .on_hover_text("Spin the sketch profile a full turn about this edge")
-                            .clicked();
-                    }
-                    ui.separator();
-                    ui.weak("⇧/⌘-click to add edges");
-                });
-            });
+            if fillet_edges {
+                changed |= if multi_face {
+                    self.fillet_selected_face_edges()
+                } else {
+                    self.fillet_selected_edges()
+                };
+            }
             if revolve {
                 changed |= self.revolve_selected_profile();
             }
-            if fillet {
-                changed |= self.fillet_selected_edges();
-            }
+            changed |= editor_changed;
         }
 
         // --- Gizmo readout: the live angle / distance next to the gizmo ---

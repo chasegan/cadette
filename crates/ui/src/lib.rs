@@ -19,7 +19,7 @@ use cdt_core::{
 const ERROR_COLOR: Color32 = Color32::from_rgb(232, 92, 92);
 
 /// An icon-only toolbar button: the Phosphor `glyph` with `tip` as its tooltip.
-fn icon_btn(ui: &mut Ui, glyph: &str, tip: &str, enabled: bool) -> bool {
+pub fn icon_btn(ui: &mut Ui, glyph: &str, tip: &str, enabled: bool) -> bool {
     ui.add_enabled(enabled, egui::Button::new(RichText::new(glyph).size(18.0)))
         .on_hover_text(tip)
         .clicked()
@@ -218,26 +218,8 @@ pub fn history_panel(
                 });
             });
 
-            // Pin the selected-feature editor (and any errors) to the bottom —
-            // declared first so it reserves its space — and let the graph scroll
-            // in the area above, so long histories are fully reachable.
-            if state.selected.is_some() || !state.errors.is_empty() {
-                egui::TopBottomPanel::bottom("history_detail")
-                    .resizable(true)
-                    .default_height(190.0)
-                    .show_inside(ui, |ui| {
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            if let Some(selected) = state.selected {
-                                resp.changed |= selected_editor(ui, doc, selected);
-                            }
-                            if !state.errors.is_empty() {
-                                ui.separator();
-                                error_list(ui, doc, state);
-                            }
-                        });
-                    });
-            }
-
+            // The selected-feature editor + problems now live in the right
+            // Actions panel; the Build Graph fills the rest of this panel.
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
@@ -494,7 +476,7 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
     changed
 }
 
-fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
+pub fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
     let mut changed = false;
     let Some(feature) = doc.history.get_mut(id) else {
         return false;
@@ -627,7 +609,7 @@ fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
     changed
 }
 
-fn error_list(ui: &mut Ui, doc: &Document, state: &HistoryState) {
+pub fn error_list(ui: &mut Ui, doc: &Document, state: &HistoryState) {
     ui.label(RichText::new("Problems").color(ERROR_COLOR).strong());
     for (id, msg) in &state.errors {
         let name = doc

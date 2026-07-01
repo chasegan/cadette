@@ -21,3 +21,4 @@ rfd = "0.15"
 # Project files (.cdt): a zip holding the serialized document (+ future imports).
 zip = { version = "2", default-features = false, features = ["deflate"] }
 serde_json = "1"
+egui-phosphor = "0.12.0"

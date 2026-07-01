@@ -519,6 +519,7 @@ dependencies = [
  "cdt-render",
  "cdt-solver",
  "cdt-ui",
+ "egui-phosphor",
  "env_logger",
  "rfd",
  "serde_json",
