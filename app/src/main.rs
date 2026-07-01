@@ -2038,6 +2038,14 @@ impl Controller for Modeler {
         let mut changed = false;
         let mut sketch_actions: Vec<SketchAction> = Vec::new();
 
+        // One undo entry per continuous edit (a Properties drag or a Build Graph
+        // edit): snapshot the doc BEFORE any panel mutates it, then commit that
+        // snapshot below iff something changed. `editing` collapses a multi-frame
+        // drag into a single entry. Discrete actions (fillet, move, …) record
+        // their own undo, so they're excluded here.
+        let snapshot = (!self.editing).then(|| self.doc.clone());
+        let mut ui_edited = false;
+
         // --- Right dock: contextual Actions for the picked entity + the
         // selected feature's Properties (replaces the old across-the-top strips).
         {
@@ -2178,7 +2186,7 @@ impl Controller for Modeler {
             if revolve {
                 changed |= self.revolve_selected_profile();
             }
-            changed |= editor_changed;
+            ui_edited |= editor_changed;
         }
 
         // --- Gizmo readout: the live angle / distance next to the gizmo ---
@@ -2211,11 +2219,11 @@ impl Controller for Modeler {
         // --- History panel + undo/redo ---
         self.ui.can_undo = !self.undo.is_empty();
         self.ui.can_redo = !self.redo.is_empty();
-        // Snapshot the pre-edit state only when not already mid-edit, so a drag
-        // produces one undo entry rather than one per frame.
-        let snapshot = (!self.editing).then(|| self.doc.clone());
         let resp = history_panel(ctx, &mut self.doc, &mut self.ui);
-        if resp.changed {
+        ui_edited |= resp.changed;
+        // Commit the pre-edit snapshot if any continuous UI edit (Properties or
+        // Build Graph) touched the doc this frame.
+        if ui_edited {
             if let Some(before) = snapshot {
                 self.record_undo(before);
             }
@@ -2431,20 +2439,16 @@ impl Controller for Modeler {
     }
 
     fn title(&self) -> String {
-        // App name first, then the open file (Untitled until first saved). The
-        // unsaved-changes state is surfaced separately (see `is_dirty`) — natively
-        // on macOS — rather than as a glyph in the title text.
+        // App name first, then the open file (Untitled until first saved), with a
+        // leading "●" on the file when there are unsaved changes.
         let name = self
             .current_path
             .as_ref()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "Untitled".to_string());
-        format!("Cadette — {name}")
-    }
-
-    fn is_dirty(&self) -> bool {
-        self.dirty
+        let mark = if self.dirty { "● " } else { "" };
+        format!("Cadette — {mark}{name}")
     }
 
     fn start_manipulation(
@@ -3584,13 +3588,13 @@ mod tests {
     fn window_title_tracks_the_file_and_dirty_state() {
         let mut m = Modeler::new();
         assert_eq!(m.title(), "Cadette — Untitled", "no file yet");
-        assert!(!m.is_dirty());
         m.dirty = true;
-        assert!(m.is_dirty(), "unsaved changes flagged (shown as the native dot)");
+        assert_eq!(m.title(), "Cadette — ● Untitled", "unsaved changes marked");
         m.current_path = Some(std::path::PathBuf::from("/tmp/bracket.cdt"));
         m.dirty = false;
-        assert_eq!(m.title(), "Cadette — bracket.cdt", "app name first, then file");
-        assert!(!m.is_dirty());
+        assert_eq!(m.title(), "Cadette — bracket.cdt", "app name first, then file, clean");
+        m.dirty = true;
+        assert_eq!(m.title(), "Cadette — ● bracket.cdt");
     }
 
     #[test]
