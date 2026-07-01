@@ -2265,6 +2265,17 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
         let response = state.egui_state.on_window_event(&state.window, &event);
         let egui_used = response.consumed;
 
+        // Camera NAV (orbit/pan/zoom via right/middle/scroll) works over the
+        // central viewport even when egui "consumed" the pointer: while sketching,
+        // a full-window CentralPanel canvas claims it, but nav over that canvas
+        // must still work. Left-clicks stay with egui there (they draw). Nav over
+        // the side/top panels is still suppressed (pointer outside available_rect).
+        let over_central = state
+            .egui_ctx
+            .pointer_latest_pos()
+            .is_some_and(|p| state.egui_ctx.available_rect().contains(p));
+        let nav_ok = !egui_used || over_central;
+
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
 
@@ -2456,7 +2467,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                     MouseButton::Right => {
                         // Right-drag orbits — always available, even over
                         // geometry (so left-drag can become manipulation).
-                        if down && !egui_used {
+                        if down && nav_ok {
                             self.mouse.orbiting = true;
                         } else if !down {
                             self.mouse.orbiting = false;
@@ -2465,7 +2476,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                         }
                     }
                     MouseButton::Middle => {
-                        if !egui_used {
+                        if nav_ok {
                             self.mouse.panning = down;
                         }
                         if !down {
@@ -2486,7 +2497,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                         self.mouse.dragged = true;
                     }
                 }
-                if !egui_used {
+                if nav_ok {
                     if let Some(drag) = self.gizmo_drag.as_mut() {
                         // Gizmo: translate along the grabbed axis / within the
                         // plane, or rotate about the grabbed ring (with snap).
@@ -2587,7 +2598,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                 }
             }
 
-            WindowEvent::MouseWheel { delta, .. } if !egui_used => {
+            WindowEvent::MouseWheel { delta, .. } if nav_ok => {
                 match delta {
                     // Mouse wheel (discrete lines): zoom.
                     MouseScrollDelta::LineDelta(_, y) => self.camera.dolly(y),
@@ -2606,7 +2617,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
             }
 
             // Trackpad pinch: zoom.
-            WindowEvent::PinchGesture { delta, .. } if !egui_used => {
+            WindowEvent::PinchGesture { delta, .. } if nav_ok => {
                 self.camera.dolly(delta as f32 * 6.0);
                 self.mouse.hover_dirty = true;
                 state.window.request_redraw();
