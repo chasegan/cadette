@@ -48,6 +48,14 @@ impl Document {
         id
     }
 
+    /// Add a feature with an auto-numbered name `"{base} {n}"`, where `n` climbs
+    /// monotonically (see [`History::next_name_number`]) — for interactively
+    /// created features so repeats are disambiguated (`Fillet 1`, `Fillet 2`, …).
+    pub fn add_numbered(&mut self, base: &str, kind: FeatureKind) -> FeatureId {
+        let n = self.history.next_name_number(base);
+        self.add(format!("{base} {n}"), kind)
+    }
+
     /// Duplicate the subtree feeding `id` (fresh ids, see
     /// [`History::clone_subtree`]) and return the new tip, leaving the rollback
     /// bar at the document tip so the clone is active. For copy/paste & mirror.

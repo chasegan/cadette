@@ -473,7 +473,7 @@ impl Modeler {
                 // Carve the selected body out of each other body independently.
                 for target in others {
                     self.doc
-                        .add("Subtract", FeatureKind::Boolean { op, target, tool });
+                        .add_numbered("Subtract", FeatureKind::Boolean { op, target, tool });
                 }
                 self.ui.selected = None; // the carver is consumed
             }
@@ -484,7 +484,7 @@ impl Modeler {
                 for other in others {
                     acc = self
                         .doc
-                        .add(name, FeatureKind::Boolean { op, target: acc, tool: other });
+                        .add_numbered(name, FeatureKind::Boolean { op, target: acc, tool: other });
                 }
                 self.ui.selected = Some(acc);
             }
@@ -508,7 +508,7 @@ impl Modeler {
         self.record_undo(self.doc.clone());
         let id = self
             .doc
-            .add("Extrude", FeatureKind::Extrude { source, distance });
+            .add_numbered("Extrude", FeatureKind::Extrude { source, distance });
         self.ui.selected = Some(id);
         true
     }
@@ -726,8 +726,9 @@ impl Modeler {
             return false;
         }
         self.record_undo(self.doc.clone());
-        let name = if self.selection.selected().len() > 1 { "Fillet faces" } else { "Fillet face" };
-        let id = self.doc.add(name, FeatureKind::Fillet { source, edges, radius: 2.0 });
+        let id = self
+            .doc
+            .add_numbered("Fillet", FeatureKind::Fillet { source, edges, radius: 2.0 });
         self.ui.selected = Some(id);
         self.selection.clear();
         true
@@ -755,7 +756,7 @@ impl Modeler {
             self.undo.pop();
             return false;
         };
-        let id = self.doc.add(
+        let id = self.doc.add_numbered(
             "Mirror",
             FeatureKind::Mirror {
                 source: clone_tip,
@@ -787,7 +788,7 @@ impl Modeler {
             Axis3::Z => DVec3::Z,
         };
         self.record_undo(self.doc.clone());
-        let id = self.doc.add(
+        let id = self.doc.add_numbered(
             "Flip",
             FeatureKind::Mirror { source: body, origin: DVec3::from_array(center), normal },
         );
@@ -822,7 +823,7 @@ impl Modeler {
             return false;
         }
         self.record_undo(self.doc.clone());
-        let id = self.doc.add("Group", FeatureKind::Group { members });
+        let id = self.doc.add_numbered("Group", FeatureKind::Group { members });
         self.ui.selected = Some(id);
         self.selection.clear();
         true
@@ -932,11 +933,9 @@ impl Modeler {
         }
 
         self.record_undo(self.doc.clone());
-        let name = match edges.len() {
-            1 => "Fillet edge".to_string(),
-            n => format!("Fillet {n} edges"),
-        };
-        let id = self.doc.add(name, FeatureKind::Fillet { source, edges, radius: 2.0 });
+        let id = self
+            .doc
+            .add_numbered("Fillet", FeatureKind::Fillet { source, edges, radius: 2.0 });
         self.ui.selected = Some(id);
         self.selection.clear();
         self.edge_anchors.clear();
@@ -970,7 +969,7 @@ impl Modeler {
             return false;
         };
         self.record_undo(self.doc.clone());
-        let id = self.doc.add(
+        let id = self.doc.add_numbered(
             "Revolve",
             FeatureKind::Revolve {
                 source,
@@ -1014,7 +1013,7 @@ impl Modeler {
             self.undo.pop();
             return false;
         };
-        let pasted = self.doc.add(
+        let pasted = self.doc.add_numbered(
             "Paste",
             FeatureKind::Translate {
                 source: clone_tip,
@@ -1142,7 +1141,7 @@ impl Modeler {
                 return false; // not a single open chain — discard
             }
             let before = self.doc.clone();
-            let id = self.doc.add(
+            let id = self.doc.add_numbered(
                 "Sweep",
                 FeatureKind::Sweep {
                     profile,
@@ -1174,7 +1173,7 @@ impl Modeler {
                 feature.kind = kind;
                 id
             }
-            None => self.doc.add("Sketch", kind),
+            None => self.doc.add_numbered("Sketch", kind),
         };
         self.record_undo(before);
         self.ui.selected = Some(id);
@@ -2482,7 +2481,7 @@ impl Controller for Modeler {
             None => {
                 // First real drag: record one undo entry, then add the feature.
                 self.record_undo(self.doc.clone());
-                let id = self.doc.add(
+                let id = self.doc.add_numbered(
                     "Push/Pull",
                     FeatureKind::PushPull {
                         source: m.source,
@@ -2658,7 +2657,7 @@ impl Controller for Modeler {
             None => {
                 // First real drag: one undo entry, then add the feature.
                 self.record_undo(self.doc.clone());
-                let id = self.doc.add(name, kind);
+                let id = self.doc.add_numbered(name, kind);
                 t.feature = Some(id);
                 self.ui.selected = Some(id);
             }
@@ -2870,7 +2869,7 @@ impl Controller for Modeler {
                     None => {
                         self.record_undo(self.doc.clone());
                         r.changed = true;
-                        let id = self.doc.add(
+                        let id = self.doc.add_numbered(
                             "Resize",
                             FeatureKind::Scale { source: r.source, factors, anchor: r.anchor },
                         );

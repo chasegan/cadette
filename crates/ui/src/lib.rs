@@ -275,8 +275,8 @@ fn command_bar(
             // Create (always) + modify (selection-gated). `add` passes `state`
             // per call so `plane_picker` can also borrow it between calls.
             let mut changed = false;
-            let mut add = |state: &mut HistoryState, name: &str, kind: FeatureKind| {
-                let id = doc.add(name, kind);
+            let mut add = |state: &mut HistoryState, base: &str, kind: FeatureKind| {
+                let id = doc.add_numbered(base, kind);
                 state.selected = Some(id);
                 changed = true;
             };

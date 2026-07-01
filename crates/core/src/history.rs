@@ -57,6 +57,18 @@ impl History {
         &self.features
     }
 
+    /// The next monotonic number for an auto-named `"{base} {n}"` feature: one
+    /// more than the highest `n` currently in use for that `base` (so numbers
+    /// climb and a gap left by a deletion is never backfilled). Starts at 1.
+    pub fn next_name_number(&self, base: &str) -> u32 {
+        self.features
+            .iter()
+            .filter_map(|f| f.name.strip_prefix(base))
+            .filter_map(|rest| rest.trim_start().parse::<u32>().ok())
+            .max()
+            .map_or(1, |m| m + 1)
+    }
+
     /// Deep-clone the subtree feeding `id` — that feature plus all of its
     /// transitive inputs — with fresh ids, appended in dependency order. Returns
     /// the new tip (the clone of `id`), or `None` if `id` doesn't exist. The
@@ -198,5 +210,37 @@ impl History {
             }
         }
         errors
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::DVec3;
+
+    fn boxx() -> FeatureKind {
+        FeatureKind::Box { size: DVec3::splat(1.0) }
+    }
+
+    #[test]
+    fn name_numbers_climb_and_never_backfill_gaps() {
+        let mut h = History::default();
+        // First of a kind starts at 1; each subsequent climbs.
+        assert_eq!(h.next_name_number("Fillet"), 1);
+        let a = h.add("Fillet 1", boxx());
+        let b = h.add("Fillet 2", boxx());
+        let _c = h.add("Fillet 3", boxx());
+        assert_eq!(h.next_name_number("Fillet"), 4);
+
+        // Deleting a MIDDLE one leaves its gap; the next still climbs past the max.
+        h.remove(b);
+        assert_eq!(h.next_name_number("Fillet"), 4, "gap at 2 is not backfilled");
+
+        // A different base numbers independently, and unrelated/curated names
+        // (e.g. "Fillet edges") don't get miscounted as "Fillet N".
+        let _ = a;
+        h.add("Fillet edges", boxx());
+        assert_eq!(h.next_name_number("Fillet"), 4);
+        assert_eq!(h.next_name_number("Move"), 1);
     }
 }
