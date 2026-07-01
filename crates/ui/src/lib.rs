@@ -51,6 +51,8 @@ pub struct HistoryState {
     pub snap_to_grid: bool,
     /// The plane a new toolbar sketch is started on.
     pub sketch_plane: SketchPlane,
+    /// Whether the About window is open.
+    pub about_open: bool,
 }
 
 impl Default for HistoryState {
@@ -68,6 +70,7 @@ impl Default for HistoryState {
             show_yz: false,
             snap_to_grid: true,
             sketch_plane: SketchPlane::Xy,
+            about_open: false,
         }
     }
 }
@@ -312,8 +315,37 @@ fn command_bar(
                 }
             }
             resp.changed |= changed;
+
+            // About, pushed to the far right.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if icon_btn(ui, icon::INFO, "About Cadette", true) {
+                    state.about_open = !state.about_open;
+                }
+            });
         });
     });
+
+    about_window(ctx, state);
+}
+
+/// The About window: app name, version, and links. Toggled by the ⓘ button.
+fn about_window(ctx: &Context, state: &mut HistoryState) {
+    let mut open = state.about_open;
+    egui::Window::new("About Cadette")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.heading("Cadette");
+            ui.label(RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).weak());
+            ui.add_space(6.0);
+            ui.hyperlink_to("cadette.org", "https://cadette.org");
+            ui.hyperlink_to("Source on GitHub", "https://github.com/chasegan/cadette");
+            ui.add_space(6.0);
+            ui.weak("A parametric, direct-manipulation 3D modeler for printing.");
+        });
+    state.about_open = open;
 }
 
 fn rollback_controls(ui: &mut Ui, doc: &mut Document) -> bool {

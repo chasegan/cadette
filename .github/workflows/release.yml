@@ -20,6 +20,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Verify the tag matches the crate version
+        # A vX.Y.Z tag must equal the workspace Cargo.toml version, so a release
+        # can never ship a binary whose About/--version disagrees with the tag.
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          echo "tag=$tag  crate=$crate"
+          if [ "$tag" != "$crate" ]; then
+            echo "::error::Tag v$tag does not match the crate version $crate (workspace Cargo.toml). Bump the version or fix the tag."
+            exit 1
+          fi
+
       - name: Install OpenCASCADE + dylibbundler
         # The runner image pre-taps aws/tap, which now trips Homebrew's tap-trust
         # check and prints a warning on every brew command. We don't use it, so
