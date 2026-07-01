@@ -72,7 +72,9 @@ jobs:
           # CFBundleShortVersionString is the pushed tag with the leading v stripped.
           VERSION="${GITHUB_REF_NAME#v}"
 
-          # TODO: add CFBundleIconFile once an .icns exists (only docs/favicon.svg today).
+          # App icon (Finder / Dock / About panel).
+          cp assets/icon/Cadette.icns "$APP/Contents/Resources/Cadette.icns"
+
           cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -82,6 +84,8 @@ jobs:
             <string>Cadette</string>
             <key>CFBundleExecutable</key>
             <string>cadette</string>
+            <key>CFBundleIconFile</key>
+            <string>Cadette</string>
             <key>CFBundleIdentifier</key>
             <string>org.cadette.app</string>
             <key>CFBundleShortVersionString</key>

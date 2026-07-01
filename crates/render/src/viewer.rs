@@ -102,6 +102,16 @@ fn install_phosphor(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// The window icon (Windows/Linux taskbar + title bar). macOS ignores this and
+/// uses the app bundle's `.icns`, so it's effectively a no-op there. `None` on
+/// decode failure leaves winit's default.
+fn app_icon() -> Option<winit::window::Icon> {
+    let bytes = include_bytes!("../../../assets/icon/icon-256.png");
+    let img = image::load_from_memory(bytes).ok()?.into_rgba8();
+    let (w, h) = img.dimensions();
+    winit::window::Icon::from_rgba(img.into_raw(), w, h).ok()
+}
+
 /// Whether `p` is inside the convex polygon `poly` (same side of every edge).
 fn point_in_poly(p: egui::Pos2, poly: &[egui::Pos2]) -> bool {
     let mut sign = 0.0f32;
@@ -2514,6 +2524,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
         // points on a 2× Retina display — hence a tiny window.
         let attrs = winit::window::Window::default_attributes()
             .with_title("Cadette")
+            .with_window_icon(app_icon())
             .with_inner_size(winit::dpi::LogicalSize::new(1440.0, 900.0));
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
 
