@@ -146,12 +146,6 @@ pub fn history_panel(
         .default_size(300.0)
         .show(ctx, |ui| {
             ui.add_space(4.0);
-            ui.heading(&doc.name);
-            ui.label(
-                RichText::new(format!("{} features", doc.history.len()))
-                    .small()
-                    .weak(),
-            );
 
             ui.horizontal(|ui| {
                 ui.label("Grid");
@@ -187,7 +181,8 @@ pub fn history_panel(
             ui.separator();
 
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Build Graph").strong())
+                let steps = doc.history.len();
+                ui.label(RichText::new(format!("Build Graph ({steps} steps)")).strong())
                     .on_hover_text("Each body is a lane; lanes merge at a boolean or group.");
                 // Reorder the SELECTED step (backward-only refs may reject a move).
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

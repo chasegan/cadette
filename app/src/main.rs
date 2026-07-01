@@ -390,6 +390,11 @@ struct Modeler {
     /// The body feature copied to the clipboard (Cmd/Ctrl+C), pasted as an
     /// independent duplicate by Cmd/Ctrl+V. `None` until something is copied.
     clipboard: Option<FeatureId>,
+    /// The file this project is bound to (set on Open/Save). The window title
+    /// shows its name — "Untitled" until the first save.
+    current_path: Option<std::path::PathBuf>,
+    /// Unsaved-changes flag, shown as a leading "•" in the window title.
+    dirty: bool,
 }
 
 impl Modeler {
@@ -415,6 +420,8 @@ impl Modeler {
             transform: None,
             resize: None,
             clipboard: None,
+            current_path: None,
+            dirty: false,
         }
     }
 
@@ -595,16 +602,26 @@ impl Modeler {
 
     /// Prompt for a path and save the project.
     fn save_project(&mut self) {
+        let default_name = self
+            .current_path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "untitled.cdt".to_string());
         let Some(path) = rfd::FileDialog::new()
             .add_filter("Cadette project", &["cdt"])
-            .set_file_name(format!("{}.cdt", self.doc.name))
+            .set_file_name(default_name)
             .save_file()
         else {
             return; // cancelled
         };
-        let path = path.to_string_lossy().to_string();
-        self.status = Some(match self.save_project_to(&path) {
-            Ok(()) => format!("Saved {path}"),
+        let path_str = path.to_string_lossy().to_string();
+        self.status = Some(match self.save_project_to(&path_str) {
+            Ok(()) => {
+                self.current_path = Some(path);
+                self.dirty = false; // saved → title drops the "•"
+                format!("Saved {path_str}")
+            }
             Err(e) => format!("Save failed: {e}"),
         });
     }
@@ -618,10 +635,12 @@ impl Modeler {
         else {
             return false; // cancelled
         };
-        let path = path.to_string_lossy().to_string();
-        match self.load_project_from(&path) {
+        let path_str = path.to_string_lossy().to_string();
+        match self.load_project_from(&path_str) {
             Ok(()) => {
-                self.status = Some(format!("Opened {path}"));
+                self.current_path = Some(path);
+                self.dirty = false; // a freshly-opened file has no unsaved edits
+                self.status = Some(format!("Opened {path_str}"));
                 true
             }
             Err(e) => {
@@ -1169,6 +1188,7 @@ impl Modeler {
         }
         self.undo.push(before);
         self.redo.clear();
+        self.dirty = true; // an edit happened → unsaved changes
     }
 
     /// Restore the previous document state. Returns whether anything changed.
@@ -2411,6 +2431,19 @@ impl Controller for Modeler {
         self.sketch_session.is_none()
     }
 
+    fn title(&self) -> String {
+        // The open file's name (Untitled until first saved), with a "•" for
+        // unsaved changes — the project's identity lives in the file, not a name.
+        let name = self
+            .current_path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Untitled".to_string());
+        let mark = if self.dirty { "• " } else { "" };
+        format!("{mark}{name} — Cadette")
+    }
+
     fn start_manipulation(
         &mut self,
         pick: Pick,
@@ -3486,6 +3519,8 @@ mod tests {
             transform: None,
             resize: None,
             clipboard: None,
+            current_path: None,
+            dirty: false,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());
@@ -3540,6 +3575,19 @@ mod tests {
         // Symmetric control net → midpoint at x=5, y=7.5 (Bernstein at t=0.5).
         let m = cubic_screen(p0, p1, p2, p3, 0.5);
         assert!((m.x - 5.0).abs() < 1e-4 && (m.y - 7.5).abs() < 1e-4, "mid {m:?}");
+    }
+
+    #[test]
+    fn window_title_tracks_the_file_and_dirty_state() {
+        let mut m = Modeler::new();
+        assert_eq!(m.title(), "Untitled — Cadette", "no file yet");
+        m.dirty = true;
+        assert_eq!(m.title(), "• Untitled — Cadette", "unsaved changes marked");
+        m.current_path = Some(std::path::PathBuf::from("/tmp/bracket.cdt"));
+        m.dirty = false;
+        assert_eq!(m.title(), "bracket.cdt — Cadette", "shows the filename, clean");
+        m.dirty = true;
+        assert_eq!(m.title(), "• bracket.cdt — Cadette");
     }
 
     #[test]
@@ -4829,6 +4877,8 @@ mod tests {
             transform: None,
             resize: None,
             clipboard: None,
+            current_path: None,
+            dirty: false,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());

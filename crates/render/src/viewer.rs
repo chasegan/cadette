@@ -80,6 +80,12 @@ pub trait Controller {
         false
     }
 
+    /// The window title — typically the open file's name plus the app name, with
+    /// a marker for unsaved changes. The host re-applies it when it changes.
+    fn title(&self) -> String {
+        "Cadette".to_string()
+    }
+
     /// Begin a push/pull on `pick` if it's manipulable. `point` is the clicked
     /// world point (on the face); the controller captures the anchor (orienting
     /// the normal toward `eye`) and returns the drag axis `(point, outward
@@ -2150,6 +2156,9 @@ struct WindowApp<C: Controller> {
     /// We stop redrawing then — vsync no longer paces the loop, so a continuous
     /// redraw would spin unthrottled and balloon GPU memory.
     occluded: bool,
+    /// The window title we last applied, so we only call `set_title` when the
+    /// controller's title (filename + dirty marker) actually changes.
+    last_title: String,
     state: Option<WindowState>,
 }
 
@@ -2175,6 +2184,7 @@ impl<C: Controller> WindowApp<C> {
             mesh_dirty: false,
             modifiers: winit::keyboard::ModifiersState::empty(),
             occluded: false,
+            last_title: String::new(),
             state: None,
         }
     }
@@ -2677,6 +2687,13 @@ impl<C: Controller> WindowApp<C> {
         state.egui_ctx.begin_pass(raw_input);
         let changed = self.controller.ui(&state.egui_ctx, &view);
         let full_output = state.egui_ctx.end_pass();
+
+        // Keep the OS window title in sync with the open file + dirty state.
+        let title = self.controller.title();
+        if title != self.last_title {
+            state.window.set_title(&title);
+            self.last_title = title;
+        }
         if changed || self.mesh_dirty {
             let mesh = self.controller.mesh();
             state.scene.upload_mesh(&mesh);
