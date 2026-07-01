@@ -1,8 +1,9 @@
 //! # cdt-ui
 //!
-//! Minimal-chrome egui panels. This first panel is the **history tree**: the
-//! ordered feature list with selection, suppression, reordering, a rollback
-//! bar, and an inline editor for the selected feature's parameters.
+//! Minimal-chrome egui panels. This first panel hosts the **Build Graph**: the
+//! feature history drawn as a git-style lane graph (a lane per body, merging at
+//! booleans/groups), with selection, suppression, reordering, a rollback bar,
+//! and an inline editor for the selected feature's parameters.
 //!
 //! The panel mutates the [`Document`] directly (all the structural operations
 //! are already validated in `cdt-core`) and reports whether anything changed so
@@ -220,6 +221,9 @@ pub fn history_panel(
             resp.changed |= rollback_controls(ui, doc);
             ui.separator();
 
+            ui.label(RichText::new("Build Graph").strong())
+                .on_hover_text("Each body is a lane; lanes merge at a boolean or group.");
+
             // Pin the selected-feature editor (and any errors) to the bottom —
             // declared first so it reserves its space — and let the graph scroll
             // in the area above, so long histories are fully reachable.
@@ -243,7 +247,7 @@ pub fn history_panel(
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    resp.changed |= feature_graph(ui, doc, state);
+                    resp.changed |= build_graph(ui, doc, state);
                 });
         });
 
@@ -403,9 +407,9 @@ fn lane_color(lane: usize) -> Color32 {
 /// feature, lanes converging at a merge (boolean/group) and splitting at a
 /// branch. Each row keeps the list's interactions (suppress / select / delete /
 /// reorder); the gutter on the left is the graph.
-fn feature_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> bool {
+fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> bool {
     let mut changed = false;
-    let graph = doc.history.graph();
+    let graph = doc.history.build_graph();
     let gutter_w = graph.lane_count.max(1) as f32 * LANE_W;
     let active = doc.rollback();
     let last = graph.rows.len().saturating_sub(1);

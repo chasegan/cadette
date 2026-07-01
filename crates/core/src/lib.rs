@@ -16,7 +16,7 @@
 pub mod backend;
 pub mod document;
 pub mod features;
-pub mod graph;
+pub mod build_graph;
 pub mod history;
 pub mod regen;
 pub mod selection;
@@ -26,7 +26,7 @@ pub mod units;
 pub use backend::GeometryBackend;
 pub use document::Document;
 pub use features::{BooleanOp, EdgeAnchor, FaceAnchor, Feature, FeatureId, FeatureKind, SweepPath};
-pub use graph::{GraphRow, HistoryGraph};
+pub use build_graph::{BuildGraph, BuildGraphRow};
 pub use glam::DVec3;
 pub use history::{DependencyError, History};
 pub use regen::{regenerate, RegenCache, RegenError, Regeneration};

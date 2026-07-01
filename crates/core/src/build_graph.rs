@@ -1,4 +1,4 @@
-//! Lane layout for the history "git-graph" view.
+//! Lane layout for the "Build Graph" (the history as a git-style graph).
 //!
 //! Turns the feature DAG into a column ("lane") per body line, like a git commit
 //! graph: features are rows in history order, each on a lane; an op that consumes
@@ -13,7 +13,7 @@ use crate::history::History;
 
 /// One feature's placement in the graph.
 #[derive(Clone, Debug, PartialEq)]
-pub struct GraphRow {
+pub struct BuildGraphRow {
     pub id: FeatureId,
     /// The lane (column) the feature's node sits on.
     pub lane: usize,
@@ -29,15 +29,15 @@ pub struct GraphRow {
 
 /// The whole laid-out history graph.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct HistoryGraph {
-    pub rows: Vec<GraphRow>,
+pub struct BuildGraph {
+    pub rows: Vec<BuildGraphRow>,
     /// Number of lanes (columns) needed.
     pub lane_count: usize,
 }
 
 impl History {
     /// Lay the feature DAG out into lanes for the graph view.
-    pub fn graph(&self) -> HistoryGraph {
+    pub fn build_graph(&self) -> BuildGraph {
         let features = self.features();
 
         // How many features consume each feature's output. `total` is fixed (a
@@ -121,7 +121,7 @@ impl History {
                 lanes.iter().enumerate().filter_map(|(i, l)| l.map(|_| i)).collect();
             lane_count = lane_count.max(lanes.len());
 
-            rows.push(GraphRow {
+            rows.push(BuildGraphRow {
                 id: f.id,
                 lane: node_lane,
                 input_lanes,
@@ -140,7 +140,7 @@ impl History {
             }
         }
 
-        HistoryGraph { rows, lane_count }
+        BuildGraph { rows, lane_count }
     }
 }
 
@@ -157,7 +157,7 @@ mod tests {
         let m = doc.add("Move", FeatureKind::Translate { source: b, offset: DVec3::X });
         doc.add("Fillet", FeatureKind::FilletAll { source: m, radius: 1.0 });
 
-        let g = doc.history.graph();
+        let g = doc.history.build_graph();
         assert_eq!(g.lane_count, 1, "a straight chain stays on one lane");
         assert!(g.rows.iter().all(|r| r.lane == 0));
     }
@@ -172,7 +172,7 @@ mod tests {
             FeatureKind::Boolean { op: BooleanOp::Union, target: a, tool: c },
         );
 
-        let g = doc.history.graph();
+        let g = doc.history.build_graph();
         assert_eq!(g.lane_count, 2, "two source bodies → two lanes");
         // The cylinder opens a second lane; the union merges it back in.
         assert_eq!(g.rows[1].lane, 1, "cylinder on lane 1");
@@ -191,7 +191,7 @@ mod tests {
         let _m1 = doc.add("M1", FeatureKind::Translate { source: s, offset: DVec3::X });
         let _m2 = doc.add("M2", FeatureKind::Translate { source: s, offset: DVec3::Y });
 
-        let g = doc.history.graph();
+        let g = doc.history.build_graph();
         // The source feeds two: it keeps lane 0 and the consumers branch off it.
         assert_eq!(g.lane_count, 2, "a branch opens a second lane");
         assert_eq!(g.rows[0].lane, 0, "the source holds lane 0");
