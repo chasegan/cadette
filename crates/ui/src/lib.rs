@@ -16,7 +16,8 @@ use cdt_core::{
     BooleanOp, Constraint, Document, FeatureId, FeatureKind, Profile, SketchPlane, DVec3,
 };
 
-const ERROR_COLOR: Color32 = Color32::from_rgb(232, 92, 92);
+mod theme;
+pub use theme::{Palette, Theme};
 
 /// An icon-only toolbar button: the Phosphor `glyph` with `tip` as its tooltip.
 pub fn icon_btn(ui: &mut Ui, glyph: &str, tip: &str, enabled: bool) -> bool {
@@ -53,6 +54,9 @@ pub struct HistoryState {
     pub sketch_plane: SketchPlane,
     /// Whether the About window is open.
     pub about_open: bool,
+    /// The active look-and-feel (light/dark). The host applies it as egui
+    /// visuals each frame and persists it when it changes.
+    pub theme: Theme,
 }
 
 impl Default for HistoryState {
@@ -71,6 +75,7 @@ impl Default for HistoryState {
             snap_to_grid: true,
             sketch_plane: SketchPlane::Xy,
             about_open: false,
+            theme: Theme::default(),
         }
     }
 }
@@ -98,6 +103,9 @@ pub struct HistoryResponse {
     pub boolean: Option<BooleanOp>,
     /// "Extrude" was clicked — the host extrudes this sketch (toward the camera).
     pub extrude: Option<FeatureId>,
+    /// The theme toggle was clicked — `state.theme` changed and the host should
+    /// persist it.
+    pub theme_changed: bool,
 }
 
 impl HistoryState {
@@ -316,10 +324,20 @@ fn command_bar(
             }
             resp.changed |= changed;
 
-            // About, pushed to the far right.
+            // About + theme toggle, pushed to the far right.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if icon_btn(ui, icon::INFO, "About Cadette", true) {
                     state.about_open = !state.about_open;
+                }
+                // Sun in dark mode (switch to light), moon in light mode.
+                let (glyph, tip) = if state.theme.is_dark() {
+                    (icon::SUN, "Switch to light theme")
+                } else {
+                    (icon::MOON, "Switch to dark theme")
+                };
+                if icon_btn(ui, glyph, tip, true) {
+                    state.theme = state.theme.toggled();
+                    resp.theme_changed = true;
                 }
             });
         });
@@ -394,6 +412,7 @@ fn lane_color(lane: usize) -> Color32 {
 /// reorder); the gutter on the left is the graph.
 fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> bool {
     let mut changed = false;
+    let error_color = state.theme.palette().error;
     let graph = doc.history.build_graph();
     let gutter_w = graph.lane_count.max(1) as f32 * LANE_W;
     let active = doc.rollback();
@@ -445,7 +464,7 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
             }
             // The node: a ring for a merge, a dot otherwise.
             let node_c = if error.is_some() {
-                ERROR_COLOR
+                error_color
             } else if dim {
                 Color32::from_gray(120)
             } else {
@@ -474,7 +493,7 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
 
             let mut text = RichText::new(name.clone());
             if error.is_some() {
-                text = text.color(ERROR_COLOR);
+                text = text.color(error_color);
             } else if dim {
                 text = text.weak();
             }
@@ -642,7 +661,8 @@ pub fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
 }
 
 pub fn error_list(ui: &mut Ui, doc: &Document, state: &HistoryState) {
-    ui.label(RichText::new("Problems").color(ERROR_COLOR).strong());
+    let error_color = state.theme.palette().error;
+    ui.label(RichText::new("Problems").color(error_color).strong());
     for (id, msg) in &state.errors {
         let name = doc
             .history
@@ -652,7 +672,7 @@ pub fn error_list(ui: &mut Ui, doc: &Document, state: &HistoryState) {
         ui.label(
             RichText::new(format!("• {name}: {msg}"))
                 .small()
-                .color(ERROR_COLOR),
+                .color(error_color),
         );
     }
 }

@@ -25,6 +25,9 @@ use cdt_render::{
 };
 use cdt_ui::{history_panel, HistoryState};
 
+mod prefs;
+use prefs::Prefs;
+
 const DEFLECTION_MM: f64 = 0.1;
 /// Finer mesh tolerance for STL export than for the on-screen preview.
 const EXPORT_DEFLECTION_MM: f64 = 0.05;
@@ -1336,7 +1339,7 @@ impl Modeler {
                 ui.separator();
                 let dof = session.dof;
                 let status = if dof == 0 {
-                    egui::RichText::new("fully constrained").color(egui::Color32::from_rgb(120, 200, 120))
+                    egui::RichText::new("fully constrained").color(self.ui.theme.palette().positive)
                 } else {
                     egui::RichText::new(format!("{dof} dof")).weak()
                 };
@@ -2069,6 +2072,10 @@ fn cubic_screen(p0: egui::Pos2, p1: egui::Pos2, p2: egui::Pos2, p3: egui::Pos2, 
 impl Controller for Modeler {
     fn ui(&mut self, ctx: &egui::Context, view: &ViewContext) -> bool {
         use egui::Key;
+        // Apply the active look-and-feel to the surrounding chrome each frame.
+        // The 3D viewport renders behind a transparent CentralPanel, so this
+        // never touches the scene.
+        ctx.set_visuals(self.ui.theme.visuals());
         let mut changed = false;
         let mut sketch_actions: Vec<SketchAction> = Vec::new();
 
@@ -2255,6 +2262,9 @@ impl Controller for Modeler {
         self.ui.can_redo = !self.redo.is_empty();
         let resp = history_panel(ctx, &mut self.doc, &mut self.ui);
         ui_edited |= resp.changed;
+        if resp.theme_changed {
+            prefs::save(&Prefs { theme: self.ui.theme });
+        }
         // Commit the pre-edit snapshot if any continuous UI edit (Properties or
         // Build Graph) touched the doc this frame.
         if ui_edited {
@@ -3080,6 +3090,13 @@ fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
     let mut modeler = Modeler::new();
+    // Restore the saved look-and-feel. `CADETTE_THEME=light|dark` overrides it
+    // for a single run (handy for screenshots) without touching saved prefs.
+    modeler.ui.theme = match std::env::var("CADETTE_THEME").as_deref() {
+        Ok("light") => cdt_ui::Theme::Light,
+        Ok("dark") => cdt_ui::Theme::Dark,
+        _ => prefs::load().theme,
+    };
 
     // Verification aid: draw a closed triangle and finish it, mirroring the
     // interactive flow, so we can confirm the Extrude button enables afterward.

@@ -16,6 +16,8 @@ cdt-interaction = { workspace = true }
 cdt-ui = { workspace = true }
 anyhow = { workspace = true }
 env_logger = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
 # Native file dialogs for STL export / project save-load.
 rfd = "0.15"
 # Project files (.cdt): a zip holding the serialized document (+ future imports).

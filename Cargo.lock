@@ -521,9 +521,11 @@ dependencies = [
  "cdt-ui",
  "egui-phosphor",
  "env_logger",
+ "log",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "rfd",
+ "serde",
  "serde_json",
  "zip",
 ]
@@ -588,6 +590,7 @@ dependencies = [
  "cdt-core",
  "egui",
  "egui-phosphor",
+ "serde",
 ]
 
 [[package]]
