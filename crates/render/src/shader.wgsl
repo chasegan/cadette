@@ -12,6 +12,9 @@ struct Globals {
     sel_edges : array<vec4<u32>, 16>,
     // up to 64 selected face ids, packed 4 per vec4; faces.x of them valid.
     sel_faces : array<vec4<u32>, 16>,
+    // theme colors (rgb in .xyz): unlit material base + feature-edge color.
+    face_base : vec4<f32>,
+    edge_base : vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> globals : Globals;
@@ -67,7 +70,7 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
     let head = max(dot(n, view), 0.0) * 0.3;
     let ambient = 0.2;
 
-    var base = vec3<f32>(0.62, 0.66, 0.72);
+    var base = globals.face_base.xyz;
     if (is_selected_face(in.face_id)) {
         base = vec3<f32>(1.0, 0.62, 0.25); // clicked selection (strong)
     } else if (globals.faces.w == 1u && in.face_id == globals.faces.z) {

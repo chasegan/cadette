@@ -26,12 +26,62 @@ use crate::view::ViewContext;
 use crate::{EdgeVertex, GizmoVertex, Vertex};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-const CLEAR_COLOR: wgpu::Color = wgpu::Color {
-    r: 0.09,
-    g: 0.10,
-    b: 0.12,
-    a: 1.0,
-};
+
+/// Colors that drive the 3D viewport's look, so it can follow the app's
+/// light/dark theme. Supplied per frame by [`Controller::viewport_theme`];
+/// everything downstream (background gradient, material/edge shading, grid,
+/// ViewCube) reads from here rather than baked-in constants.
+#[derive(Clone, Copy, Debug)]
+pub struct ViewportTheme {
+    /// Background gradient: top and bottom colors (linear RGB, 0..1).
+    pub bg_top: [f32; 3],
+    pub bg_bottom: [f32; 3],
+    /// The solid material's base (unlit) color.
+    pub face_base: [f32; 3],
+    /// Feature-edge line color.
+    pub edge: [f32; 3],
+    /// Grid line colors, RGBA (alpha-blended over the background).
+    pub grid_minor: [f32; 4],
+    pub grid_major: [f32; 4],
+    /// ViewCube face fill, hovered-face fill, edge, and label colors (sRGB u8).
+    pub view_cube_face: [u8; 3],
+    pub view_cube_face_hover: [u8; 3],
+    pub view_cube_edge: [u8; 3],
+    pub view_cube_label: [u8; 3],
+}
+
+impl ViewportTheme {
+    /// The original dark studio look (unchanged from before theming).
+    pub const DARK: Self = Self {
+        bg_top: [0.09, 0.10, 0.12],
+        bg_bottom: [0.09, 0.10, 0.12],
+        face_base: [0.62, 0.66, 0.72],
+        edge: [0.13, 0.15, 0.18],
+        grid_minor: [0.58, 0.60, 0.66, 0.16],
+        grid_major: [0.62, 0.64, 0.70, 0.38],
+        view_cube_face: [206, 209, 214],
+        view_cube_face_hover: [120, 165, 235],
+        view_cube_edge: [90, 90, 90],
+        view_cube_label: [40, 40, 40],
+    };
+
+    /// On-brand light look: a warm Cloud→Eggshell gradient, the same neutral-gray
+    /// material, and Deep Space-tinted grid/ViewCube so they read on the light
+    /// background. RGB channels are LINEAR (the sRGB target re-encodes on write),
+    /// so the brand hexes are converted from sRGB here.
+    pub const LIGHT: Self = Self {
+        bg_top: [0.973, 0.939, 0.863],    // Cloud #FCF8EF (linear)
+        bg_bottom: [0.776, 0.701, 0.552], // dimmed Eggshell ~#E4DAC4 (linear)
+        face_base: [0.62, 0.66, 0.72],    // keep the neutral material
+        edge: [0.13, 0.15, 0.18],         // dark edges read on light too
+        grid_minor: [0.009, 0.016, 0.054, 0.20], // Deep Space (linear)
+        grid_major: [0.009, 0.016, 0.054, 0.42],
+        view_cube_face: [200, 192, 172],     // warm gray (sRGB u8 for egui)
+        view_cube_face_hover: [232, 99, 60], // Atomic Tangerine
+        view_cube_edge: [24, 34, 65],        // Deep Space
+        view_cube_label: [24, 34, 65],
+    };
+}
 
 /// A mesh ready for display: interleaved face vertices + triangle indices, plus
 /// crisp edge lines.
@@ -74,8 +124,20 @@ fn point_in_poly(p: egui::Pos2, poly: &[egui::Pos2]) -> bool {
 /// A ViewCube overlay in the viewport's top-right corner: a small cube that
 /// tracks the camera orientation. Drag it to orbit; click a face to snap to that
 /// orthographic view (Top/Bottom/Front/Back/Left/Right, Z-up world).
-fn draw_view_cube(ctx: &egui::Context, camera: &mut OrbitCamera) {
+fn draw_view_cube(ctx: &egui::Context, camera: &mut OrbitCamera, theme: &ViewportTheme) {
     const SIZE: f32 = 92.0;
+    let face_c = egui::Color32::from_rgb(theme.view_cube_face[0], theme.view_cube_face[1], theme.view_cube_face[2]);
+    let hover_c = egui::Color32::from_rgb(
+        theme.view_cube_face_hover[0],
+        theme.view_cube_face_hover[1],
+        theme.view_cube_face_hover[2],
+    );
+    let edge_c = egui::Color32::from_rgb(theme.view_cube_edge[0], theme.view_cube_edge[1], theme.view_cube_edge[2]);
+    let label_c = egui::Color32::from_rgb(
+        theme.view_cube_label[0],
+        theme.view_cube_label[1],
+        theme.view_cube_label[2],
+    );
 
     // Camera view basis (world → the cube's screen).
     let (sy, cy) = camera.yaw.sin_cos();
@@ -131,24 +193,20 @@ fn draw_view_cube(ctx: &egui::Context, camera: &mut OrbitCamera) {
                 if hovered && response.clicked() {
                     clicked_axis = Some(normal); // nearest hovered wins (drawn last)
                 }
-                // Conventional ViewCube look: light faces with dark labels, so
-                // it reads against the (bluish, mid-dark) viewport background.
-                let fill = if hovered {
-                    egui::Color32::from_rgb(120, 165, 235)
-                } else {
-                    egui::Color32::from_rgb(206, 209, 214)
-                };
+                // Conventional ViewCube look: light faces with dark labels; the
+                // theme supplies colors so it reads on either background.
+                let fill = if hovered { hover_c } else { face_c };
                 painter.add(egui::Shape::convex_polygon(
                     pts,
                     fill,
-                    egui::Stroke::new(1.2, egui::Color32::from_gray(90)),
+                    egui::Stroke::new(1.2, edge_c),
                 ));
                 painter.text(
                     project(normal),
                     egui::Align2::CENTER_CENTER,
                     label,
                     egui::FontId::proportional(11.0),
-                    egui::Color32::from_gray(40),
+                    label_c,
                 );
             }
 
@@ -251,6 +309,12 @@ pub trait Controller {
     /// when visible, the workplane overlay. Default = no grid / no snap.
     fn grid(&self) -> GridSpec {
         GridSpec::default()
+    }
+
+    /// The viewport's color scheme (background, material, grid, ViewCube), so it
+    /// can follow the app's light/dark theme. Defaults to the dark studio look.
+    fn viewport_theme(&self) -> ViewportTheme {
+        ViewportTheme::DARK
     }
 }
 
@@ -449,6 +513,27 @@ struct Globals {
     sel_edges: [[u32; 4]; SEL_EDGE_VEC4],
     /// The selected face ids, packed 4 per `vec4`, `faces[0]` of them valid.
     sel_faces: [[u32; 4]; SEL_FACE_VEC4],
+    /// Theme material color (unlit base), `rgb + _`. Set by `encode` per frame.
+    face_base: [f32; 4],
+    /// Theme feature-edge color, `rgb + _`. Set by `encode` per frame.
+    edge_base: [f32; 4],
+}
+
+/// Uniform for the background gradient pass: top/bottom colors (linear RGB).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct BgUniform {
+    top: [f32; 4],
+    bottom: [f32; 4],
+}
+
+impl BgUniform {
+    fn new(theme: &ViewportTheme) -> Self {
+        Self {
+            top: rgba(theme.bg_top, 1.0),
+            bottom: rgba(theme.bg_bottom, 1.0),
+        }
+    }
 }
 
 impl Globals {
@@ -501,6 +586,10 @@ impl Globals {
             edges,
             sel_edges,
             sel_faces,
+            // Colors default to the dark look; `encode` overrides them from the
+            // active `ViewportTheme` (pick passes are color-agnostic).
+            face_base: rgba(ViewportTheme::DARK.face_base, 1.0),
+            edge_base: rgba(ViewportTheme::DARK.edge, 1.0),
         }
     }
 }
@@ -530,6 +619,10 @@ struct Scene {
     gizmo_pipeline: wgpu::RenderPipeline,
     /// Line pipeline for the workplane grid (depth-tested, drawn behind model).
     grid_pipeline: wgpu::RenderPipeline,
+    /// Fullscreen gradient background pipeline (drawn first, no depth write).
+    bg_pipeline: wgpu::RenderPipeline,
+    bg_buffer: wgpu::Buffer,
+    bg_bind_group: wgpu::BindGroup,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
@@ -828,6 +921,83 @@ impl Scene {
             cache: None,
         });
 
+        // Background gradient pipeline: a fullscreen triangle (no vertex buffer)
+        // reading its two colors from a small dedicated uniform. Drawn first with
+        // depth writes off so the rest of the scene composites over it.
+        let bg_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("cdt-bg-shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("background.wgsl").into()),
+        });
+        let bg_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("cdt-bg-layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let bg_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cdt-bg-uniform"),
+            size: std::mem::size_of::<BgUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bg_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("cdt-bg-bind"),
+            layout: &bg_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: bg_buffer.as_entire_binding(),
+            }],
+        });
+        let bg_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("cdt-bg-pipeline-layout"),
+            bind_group_layouts: &[Some(&bg_layout)],
+            immediate_size: 0,
+        });
+        let bg_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("cdt-bg-pipeline"),
+            layout: Some(&bg_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &bg_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &bg_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            // Present a depth attachment (the pass has one) but never test or
+            // write it — the gradient sits behind everything.
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let (vertex_buffer, index_buffer, index_count) = make_mesh_buffers(&device, mesh);
         let (edge_vertex_buffer, edge_index_buffer, edge_index_count) =
             make_edge_buffers(&device, mesh);
@@ -844,6 +1014,9 @@ impl Scene {
             edge_pipeline,
             gizmo_pipeline,
             grid_pipeline,
+            bg_pipeline,
+            bg_buffer,
+            bg_bind_group,
             vertex_buffer,
             index_buffer,
             index_count,
@@ -905,11 +1078,19 @@ impl Scene {
         width: u32,
         height: u32,
         highlights: &Highlights,
+        theme: &ViewportTheme,
     ) {
         let aspect = width as f32 / height.max(1) as f32;
-        let globals = Globals::for_view(camera, aspect, highlights);
+        let mut globals = Globals::for_view(camera, aspect, highlights);
+        globals.face_base = rgba(theme.face_base, 1.0);
+        globals.edge_base = rgba(theme.edge, 1.0);
         self.queue
             .write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
+        self.queue.write_buffer(
+            &self.bg_buffer,
+            0,
+            bytemuck::bytes_of(&BgUniform::new(theme)),
+        );
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("cdt-3d-pass"),
@@ -917,7 +1098,14 @@ impl Scene {
                 view: color_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(CLEAR_COLOR),
+                    // The gradient quad covers every pixel; this clear is just a
+                    // fallback, matched to the gradient's top so any gap blends in.
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: theme.bg_top[0] as f64,
+                        g: theme.bg_top[1] as f64,
+                        b: theme.bg_top[2] as f64,
+                        a: 1.0,
+                    }),
                     store: wgpu::StoreOp::Store,
                 },
                 depth_slice: None,
@@ -934,7 +1122,11 @@ impl Scene {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        // Grid first (behind the model — it's depth-tested so the model occludes it).
+        // Gradient background fills every pixel first (no depth write).
+        pass.set_pipeline(&self.bg_pipeline);
+        pass.set_bind_group(0, &self.bg_bind_group, &[]);
+        pass.draw(0..3, 0..1);
+        // Grid next (behind the model — it's depth-tested so the model occludes it).
         if self.grid_vertex_count > 0 {
             pass.set_pipeline(&self.grid_pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
@@ -1950,34 +2142,42 @@ fn make_grid_buffer(device: &wgpu::Device) -> wgpu::Buffer {
 /// gets faint minor lines at the grid spacing, brighter major lines every 10,
 /// and colored axis lines. The XY ground sits just below z=0 (so it doesn't
 /// z-fight a model base on the plane); the vertical guides pass through origin.
-fn grid_geometry(spec: GridSpec) -> Vec<GizmoVertex> {
+fn grid_geometry(spec: GridSpec, theme: &ViewportTheme) -> Vec<GizmoVertex> {
     if spec.spacing <= 0.0 || spec.half_extent <= 0.0 {
         return Vec::new();
     }
     let mut v = Vec::new();
     if spec.visible {
-        plane_grid(&mut v, spec, Axis3::X, Axis3::Y, Axis3::Z, GRID_Z);
+        plane_grid(&mut v, spec, theme, Axis3::X, Axis3::Y, Axis3::Z, GRID_Z);
     }
     if spec.xz {
-        plane_grid(&mut v, spec, Axis3::X, Axis3::Z, Axis3::Y, 0.0);
+        plane_grid(&mut v, spec, theme, Axis3::X, Axis3::Z, Axis3::Y, 0.0);
     }
     if spec.yz {
-        plane_grid(&mut v, spec, Axis3::Y, Axis3::Z, Axis3::X, 0.0);
+        plane_grid(&mut v, spec, theme, Axis3::Y, Axis3::Z, Axis3::X, 0.0);
     }
     v
 }
 
 /// Append one plane's grid to `v`. The plane spans world axes `ua`/`va`, sits at
 /// `offset` along its normal `na`; the in-plane axis lines take their axis color.
-fn plane_grid(v: &mut Vec<GizmoVertex>, spec: GridSpec, ua: Axis3, va: Axis3, na: Axis3, offset: f32) {
+fn plane_grid(
+    v: &mut Vec<GizmoVertex>,
+    spec: GridSpec,
+    theme: &ViewportTheme,
+    ua: Axis3,
+    va: Axis3,
+    na: Axis3,
+    offset: f32,
+) {
     let ext = spec.half_extent;
     // Cap the visual density: clamp the line spacing so there are never more than
     // ~GRID_MAX_LINES lines across (keeps a huge extent / tiny spacing readable
     // and the vertex count bounded). Snapping still uses the real spacing.
     let minor = spec.spacing.max(2.0 * ext / GRID_MAX_LINES);
     let draw_minor = spec.spacing >= 2.0 * ext / GRID_MAX_LINES;
-    let minor_c = rgba([0.58, 0.60, 0.66], 0.16);
-    let major_c = rgba([0.62, 0.64, 0.70], 0.38);
+    let minor_c = theme.grid_minor;
+    let major_c = theme.grid_major;
     let ua_c = rgba(ua.color(), 0.55);
     let va_c = rgba(va.color(), 0.55);
 
@@ -2820,7 +3020,7 @@ impl<C: Controller> WindowApp<C> {
         {
             self.central_rect = state.egui_ctx.available_rect();
         }
-        draw_view_cube(&state.egui_ctx, &mut self.camera);
+        draw_view_cube(&state.egui_ctx, &mut self.camera, &self.controller.viewport_theme());
         let full_output = state.egui_ctx.end_pass();
 
         // Keep the OS window title in sync with the open file + dirty state
@@ -2913,7 +3113,7 @@ impl<C: Controller> WindowApp<C> {
         state.scene.upload_gizmo(&gizmo_verts);
         state
             .scene
-            .upload_grid(&grid_geometry(self.controller.grid()));
+            .upload_grid(&grid_geometry(self.controller.grid(), &self.controller.viewport_theme()));
 
         let jobs = state
             .egui_ctx
@@ -2965,6 +3165,7 @@ impl<C: Controller> WindowApp<C> {
             state.config.width,
             state.config.height,
             &self.controller.highlights(),
+            &self.controller.viewport_theme(),
         );
         encode_egui(&mut encoder, &state.egui_renderer, &view, &jobs, &screen);
 
@@ -3028,12 +3229,12 @@ pub fn screenshot(
     // font atlas is emitted on this first pass — and apply them below.
     egui_ctx.begin_pass(raw_input.clone());
     controller.ui(&egui_ctx, &view);
-    draw_view_cube(&egui_ctx, &mut camera); // also here so content_rect + the
+    draw_view_cube(&egui_ctx, &mut camera, &controller.viewport_theme()); // also here so content_rect + the
     let warmup = egui_ctx.end_pass(); // Area size settle before the painted pass
 
     egui_ctx.begin_pass(raw_input);
     controller.ui(&egui_ctx, &view);
-    draw_view_cube(&egui_ctx, &mut camera);
+    draw_view_cube(&egui_ctx, &mut camera, &controller.viewport_theme());
     let full_output = egui_ctx.end_pass();
     let jobs = egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
     let screen = ScreenDescriptor {
@@ -3080,9 +3281,19 @@ pub fn screenshot(
     if let Some(rb) = controller.resize_box() {
         gizmo_verts.append(&mut resize_geometry(&rb, &camera, None));
     }
+    let vp_theme = controller.viewport_theme();
     scene.upload_gizmo(&gizmo_verts);
-    scene.upload_grid(&grid_geometry(controller.grid()));
-    scene.encode(&mut encoder, &color_view, &depth_view, &camera, width, height, &highlights);
+    scene.upload_grid(&grid_geometry(controller.grid(), &vp_theme));
+    scene.encode(
+        &mut encoder,
+        &color_view,
+        &depth_view,
+        &camera,
+        width,
+        height,
+        &highlights,
+        &vp_theme,
+    );
     encode_egui(&mut encoder, &egui_renderer, &color_view, &jobs, &screen);
     queue.submit(egui_cmds.into_iter().chain(std::iter::once(encoder.finish())));
     for id in &full_output.textures_delta.free {

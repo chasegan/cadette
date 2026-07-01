@@ -10,6 +10,11 @@ struct Globals {
     edges : vec4<u32>,
     // up to 64 selected edge ids, packed 4 per vec4; edges.x of them valid.
     sel_edges : array<vec4<u32>, 16>,
+    // declared so edge_base lands at the right offset (unused here).
+    sel_faces : array<vec4<u32>, 16>,
+    face_base : vec4<f32>,
+    // theme feature-edge color (rgb in .xyz).
+    edge_base : vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> globals : Globals;
@@ -58,5 +63,5 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
     } else if (globals.edges.w == 1u && in.edge_id == globals.edges.z) {
         return vec4<f32>(0.45, 0.62, 0.95, 1.0); // hovered edge (subtle)
     }
-    return vec4<f32>(0.13, 0.15, 0.18, 1.0);
+    return vec4<f32>(globals.edge_base.xyz, 1.0);
 }

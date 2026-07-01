@@ -21,7 +21,7 @@ use cdt_render::egui;
 use egui_phosphor::regular as phi;
 use cdt_render::{
     Axis3, Controller, Gizmo, GizmoHandle, Highlights, MeshData, Pick, ResizeBox, TransformDelta,
-    ViewContext,
+    ViewContext, ViewportTheme,
 };
 use cdt_ui::{history_panel, HistoryState};
 
@@ -1405,6 +1405,14 @@ impl Modeler {
         let proj = |x: f64, y: f64| view.project_plane_point(o, xd, yd, [x, y]);
         let accent = egui::Color32::from_rgb(120, 180, 255);
         let selected = egui::Color32::from_rgb(255, 180, 80);
+        // Neutral guide strokes (constraint arms, rubber-band lines) need to read
+        // against the viewport background, which follows the theme. On the light
+        // background the dark-mode grays wash out, so use Deep Space-tinted slate.
+        let (arm_gray, line_gray) = if self.ui.theme.is_dark() {
+            (egui::Color32::from_gray(120), egui::Color32::from_gray(150))
+        } else {
+            (egui::Color32::from_rgb(110, 118, 140), egui::Color32::from_rgb(78, 88, 112))
+        };
 
         #[allow(deprecated)]
         egui::CentralPanel::default()
@@ -1505,7 +1513,7 @@ impl Modeler {
                     }
                     let a = session.sketch.point(bz.a);
                     let b = session.sketch.point(bz.b);
-                    let arm = egui::Stroke::new(0.8, egui::Color32::from_gray(120));
+                    let arm = egui::Stroke::new(0.8, arm_gray);
                     if let (Some(pa), Some(c)) = (proj(a.x, a.y), proj(bz.c1[0], bz.c1[1])) {
                         painter.line_segment([pa, c], arm);
                         painter.circle_filled(c, 3.0, handle_col);
@@ -1526,7 +1534,7 @@ impl Modeler {
                     if let (Some(last), Some(cursor)) = (session.last, response.hover_pos()) {
                         let lp = session.sketch.point(last);
                         if let Some(a) = proj(lp.x, lp.y) {
-                            painter.line_segment([a, cursor], egui::Stroke::new(1.0, egui::Color32::from_gray(150)));
+                            painter.line_segment([a, cursor], egui::Stroke::new(1.0, line_gray));
                         }
                     }
                     if let Some(start) = session.start {
@@ -1564,7 +1572,7 @@ impl Modeler {
                 // Pen tool: rubber-band + symmetric-handle preview; drag places a
                 // smooth anchor (pull a handle out), click places a corner.
                 if session.tool == SketchTool::Pen {
-                    let preview = egui::Stroke::new(1.0, egui::Color32::from_gray(150));
+                    let preview = egui::Stroke::new(1.0, line_gray);
                     let draw_curve = |p0, p1, p2, p3, stroke| {
                         let mut prev = p0;
                         for k in 1..=20 {
@@ -1590,7 +1598,7 @@ impl Modeler {
                                     let p1 = session.pen_out.and_then(|h| proj(h[0], h[1])).unwrap_or(p0);
                                     draw_curve(p0, p1, in_handle, pp, egui::Stroke::new(1.5, accent));
                                 }
-                                let arm = egui::Stroke::new(0.8, egui::Color32::from_gray(120));
+                                let arm = egui::Stroke::new(0.8, arm_gray);
                                 painter.line_segment([pp, cursor], arm);
                                 painter.line_segment([pp, in_handle], arm);
                                 let hc = egui::Color32::from_rgb(150, 220, 130);
@@ -2616,6 +2624,14 @@ impl Controller for Modeler {
             xz: self.ui.show_xz,
             yz: self.ui.show_yz,
             snap: self.ui.snap_to_grid,
+        }
+    }
+
+    fn viewport_theme(&self) -> ViewportTheme {
+        if self.ui.theme.is_dark() {
+            ViewportTheme::DARK
+        } else {
+            ViewportTheme::LIGHT
         }
     }
 
