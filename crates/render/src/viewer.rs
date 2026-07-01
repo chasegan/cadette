@@ -43,6 +43,15 @@ pub struct MeshData {
     pub edge_indices: Vec<u32>,
 }
 
+/// Register the Phosphor icon font on a fresh egui context so the UI can use
+/// `egui_phosphor::regular::*` glyphs (egui's default fonts render most symbols
+/// as tofu). Added as a fallback in the proportional family.
+fn install_phosphor(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    ctx.set_fonts(fonts);
+}
+
 /// The application's hook into the viewport.
 ///
 /// `ui` draws egui for the frame and returns `true` if the displayed model
@@ -2213,6 +2222,7 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
         let scene = Scene::new(device.clone(), queue, format, &mesh);
 
         let egui_ctx = egui::Context::default();
+        install_phosphor(&egui_ctx);
         let egui_state = egui_winit::State::new(
             egui_ctx.clone(),
             egui::ViewportId::ROOT,
@@ -2844,6 +2854,7 @@ pub fn screenshot(
     let _ = &mut scene;
 
     let egui_ctx = egui::Context::default();
+    install_phosphor(&egui_ctx);
     egui_ctx.set_pixels_per_point(PPP);
     let mut egui_renderer = egui_renderer(&device, format);
 

@@ -9,3 +9,4 @@ description = "egui panels, contextual toolbars, and the history panel."
 [dependencies]
 cdt-core = { workspace = true }
 egui = { workspace = true }
+egui-phosphor = "0.12.0"
