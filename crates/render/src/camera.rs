@@ -63,6 +63,17 @@ impl OrbitCamera {
         self.pitch = (self.pitch + dpitch).clamp(-PITCH_LIMIT, PITCH_LIMIT);
     }
 
+    /// Point the camera to look ALONG `-axis` at the target — i.e. the eye sits
+    /// on the `axis` side (a ViewCube face-click snaps to an orthographic view).
+    /// `axis` should be a unit world direction; at the Z poles the yaw is kept.
+    pub fn look_along(&mut self, axis: Vec3) {
+        let a = axis.normalize_or_zero();
+        self.pitch = a.z.asin().clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        if a.x.hypot(a.y) > 1e-4 {
+            self.yaw = a.y.atan2(a.x);
+        }
+    }
+
     /// Dolly toward/away from the target. Positive `amount` zooms in.
     pub fn dolly(&mut self, amount: f32) {
         let factor = (1.0 - amount * 0.1).clamp(0.2, 5.0);

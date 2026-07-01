@@ -52,6 +52,115 @@ fn install_phosphor(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// Whether `p` is inside the convex polygon `poly` (same side of every edge).
+fn point_in_poly(p: egui::Pos2, poly: &[egui::Pos2]) -> bool {
+    let mut sign = 0.0f32;
+    let n = poly.len();
+    for i in 0..n {
+        let a = poly[i];
+        let b = poly[(i + 1) % n];
+        let cross = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+        if cross.abs() > 1e-4 {
+            if sign == 0.0 {
+                sign = cross.signum();
+            } else if sign != cross.signum() {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// A ViewCube overlay in the viewport's top-right corner: a small cube that
+/// tracks the camera orientation. Drag it to orbit; click a face to snap to that
+/// orthographic view (Top/Bottom/Front/Back/Left/Right, Z-up world).
+fn draw_view_cube(ctx: &egui::Context, camera: &mut OrbitCamera) {
+    const SIZE: f32 = 92.0;
+
+    // Camera view basis (world → the cube's screen).
+    let (sy, cy) = camera.yaw.sin_cos();
+    let (sp, cp) = camera.pitch.sin_cos();
+    let dir = Vec3::new(cp * cy, cp * sy, sp); // target → eye
+    let fwd = -dir; // into the screen
+    let right = fwd.cross(Vec3::Z).normalize_or_zero();
+    let up = right.cross(fwd);
+
+    // Top-right of the central viewport (to the left of the right panel). The
+    // app's panels use egui's deprecated `Panel` API, whose reservations show up
+    // in `available_rect` (not the newer `content_rect`), so use that.
+    #[allow(deprecated)]
+    let central = ctx.available_rect();
+    let pos = egui::pos2(central.right() - SIZE - 14.0, central.top() + 14.0);
+
+    egui::Area::new(egui::Id::new("view_cube"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos)
+        .show(ctx, |ui| {
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(SIZE, SIZE), egui::Sense::click_and_drag());
+            let painter = ui.painter_at(rect);
+            let center = rect.center();
+            let scale = SIZE * 0.30;
+            let project = |p: Vec3| -> egui::Pos2 {
+                egui::pos2(center.x + p.dot(right) * scale, center.y - p.dot(up) * scale)
+            };
+
+            // Outward normal (= face center on the unit cube), label, 4 corners.
+            let v = Vec3::new;
+            let faces: [(Vec3, &str, [Vec3; 4]); 6] = [
+                (Vec3::X, "Right", [v(1., -1., -1.), v(1., 1., -1.), v(1., 1., 1.), v(1., -1., 1.)]),
+                (Vec3::NEG_X, "Left", [v(-1., 1., -1.), v(-1., -1., -1.), v(-1., -1., 1.), v(-1., 1., 1.)]),
+                (Vec3::Y, "Back", [v(1., 1., -1.), v(-1., 1., -1.), v(-1., 1., 1.), v(1., 1., 1.)]),
+                (Vec3::NEG_Y, "Front", [v(-1., -1., -1.), v(1., -1., -1.), v(1., -1., 1.), v(-1., -1., 1.)]),
+                (Vec3::Z, "Top", [v(-1., -1., 1.), v(1., -1., 1.), v(1., 1., 1.), v(-1., 1., 1.)]),
+                (Vec3::NEG_Z, "Bottom", [v(-1., 1., -1.), v(1., 1., -1.), v(1., -1., -1.), v(-1., -1., -1.)]),
+            ];
+
+            let hover = response.hover_pos();
+            let mut clicked_axis: Option<Vec3> = None;
+
+            // Front-facing faces (normal toward the camera), back-to-front so the
+            // nearer ones paint on top.
+            let mut front: Vec<usize> = (0..6).filter(|&i| faces[i].0.dot(fwd) < -1e-3).collect();
+            front.sort_by(|&a, &b| faces[b].0.dot(fwd).total_cmp(&faces[a].0.dot(fwd)));
+
+            for &i in &front {
+                let (normal, label, corners) = faces[i];
+                let pts: Vec<egui::Pos2> = corners.iter().map(|c| project(*c)).collect();
+                let hovered = hover.is_some_and(|h| point_in_poly(h, &pts));
+                if hovered && response.clicked() {
+                    clicked_axis = Some(normal); // nearest hovered wins (drawn last)
+                }
+                // Conventional ViewCube look: light faces with dark labels, so
+                // it reads against the (bluish, mid-dark) viewport background.
+                let fill = if hovered {
+                    egui::Color32::from_rgb(120, 165, 235)
+                } else {
+                    egui::Color32::from_rgb(206, 209, 214)
+                };
+                painter.add(egui::Shape::convex_polygon(
+                    pts,
+                    fill,
+                    egui::Stroke::new(1.2, egui::Color32::from_gray(90)),
+                ));
+                painter.text(
+                    project(normal),
+                    egui::Align2::CENTER_CENTER,
+                    label,
+                    egui::FontId::proportional(11.0),
+                    egui::Color32::from_gray(40),
+                );
+            }
+
+            if let Some(axis) = clicked_axis {
+                camera.look_along(axis);
+            } else if response.dragged() {
+                let d = response.drag_delta();
+                camera.orbit(d.x * 0.01, d.y * 0.01);
+            }
+        });
+}
+
 /// The application's hook into the viewport.
 ///
 /// `ui` draws egui for the frame and returns `true` if the displayed model
@@ -2269,11 +2378,15 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
         // central viewport even when egui "consumed" the pointer: while sketching,
         // a full-window CentralPanel canvas claims it, but nav over that canvas
         // must still work. Left-clicks stay with egui there (they draw). Nav over
-        // the side/top panels is still suppressed (pointer outside available_rect).
+        // the side/top panels is still suppressed (pointer outside the central
+        // area). The app's panels register in available_rect (deprecated `Panel`
+        // API), not content_rect.
+        #[allow(deprecated)]
+        let central = state.egui_ctx.available_rect();
         let over_central = state
             .egui_ctx
             .pointer_latest_pos()
-            .is_some_and(|p| state.egui_ctx.available_rect().contains(p));
+            .is_some_and(|p| central.contains(p));
         let nav_ok = !egui_used || over_central;
 
         match event {
@@ -2697,6 +2810,7 @@ impl<C: Controller> WindowApp<C> {
         let raw_input = state.egui_state.take_egui_input(&state.window);
         state.egui_ctx.begin_pass(raw_input);
         let changed = self.controller.ui(&state.egui_ctx, &view);
+        draw_view_cube(&state.egui_ctx, &mut self.camera);
         let full_output = state.egui_ctx.end_pass();
 
         // Keep the OS window title in sync with the open file + dirty state.
@@ -2877,7 +2991,7 @@ pub fn screenshot(
     let (_adapter, device, queue) = pollster::block_on(request_device(&instance, None));
 
     let mesh = controller.mesh();
-    let camera = frame_camera(&mesh.vertices);
+    let mut camera = frame_camera(&mesh.vertices);
     let mut scene = Scene::new(device.clone(), queue.clone(), format, &mesh);
     let _ = &mut scene;
 
@@ -2903,10 +3017,12 @@ pub fn screenshot(
     // font atlas is emitted on this first pass — and apply them below.
     egui_ctx.begin_pass(raw_input.clone());
     controller.ui(&egui_ctx, &view);
-    let warmup = egui_ctx.end_pass();
+    draw_view_cube(&egui_ctx, &mut camera); // also here so content_rect + the
+    let warmup = egui_ctx.end_pass(); // Area size settle before the painted pass
 
     egui_ctx.begin_pass(raw_input);
     controller.ui(&egui_ctx, &view);
+    draw_view_cube(&egui_ctx, &mut camera);
     let full_output = egui_ctx.end_pass();
     let jobs = egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
     let screen = ScreenDescriptor {
