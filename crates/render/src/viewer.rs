@@ -2268,6 +2268,11 @@ struct WindowApp<C: Controller> {
     /// The window title we last applied, so we only call `set_title` when the
     /// controller's title (filename + dirty marker) actually changes.
     last_title: String,
+    /// The central viewport rect (panels excluded), captured from the last
+    /// frame's egui pass. Camera-nav routing in `window_event` runs outside a
+    /// pass — where `available_rect()` is unavailable — so it hit-tests against
+    /// this last-known layout (one frame of lag, imperceptible for input).
+    central_rect: egui::Rect,
     state: Option<WindowState>,
 }
 
@@ -2294,6 +2299,7 @@ impl<C: Controller> WindowApp<C> {
             modifiers: winit::keyboard::ModifiersState::empty(),
             occluded: false,
             last_title: String::new(),
+            central_rect: egui::Rect::NOTHING,
             state: None,
         }
     }
@@ -2379,14 +2385,12 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
         // a full-window CentralPanel canvas claims it, but nav over that canvas
         // must still work. Left-clicks stay with egui there (they draw). Nav over
         // the side/top panels is still suppressed (pointer outside the central
-        // area). The app's panels register in available_rect (deprecated `Panel`
-        // API), not content_rect.
-        #[allow(deprecated)]
-        let central = state.egui_ctx.available_rect();
+        // area). We use the central rect cached from the last frame's pass —
+        // `available_rect()` panics if called here, outside a pass.
         let over_central = state
             .egui_ctx
             .pointer_latest_pos()
-            .is_some_and(|p| central.contains(p));
+            .is_some_and(|p| self.central_rect.contains(p));
         let nav_ok = !egui_used || over_central;
 
         match event {
@@ -2810,6 +2814,12 @@ impl<C: Controller> WindowApp<C> {
         let raw_input = state.egui_state.take_egui_input(&state.window);
         state.egui_ctx.begin_pass(raw_input);
         let changed = self.controller.ui(&state.egui_ctx, &view);
+        // Capture the central viewport rect now that the panels are laid out, for
+        // next frame's out-of-pass nav routing in `window_event`.
+        #[allow(deprecated)]
+        {
+            self.central_rect = state.egui_ctx.available_rect();
+        }
         draw_view_cube(&state.egui_ctx, &mut self.camera);
         let full_output = state.egui_ctx.end_pass();
 
