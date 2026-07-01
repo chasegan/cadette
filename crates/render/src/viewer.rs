@@ -189,10 +189,16 @@ pub trait Controller {
         false
     }
 
-    /// The window title — typically the open file's name plus the app name, with
-    /// a marker for unsaved changes. The host re-applies it when it changes.
+    /// The window title — typically the app name plus the open file's name. The
+    /// host re-applies it when it changes.
     fn title(&self) -> String {
         "Cadette".to_string()
+    }
+
+    /// Whether there are unsaved changes. The host shows this natively (the
+    /// "edited" dot in the macOS close button) rather than in the title text.
+    fn is_dirty(&self) -> bool {
+        false
     }
 
     /// Begin a push/pull on `pick` if it's manipulable. `point` is the clicked
@@ -2273,6 +2279,9 @@ struct WindowApp<C: Controller> {
     /// pass — where `available_rect()` is unavailable — so it hit-tests against
     /// this last-known layout (one frame of lag, imperceptible for input).
     central_rect: egui::Rect,
+    /// Last-applied unsaved-changes state, so the native "edited" indicator is
+    /// only re-set when it flips.
+    last_edited: bool,
     state: Option<WindowState>,
 }
 
@@ -2300,6 +2309,7 @@ impl<C: Controller> WindowApp<C> {
             occluded: false,
             last_title: String::new(),
             central_rect: egui::Rect::NOTHING,
+            last_edited: false,
             state: None,
         }
     }
@@ -2823,8 +2833,33 @@ impl<C: Controller> WindowApp<C> {
         draw_view_cube(&state.egui_ctx, &mut self.camera);
         let full_output = state.egui_ctx.end_pass();
 
-        // Keep the OS window title in sync with the open file + dirty state.
-        let title = self.controller.title();
+        // Keep the OS window chrome in sync with the open file + dirty state.
+        // Unsaved changes show as the native "edited" dot in the macOS close
+        // button; elsewhere (no such affordance) fall back to a "•" title prefix.
+        let dirty = self.controller.is_dirty();
+        if dirty != self.last_edited {
+            self.last_edited = dirty;
+            #[cfg(target_os = "macos")]
+            {
+                use winit::platform::macos::WindowExtMacOS;
+                state.window.set_document_edited(dirty);
+            }
+        }
+        let title = {
+            let base = self.controller.title();
+            #[cfg(target_os = "macos")]
+            {
+                base
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                if dirty {
+                    format!("\u{2022} {base}")
+                } else {
+                    base
+                }
+            }
+        };
         if title != self.last_title {
             state.window.set_title(&title);
             self.last_title = title;

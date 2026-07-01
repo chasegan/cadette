@@ -2431,16 +2431,20 @@ impl Controller for Modeler {
     }
 
     fn title(&self) -> String {
-        // The open file's name (Untitled until first saved), with a "•" for
-        // unsaved changes — the project's identity lives in the file, not a name.
+        // App name first, then the open file (Untitled until first saved). The
+        // unsaved-changes state is surfaced separately (see `is_dirty`) — natively
+        // on macOS — rather than as a glyph in the title text.
         let name = self
             .current_path
             .as_ref()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "Untitled".to_string());
-        let mark = if self.dirty { "• " } else { "" };
-        format!("{mark}{name} — Cadette")
+        format!("Cadette — {name}")
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.dirty
     }
 
     fn start_manipulation(
@@ -3579,14 +3583,14 @@ mod tests {
     #[test]
     fn window_title_tracks_the_file_and_dirty_state() {
         let mut m = Modeler::new();
-        assert_eq!(m.title(), "Untitled — Cadette", "no file yet");
+        assert_eq!(m.title(), "Cadette — Untitled", "no file yet");
+        assert!(!m.is_dirty());
         m.dirty = true;
-        assert_eq!(m.title(), "• Untitled — Cadette", "unsaved changes marked");
+        assert!(m.is_dirty(), "unsaved changes flagged (shown as the native dot)");
         m.current_path = Some(std::path::PathBuf::from("/tmp/bracket.cdt"));
         m.dirty = false;
-        assert_eq!(m.title(), "bracket.cdt — Cadette", "shows the filename, clean");
-        m.dirty = true;
-        assert_eq!(m.title(), "• bracket.cdt — Cadette");
+        assert_eq!(m.title(), "Cadette — bracket.cdt", "app name first, then file");
+        assert!(!m.is_dirty());
     }
 
     #[test]
