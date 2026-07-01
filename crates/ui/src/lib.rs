@@ -221,8 +221,37 @@ pub fn history_panel(
             resp.changed |= rollback_controls(ui, doc);
             ui.separator();
 
-            ui.label(RichText::new("Build Graph").strong())
-                .on_hover_text("Each body is a lane; lanes merge at a boolean or group.");
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Build Graph").strong())
+                    .on_hover_text("Each body is a lane; lanes merge at a boolean or group.");
+                // Reorder the SELECTED step (backward-only refs may reject a move).
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let sel_idx = state
+                        .selected
+                        .and_then(|id| doc.history.features().iter().position(|f| f.id == id));
+                    let last = doc.history.len().saturating_sub(1);
+                    if ui
+                        .add_enabled(sel_idx.is_some_and(|i| i < last), egui::Button::new("🔽").small())
+                        .on_hover_text("Move the selected step down")
+                        .clicked()
+                    {
+                        if let (Some(id), Some(i)) = (state.selected, sel_idx) {
+                            let _ = doc.history.reorder(id, i + 1);
+                            resp.changed = true;
+                        }
+                    }
+                    if ui
+                        .add_enabled(sel_idx.is_some_and(|i| i > 0), egui::Button::new("🔼").small())
+                        .on_hover_text("Move the selected step up")
+                        .clicked()
+                    {
+                        if let (Some(id), Some(i)) = (state.selected, sel_idx) {
+                            let _ = doc.history.reorder(id, i - 1);
+                            resp.changed = true;
+                        }
+                    }
+                });
+            });
 
             // Pin the selected-feature editor (and any errors) to the bottom —
             // declared first so it reserves its space — and let the graph scroll
@@ -412,7 +441,6 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
     let graph = doc.history.build_graph();
     let gutter_w = graph.lane_count.max(1) as f32 * LANE_W;
     let active = doc.rollback();
-    let last = graph.rows.len().saturating_sub(1);
 
     // Snapshot rows (with their lane layout) so we can mutate the doc in the loop.
     let rows: Vec<_> = doc
@@ -502,20 +530,14 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
                 state.selected = if selected { None } else { Some(id) };
             }
 
+            // Reordering moved to the external Up/Down buttons on the Build Graph
+            // header (they act on the selected step); only delete stays per-row.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("🗑").on_hover_text("Delete").clicked() {
                     doc.history.remove(id);
                     if state.selected == Some(id) {
                         state.selected = None;
                     }
-                    changed = true;
-                }
-                if ui.add_enabled(index < last, egui::Button::new("↓").small()).clicked() {
-                    let _ = doc.history.reorder(id, index + 1);
-                    changed = true;
-                }
-                if ui.add_enabled(index > 0, egui::Button::new("↑").small()).clicked() {
-                    let _ = doc.history.reorder(id, index - 1);
                     changed = true;
                 }
             });

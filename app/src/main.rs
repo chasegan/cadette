@@ -245,6 +245,12 @@ struct TransformDrag {
     source: FeatureId,
     feature: Option<FeatureId>,
     pivot: Option<[f64; 3]>,
+    /// If the source is a SKETCH, its original plane — the drag moves the sketch
+    /// IN PLACE (transforms this plane) instead of wrapping it in a Translate/
+    /// Rotate, so it stays an editable, extrudable sketch.
+    orig_plane: Option<SketchPlane>,
+    /// True once a non-trivial drag has recorded an undo and begun editing.
+    started: bool,
 }
 
 /// How an active resize edits the model.
@@ -1083,6 +1089,17 @@ impl Modeler {
         let id = self.selected_body()?;
         matches!(self.doc.history.get(id).map(|f| &f.kind), Some(FeatureKind::ConstraintSketch { .. }))
             .then_some(id)
+    }
+
+    /// The plane of a sketch feature (constraint or simple), else `None`. When the
+    /// gizmo target is a sketch, the move edits this plane in place.
+    fn sketch_plane_of(&self, id: FeatureId) -> Option<SketchPlane> {
+        match self.doc.history.get(id).map(|f| &f.kind) {
+            Some(
+                FeatureKind::ConstraintSketch { plane, .. } | FeatureKind::Sketch { plane, .. },
+            ) => Some(*plane),
+            _ => None,
+        }
     }
 
     /// Re-solve the session sketch and record its remaining DOF.
@@ -2541,13 +2558,55 @@ impl Controller for Modeler {
             GizmoHandle::RotateAxis(_) => self.gizmo_origin(),
             _ => None,
         };
-        self.transform = Some(TransformDrag { source, feature: None, pivot });
+        // A sketch moves in place (transform its plane); everything else adds a
+        // Translate/Rotate feature.
+        let orig_plane = self.sketch_plane_of(source);
+        self.transform = Some(TransformDrag {
+            source,
+            feature: None,
+            pivot,
+            orig_plane,
+            started: false,
+        });
     }
 
     fn update_transform(&mut self, delta: TransformDelta) -> bool {
         let Some(mut t) = self.transform else {
             return false;
         };
+
+        // A sketch moves in place: transform its plane so it stays an editable,
+        // extrudable sketch rather than becoming a generic transformed body.
+        if let Some(orig) = t.orig_plane {
+            let significant = match delta {
+                TransformDelta::Translate(o) => DVec3::from_array(o).length() >= 1e-3,
+                TransformDelta::Rotate { angle, .. } => angle.abs() >= 1e-4,
+            };
+            if !significant {
+                return true; // sub-threshold jitter: no undo, no edit yet
+            }
+            if !t.started {
+                self.record_undo(self.doc.clone());
+                t.started = true;
+            }
+            let moved = match delta {
+                TransformDelta::Translate(o) => orig.translated(DVec3::from_array(o)),
+                TransformDelta::Rotate { axis, angle } => {
+                    let pivot = DVec3::from_array(t.pivot.unwrap_or([0.0; 3]));
+                    orig.rotated(pivot, DVec3::from_array(axis), angle)
+                }
+            };
+            if let Some(f) = self.doc.history.get_mut(t.source) {
+                match &mut f.kind {
+                    FeatureKind::ConstraintSketch { plane, .. }
+                    | FeatureKind::Sketch { plane, .. } => *plane = moved,
+                    _ => {}
+                }
+            }
+            self.transform = Some(t);
+            return true;
+        }
+
         let (name, kind) = match delta {
             TransformDelta::Translate(offset) => (
                 "Move",
@@ -2588,6 +2647,16 @@ impl Controller for Modeler {
         let Some(t) = self.transform.take() else {
             return;
         };
+        // Sketch moved in place: on cancel, restore the pre-drag snapshot; on
+        // commit, keep the edit (and its single undo entry).
+        if t.orig_plane.is_some() {
+            if t.started && !commit {
+                if let Some(prev) = self.undo.pop() {
+                    self.doc = prev;
+                }
+            }
+            return;
+        }
         let Some(id) = t.feature else {
             return; // never dragged far enough to create a feature
         };
@@ -3282,7 +3351,13 @@ fn main() -> anyhow::Result<()> {
                     center: DVec3::from_array(pivot),
                 },
             );
-            modeler.transform = Some(TransformDrag { source, feature: Some(id), pivot: Some(pivot) });
+            modeler.transform = Some(TransformDrag {
+                source,
+                feature: Some(id),
+                pivot: Some(pivot),
+                orig_plane: None,
+                started: true,
+            });
         }
         let path = "out/gizmo-readout-demo.png";
         std::fs::create_dir_all("out")?;
@@ -3469,6 +3544,41 @@ mod tests {
         // Symmetric control net → midpoint at x=5, y=7.5 (Bernstein at t=0.5).
         let m = cubic_screen(p0, p1, p2, p3, 0.5);
         assert!((m.x - 5.0).abs() < 1e-4 && (m.y - 7.5).abs() < 1e-4, "mid {m:?}");
+    }
+
+    #[test]
+    fn moving_a_sketch_keeps_it_a_sketch() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("mv");
+        let sk = m.doc.add(
+            "Sketch",
+            FeatureKind::ConstraintSketch { plane: SketchPlane::Xy, sketch: constraint_rectangle(20.0, 20.0) },
+        );
+        let n0 = m.doc.history.len();
+
+        // Drive a gizmo translate of the sketch (in-place plane edit).
+        m.transform = Some(TransformDrag {
+            source: sk,
+            feature: None,
+            pivot: None,
+            orig_plane: Some(SketchPlane::Xy),
+            started: false,
+        });
+        m.update_transform(TransformDelta::Translate([0.0, 0.0, 5.0]));
+        m.finish_transform(true);
+
+        assert_eq!(m.doc.history.len(), n0, "moved in place — no Translate feature added");
+        match m.doc.history.get(sk).map(|f| &f.kind) {
+            Some(FeatureKind::ConstraintSketch { plane, .. }) => {
+                assert!(
+                    (plane.origin() - DVec3::new(0.0, 0.0, 5.0)).length() < 1e-9,
+                    "sketch plane moved +Z5, got {:?}",
+                    plane.origin()
+                );
+            }
+            _ => panic!("still a ConstraintSketch after moving"),
+        }
+        assert!(m.undo(), "the move is one undo step");
     }
 
     #[test]

@@ -67,6 +67,26 @@ impl SketchPlane {
         self.x_dir().cross(self.y_dir())
     }
 
+    /// This plane translated by `offset` — moving a sketch's placement. Always a
+    /// `Custom` plane (a base plane translated off the origin is no longer basic).
+    pub fn translated(self, offset: DVec3) -> Self {
+        SketchPlane::from_frame(self.origin() + offset, self.x_dir(), self.y_dir())
+    }
+
+    /// This plane rotated by `angle` radians about the axis `axis` through the
+    /// point `pivot` — moving a sketch's placement. A zero axis is a no-op.
+    pub fn rotated(self, pivot: DVec3, axis: DVec3, angle: f64) -> Self {
+        if axis.length_squared() < 1e-12 {
+            return self;
+        }
+        let q = glam::DQuat::from_axis_angle(axis.normalize(), angle);
+        SketchPlane::from_frame(
+            pivot + q * (self.origin() - pivot),
+            q * self.x_dir(),
+            q * self.y_dir(),
+        )
+    }
+
     /// Short label for UI display.
     pub fn label(self) -> &'static str {
         match self {
@@ -728,6 +748,26 @@ impl Sketch2d {
 #[cfg(test)]
 mod edit_tests {
     use super::*;
+
+    #[test]
+    fn plane_translated_moves_the_origin_keeps_the_normal() {
+        let p = SketchPlane::Xy.translated(DVec3::new(1.0, 2.0, 3.0));
+        assert_eq!(p.origin(), DVec3::new(1.0, 2.0, 3.0));
+        assert!((p.normal() - DVec3::Z).length() < 1e-12, "still faces +Z");
+        assert_eq!(p.x_dir(), DVec3::X);
+    }
+
+    #[test]
+    fn plane_rotated_turns_the_frame_about_the_pivot() {
+        // XY plane spun 90° about +Z through the origin: x→y, y→-x, normal stays.
+        let p = SketchPlane::Xy.rotated(DVec3::ZERO, DVec3::Z, std::f64::consts::FRAC_PI_2);
+        assert!((p.x_dir() - DVec3::Y).length() < 1e-9, "x_dir → +Y, got {:?}", p.x_dir());
+        assert!((p.y_dir() - (-DVec3::X)).length() < 1e-9, "y_dir → -X");
+        assert!((p.normal() - DVec3::Z).length() < 1e-9, "normal unchanged");
+        assert!(p.origin().length() < 1e-9, "origin on the axis is fixed");
+        // A zero axis is a no-op.
+        assert_eq!(SketchPlane::Xy.rotated(DVec3::ZERO, DVec3::ZERO, 1.0), SketchPlane::Xy);
+    }
 
     /// A closed square loop of 4 points.
     fn square() -> Sketch2d {
