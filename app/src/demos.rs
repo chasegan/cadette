@@ -12,8 +12,9 @@ use cdt_core::{
 use cdt_kernel::KernelBackend;
 use cdt_render::{Controller, Pick};
 
+use crate::drags::TransformDrag;
 use crate::sketch::SketchTool;
-use crate::{Modeler, TransformDrag, DEFLECTION_MM};
+use crate::{Modeler, DEFLECTION_MM};
 
 /// Run the demo matching a known `--flag`, if any. Returns `Ok(None)` when a
 /// demo ran (the process is done) and `Ok(Some(modeler))` to continue to the
