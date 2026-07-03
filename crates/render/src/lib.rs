@@ -6,18 +6,30 @@
 //! split this into the scene/picking/overlay structure from the outline.
 
 pub mod camera;
+mod controller;
+mod gizmo;
+mod grid;
+mod math;
+mod picking;
+mod scene;
+mod screenshot;
+mod theme;
 mod view;
-mod viewer;
+mod view_cube;
+mod window;
 
 // Re-export egui so `cdt-ui` and the app share exactly this version.
 pub use egui;
 
 pub use camera::OrbitCamera;
-pub use view::ViewContext;
-pub use viewer::{
-    run, screenshot, Axis3, Controller, Gizmo, GizmoHandle, GridSpec, Highlights, MeshData, Pick,
-    Plane3, ResizeBox, TransformDelta, ViewportTheme,
+pub use controller::{
+    Axis3, Controller, Gizmo, GizmoHandle, GridSpec, Highlights, MeshData, Pick, Plane3,
+    ResizeBox, TransformDelta,
 };
+pub use theme::ViewportTheme;
+pub use view::ViewContext;
+pub use screenshot::screenshot;
+pub use window::run;
 
 use bytemuck::{Pod, Zeroable};
 
