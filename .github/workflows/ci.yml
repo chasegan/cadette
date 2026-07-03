@@ -1,20 +1,63 @@
 name: CI
 
-# Run the whole test suite on every push. We use a macOS runner because the
-# kernel links a system OpenCASCADE (installed here via Homebrew, matching the
-# 7.9 dev setup) and the render crate's tests create a real wgpu device, which
-# the runner's Metal backend provides.
-on: push
+# Test on every push and PR. macOS gets the full suite (the render crate's
+# tests create a real wgpu device, which the runner's Metal backend provides).
+# Windows provisions OCCT via the runner's preinstalled vcpkg and skips the
+# render crate until WARP (software DX12) support there is verified.
+on:
+  push:
+    paths-ignore: ['docs/**', 'md/**', 'branding/**', '*.md']
+  pull_request:
+    paths-ignore: ['docs/**', 'md/**', 'branding/**', '*.md']
+
+# A newer push to the same branch supersedes any run still in flight.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
-    name: Test (macOS / Apple Silicon)
-    runs-on: macos-latest
+    name: Test (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macOS
+          - os: windows-latest
+            label: Windows
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Install OpenCASCADE
-        run: brew install opencascade
+      - name: Install OpenCASCADE (Homebrew)
+        if: runner.os == 'macOS'
+        # The runner image pre-taps aws/tap, which trips Homebrew's tap-trust
+        # check and prints a warning on every brew command. We don't use it.
+        run: |
+          brew untap aws/tap 2>/dev/null || true
+          brew install opencascade
+
+      - name: Restore vcpkg binary cache
+        if: runner.os == 'Windows'
+        # OCCT compiles for ~40-60 min cold; vcpkg's binary cache makes later
+        # runs restore it in seconds. A per-run key with a shared restore
+        # prefix means every run saves its (possibly updated) archives.
+        uses: actions/cache@v4
+        with:
+          path: vcpkg-binary-cache
+          key: vcpkg-occt-x64-windows-${{ github.run_id }}
+          restore-keys: vcpkg-occt-x64-windows-
+
+      - name: Install OpenCASCADE (vcpkg)
+        if: runner.os == 'Windows'
+        env:
+          VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-binary-cache
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          vcpkg install opencascade --triplet x64-windows
+          # Test executables load the OCCT DLLs from PATH at runtime.
+          Add-Content $env:GITHUB_PATH "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -22,7 +65,15 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
 
-      - name: Run tests
+      - name: Run tests (macOS)
+        if: runner.os == 'macOS'
         run: |
           export CDT_OCCT_PREFIX="$(brew --prefix opencascade)"
           cargo test --workspace --locked
+
+      - name: Run tests (Windows)
+        if: runner.os == 'Windows'
+        # build.rs derives the OCCT prefix from VCPKG_INSTALLATION_ROOT, which
+        # the runner predefines. cdt-render is excluded until its wgpu-device
+        # tests are verified against the runner's WARP adapter.
+        run: cargo test --workspace --locked --exclude cdt-render
