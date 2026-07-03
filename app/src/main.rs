@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use cdt_core::{
-    regenerate, BooleanOp, Constraint, Document, EdgeAnchor, FaceAnchor, FeatureId, FeatureKind,
+    BooleanOp, Constraint, Document, EdgeAnchor, FaceAnchor, FeatureId, FeatureKind,
     LineId, PointId, Profile, RegenCache, RegenError, Sketch2d, SketchPlane, DVec3,
 };
 use cdt_interaction::Selection;
@@ -25,6 +25,9 @@ use cdt_render::{
 };
 use cdt_ui::{history_panel, HistoryState};
 
+mod demos;
+#[cfg(target_os = "macos")]
+mod macos;
 mod prefs;
 use prefs::Prefs;
 
@@ -3115,33 +3118,6 @@ fn error_message(err: &RegenError<cdt_kernel::KernelError>, doc: &Document) -> S
     }
 }
 
-/// Give the process a proper macOS identity so the menu bar reads "Cadette"
-/// (winit builds "About/Hide/Quit &lt;processName&gt;" from `NSProcessInfo`) and the
-/// standard About panel shows the name + version — an unbundled dev binary
-/// otherwise shows "cdt-app". The shipped `.app` gets these from its Info.plist;
-/// this makes local runs match.
-#[cfg(target_os = "macos")]
-fn set_macos_app_identity(name: &str, version: &str) {
-    use objc2::msg_send;
-    use objc2_foundation::{NSBundle, NSProcessInfo, NSString};
-    // Safety: correctly-typed main-thread message sends, run once before the
-    // event loop. The main bundle's info dictionary is mutable in-process, so the
-    // standard About panel picks up the injected name/version.
-    unsafe {
-        let ns_name = NSString::from_str(name);
-        let proc = NSProcessInfo::processInfo();
-        let _: () = msg_send![&proc, setProcessName: &*ns_name];
-
-        if let Some(info) = NSBundle::mainBundle().infoDictionary() {
-            let ns_version = NSString::from_str(version);
-            let v_key = NSString::from_str("CFBundleShortVersionString");
-            let _: () = msg_send![&info, setObject: &*ns_version, forKey: &*v_key];
-            let n_key = NSString::from_str("CFBundleName");
-            let _: () = msg_send![&info, setObject: &*ns_name, forKey: &*n_key];
-        }
-    }
-}
-
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
@@ -3154,401 +3130,12 @@ fn main() -> anyhow::Result<()> {
         _ => prefs::load().theme,
     };
 
-    // Verification aid: draw a closed triangle and finish it, mirroring the
-    // interactive flow, so we can confirm the Extrude button enables afterward.
-    if std::env::args().any(|a| a == "--sketch-demo") {
-        let mut empty = Document::new("draw");
-        std::mem::swap(&mut modeler.doc, &mut empty); // start from a clean doc
-        modeler.start_sketch(SketchPlane::Xy);
-        if let Some(s) = modeler.sketch_session.as_mut() {
-            let p0 = s.sketch.add_point(-15.0, -12.0);
-            let p1 = s.sketch.add_point(15.0, -12.0);
-            let p2 = s.sketch.add_point(0.0, 14.0);
-            s.sketch.add_line(p0, p1);
-            s.sketch.add_line(p1, p2);
-            s.sketch.add_line(p2, p0); // close
-            s.start = Some(p0);
-            s.last = Some(p2);
-        }
-        modeler.finish_sketch(); // commits + selects the sketch
-        let path = "out/sketch-demo.png";
-        std::fs::create_dir_all("out")?;
-        cdt_render::screenshot(modeler, 1280, 820, path)?;
-        println!("wrote {path}");
+    // Headless verification/demo harnesses (`--sketch-demo`, `--screenshot`,
+    // `--bench-regen`, ...). If one ran, the process is done; otherwise
+    // continue to the interactive window.
+    let Some(modeler) = demos::run_if_flagged(modeler)? else {
         return Ok(());
-    }
-
-    // Verification aid: a skewed quad with Horizontal/Vertical constraints
-    // applied should solve to an axis-aligned rectangle.
-    if std::env::args().any(|a| a == "--constrain-demo") {
-        // Keep the default part so the camera frames the scene and the sketch
-        // overlay (drawn at the part's scale) is visible.
-        modeler.start_sketch(SketchPlane::Xy);
-        if let Some(s) = modeler.sketch_session.as_mut() {
-            let p0 = s.sketch.add_point(-18.0, -15.0);
-            let p1 = s.sketch.add_point(16.0, -12.0);
-            let p2 = s.sketch.add_point(20.0, 13.0);
-            let p3 = s.sketch.add_point(-15.0, 17.0);
-            let bottom = s.sketch.add_line(p0, p1);
-            let right = s.sketch.add_line(p1, p2);
-            let top = s.sketch.add_line(p2, p3);
-            let left = s.sketch.add_line(p3, p0);
-            s.closed = true;
-            s.tool = SketchTool::Select;
-            for c in [
-                Constraint::Fixed(p0),
-                Constraint::Horizontal(bottom),
-                Constraint::Vertical(right),
-                Constraint::Horizontal(top),
-                Constraint::Vertical(left),
-            ] {
-                s.sketch.add_constraint(c);
-            }
-            s.selected_lines = vec![bottom, top]; // show selection + enable Equal/Parallel
-        }
-        modeler.resolve_session();
-        let path = "out/constrain-demo.png";
-        std::fs::create_dir_all("out")?;
-        cdt_render::screenshot(modeler, 1280, 820, path)?;
-        println!("wrote {path}");
-        return Ok(());
-    }
-
-    // Timing aid: the per-mouse-move cost during a drag, before vs after the
-    // incremental-regen cache.
-    if std::env::args().any(|a| a == "--bench-regen") {
-        use std::time::Instant;
-        let runs = 30;
-
-        // OLD behavior: replay the whole history through OCCT + tessellate, every
-        // frame (a fresh backend with no cache).
-        let mut fresh = KernelBackend::default();
-        let _ = regenerate(&modeler.doc, &mut fresh); // warm OCCT
-        let t0 = Instant::now();
-        for _ in 0..runs {
-            let regen = regenerate(&modeler.doc, &mut fresh);
-            for b in regen.visible_bodies() {
-                let _ = b.tessellate(DEFLECTION_MM);
-            }
-        }
-        let uncached = t0.elapsed().as_secs_f64() * 1000.0 / runs as f64;
-
-        // NEW behavior: simulate a drag — append a Move at the tip and change its
-        // offset each frame. Only that op rebuilds; the cache reuses everything
-        // upstream. mesh() also re-tessellates the changed body.
-        let src = modeler.doc.history.features().last().unwrap().id;
-        let drag = modeler.doc.add(
-            "Drag",
-            FeatureKind::Translate { source: src, offset: DVec3::ZERO },
-        );
-        let _ = modeler.mesh(); // warm the cache
-        let t0 = Instant::now();
-        for i in 0..runs {
-            if let Some(FeatureKind::Translate { offset, .. }) =
-                modeler.doc.history.get_mut(drag).map(|f| &mut f.kind)
-            {
-                offset.x = i as f64 * 0.1;
-            }
-            let _ = modeler.mesh();
-        }
-        let cached = t0.elapsed().as_secs_f64() * 1000.0 / runs as f64;
-
-        println!(
-            "{} features — per-frame drag cost: uncached {:.1}ms, cached {:.1}ms ({:.1}x faster)",
-            modeler.doc.history.len(),
-            uncached,
-            cached,
-            uncached / cached,
-        );
-        return Ok(());
-    }
-
-    // Verification aid: save then reload the default project, no dialogs.
-    if std::env::args().any(|a| a == "--project-test") {
-        std::fs::create_dir_all("out")?;
-        let path = "out/project-test.cdt";
-        let before = modeler.doc.history.len();
-        if let Err(e) = modeler.save_project_to(path) {
-            println!("save failed: {e}");
-            return Ok(());
-        }
-        // Wipe the in-memory doc, then load it back from disk.
-        modeler.doc = Document::new("scratch");
-        match modeler.load_project_from(path) {
-            Ok(()) => {
-                let after = modeler.doc.history.len();
-                let mesh = modeler.mesh();
-                println!(
-                    "round-trip ok: {before} -> {after} features, name {:?}, {} verts, errors {:?}",
-                    modeler.doc.name,
-                    mesh.vertices.len(),
-                    modeler.ui.errors,
-                );
-            }
-            Err(e) => println!("load failed: {e}"),
-        }
-        return Ok(());
-    }
-
-    // Verification aid: export the default model to STL without the dialog.
-    if std::env::args().any(|a| a == "--export-test") {
-        let _ = modeler.mesh(); // populate visible bodies
-        std::fs::create_dir_all("out")?;
-        let path = "out/export-test.stl";
-        match modeler.export_stl_to(path) {
-            Ok(()) => {
-                let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-                println!("wrote {path} ({bytes} bytes)");
-            }
-            Err(e) => println!("export failed: {e}"),
-        }
-        return Ok(());
-    }
-
-    // Verification aid: highlight a face by id to confirm the shader tint path.
-    if std::env::args().any(|a| a == "--highlight-demo") {
-        modeler.selection.select(Some(Pick::Face(0)), false, None); // strong face
-        modeler.selection.hover(Some(Pick::Edge(0))); // hovered edge
-        let path = "out/highlight-demo.png";
-        std::fs::create_dir_all("out")?;
-        cdt_render::screenshot(modeler, 1280, 820, path)?;
-        println!("wrote {path}");
-        return Ok(());
-    }
-
-    // Verification aid: an in-progress rotation, so the gizmo readout (an egui
-    // overlay only shown mid-drag) renders headlessly. Uses a negative angle to
-    // exercise the worst-case width.
-    if std::env::args().any(|a| a == "--pen-demo") {
-        // A smooth closed loop of four cubic beziers (a circle-ish blob) — what
-        // the pen tool produces with smooth anchors — opened for editing.
-        let mut s = Sketch2d::new();
-        let anchors = [(20.0, 0.0), (0.0, 20.0), (-20.0, 0.0), (0.0, -20.0)];
-        let ids: Vec<_> = anchors.iter().map(|&(x, y)| s.add_point(x, y)).collect();
-        // Tangent handles (~0.55 r) make each node smooth; out/in are mirrored.
-        let h = 11.0;
-        let handles = [
-            ([20.0, h], [h, 20.0]),
-            ([-h, 20.0], [-20.0, h]),
-            ([-20.0, -h], [-h, -20.0]),
-            ([h, -20.0], [20.0, -h]),
-        ];
-        for i in 0..4 {
-            let (c1, c2) = handles[i];
-            s.add_bezier(ids[i], ids[(i + 1) % 4], c1, c2);
-        }
-        let mut doc = Document::new("pen");
-        let sk = doc.add("Sketch", FeatureKind::ConstraintSketch { plane: SketchPlane::Xy, sketch: s });
-        std::mem::swap(&mut modeler.doc, &mut doc);
-        let _ = modeler.mesh();
-        modeler.edit_sketch(sk);
-        let path = "out/pen-demo.png";
-        std::fs::create_dir_all("out")?;
-        cdt_render::screenshot(modeler, 1280, 820, path)?;
-        println!("wrote {path}");
-        return Ok(());
-    }
-
-    if std::env::args().any(|a| a == "--bezier-demo") {
-        // A square sketch whose bottom edge is a bezier, opened for editing so
-        // the curve + control handles show in the sketch canvas.
-        let mut s = Sketch2d::new();
-        let p: Vec<_> = [(-20.0, -15.0), (20.0, -15.0), (20.0, 15.0), (-20.0, 15.0)]
-            .iter()
-            .map(|&(x, y)| s.add_point(x, y))
-            .collect();
-        s.add_bezier(p[0], p[1], [-10.0, -32.0], [10.0, -32.0]);
-        s.add_line(p[1], p[2]);
-        s.add_line(p[2], p[3]);
-        s.add_line(p[3], p[0]);
-        let mut doc = Document::new("bezier");
-        let sk = doc.add("Sketch", FeatureKind::ConstraintSketch { plane: SketchPlane::Xy, sketch: s });
-        std::mem::swap(&mut modeler.doc, &mut doc);
-        let _ = modeler.mesh();
-        modeler.edit_sketch(sk);
-        let path = "out/bezier-demo.png";
-        std::fs::create_dir_all("out")?;
-        cdt_render::screenshot(modeler, 1280, 820, path)?;
-        println!("wrote {path}");
-        return Ok(());
-    }
-
-    if std::env::args().any(|a| a == "--multiface-demo") {
-        // Select several faces of one box; all should highlight (multi-select).
-        let mut doc = Document::new("multiface");
-        doc.add("Box", FeatureKind::Box { size: DVec3::new(24.0, 18.0, 14.0) });
-        std::mem::swap(&mut modeler.doc, &mut doc);
-        let _ = modeler.mesh();
-        modeler.on_pick(Some(Pick::Face(0)), None, false);
-        modeler.on_pick(Some(Pick::Face(2)), None, true); // additive
-        modeler.on_pick(Some(Pick::Face(4)), None, true);
-        let path = "out/multiface-demo.png";
-        std::fs::create_dir_all("out")?;
-        cdt_render::screenshot(modeler, 1280, 820, path)?;
-        println!("wrote {path}");
-        return Ok(());
-    }
-
-    if std::env::args().any(|a| a == "--group-demo") {
-        // Two separated boxes grouped, then the group rotated about its combined
-        // center — they turn together as one unit.
-        let mut doc = Document::new("group");
-        let a = doc.add("A", FeatureKind::Box { size: DVec3::new(20.0, 12.0, 12.0) });
-        let b0 = doc.add("B0", FeatureKind::Box { size: DVec3::new(20.0, 12.0, 12.0) });
-        let b = doc.add(
-            "B",
-            FeatureKind::Translate { source: b0, offset: DVec3::new(30.0, 0.0, 0.0) },
-        );
-        let g = doc.add("Group", FeatureKind::Group { members: vec![a, b] });
-        doc.add(
-            "Turn",
-            FeatureKind::Rotate {
-                source: g,
-                axis: DVec3::Z,
-                angle: 30.0_f64.to_radians(),
-                center: DVec3::new(25.0, 6.0, 6.0), // the combined bbox center
-            },
-        );
-        std::mem::swap(&mut modeler.doc, &mut doc);
-        let _ = modeler.mesh();
-        let path = "out/group-demo.png";
-        std::fs::create_dir_all("out")?;
-        cdt_render::screenshot(modeler, 1280, 820, path)?;
-        println!("wrote {path}");
-        return Ok(());
-    }
-
-    if std::env::args().any(|a| a == "--mirror-demo") {
-        // An asymmetric bored block, mirror-copied across its +X face so the
-        // reflected hole reads clearly.
-        let mut doc = Document::new("mirror");
-        let b = doc.add("Box", FeatureKind::Box { size: DVec3::new(20.0, 14.0, 12.0) });
-        let pin = doc.add("Pin", FeatureKind::Cylinder { radius: 3.0, height: 40.0 });
-        let pin = doc.add(
-            "Position",
-            FeatureKind::Translate { source: pin, offset: DVec3::new(6.0, 7.0, -10.0) },
-        );
-        let body = doc.add(
-            "Bore",
-            FeatureKind::Boolean { op: BooleanOp::Subtract, target: b, tool: pin },
-        );
-        let clone = doc.duplicate(body).expect("duplicate");
-        doc.add(
-            "Mirror",
-            FeatureKind::Mirror {
-                source: clone,
-                origin: DVec3::new(20.0, 0.0, 0.0),
-                normal: DVec3::X,
-            },
-        );
-        std::mem::swap(&mut modeler.doc, &mut doc);
-        let _ = modeler.mesh();
-        let path = "out/mirror-demo.png";
-        std::fs::create_dir_all("out")?;
-        cdt_render::screenshot(modeler, 1280, 820, path)?;
-        println!("wrote {path}");
-        return Ok(());
-    }
-
-    if std::env::args().any(|a| a == "--revolve-demo") {
-        // An L-shaped profile on XZ, its left edge on the Z axis, revolved 270°
-        // so the swept cross-section reads clearly as a solid of revolution.
-        let mut s = Sketch2d::new();
-        let pts = [
-            (0.0, 0.0),
-            (16.0, 0.0),
-            (16.0, 6.0),
-            (6.0, 6.0),
-            (6.0, 30.0),
-            (0.0, 30.0),
-        ];
-        let ids: Vec<_> = pts.iter().map(|&(x, y)| s.add_point(x, y)).collect();
-        for i in 0..ids.len() {
-            s.add_line(ids[i], ids[(i + 1) % ids.len()]);
-        }
-        let mut doc = Document::new("revolve");
-        let sk = doc.add(
-            "Profile",
-            FeatureKind::ConstraintSketch { plane: SketchPlane::Xz, sketch: s },
-        );
-        doc.add(
-            "Revolve",
-            FeatureKind::Revolve {
-                source: sk,
-                axis: EdgeAnchor { point: DVec3::new(0.0, 0.0, 15.0) },
-                angle: 270.0_f64.to_radians(),
-            },
-        );
-        std::mem::swap(&mut modeler.doc, &mut doc);
-        let _ = modeler.mesh();
-        let path = "out/revolve-demo.png";
-        std::fs::create_dir_all("out")?;
-        cdt_render::screenshot(modeler, 1280, 820, path)?;
-        println!("wrote {path}");
-        return Ok(());
-    }
-
-    if std::env::args().any(|a| a == "--planes-demo") {
-        // All three origin planes on, as construction guides.
-        modeler.ui.show_xz = true;
-        modeler.ui.show_yz = true;
-        let _ = modeler.mesh();
-        let path = "out/planes-demo.png";
-        std::fs::create_dir_all("out")?;
-        cdt_render::screenshot(modeler, 1280, 820, path)?;
-        println!("wrote {path}");
-        return Ok(());
-    }
-
-    if std::env::args().any(|a| a == "--resize-demo") {
-        // The default (non-primitive) part, one face selected, so the bbox resize
-        // grips show on a filleted/booleaned body alongside the move/rotate gizmo.
-        let _ = modeler.mesh();
-        modeler.on_pick(Some(Pick::Face(0)), None, false);
-        let path = "out/resize-demo.png";
-        std::fs::create_dir_all("out")?;
-        cdt_render::screenshot(modeler, 1280, 820, path)?;
-        println!("wrote {path}");
-        return Ok(());
-    }
-
-    if std::env::args().any(|a| a == "--gizmo-readout-demo") {
-        let _ = modeler.mesh(); // populate visible + body_centers
-        modeler.on_pick(Some(Pick::Face(0)), None, false); // select a face → gizmo
-        if let (Some(source), Some(pivot)) = (modeler.selected_body(), modeler.gizmo_origin()) {
-            let id = modeler.doc.add(
-                "Rotate",
-                FeatureKind::Rotate {
-                    source,
-                    axis: DVec3::Z,
-                    angle: (-135.0f64).to_radians(),
-                    center: DVec3::from_array(pivot),
-                },
-            );
-            modeler.transform = Some(TransformDrag {
-                source,
-                feature: Some(id),
-                pivot: Some(pivot),
-                orig_plane: None,
-                started: true,
-            });
-        }
-        let path = "out/gizmo-readout-demo.png";
-        std::fs::create_dir_all("out")?;
-        cdt_render::screenshot(modeler, 1280, 820, path)?;
-        println!("wrote {path}");
-        return Ok(());
-    }
-
-    if std::env::args().any(|a| a == "--screenshot") {
-        // Pre-select the constraint sketch so the screenshot shows its editor.
-        modeler.ui.selected = modeler.doc.history.features().first().map(|f| f.id);
-        let path = "out/modeler.png";
-        std::fs::create_dir_all("out")?;
-        cdt_render::screenshot(modeler, 1280, 820, path)?;
-        println!("wrote {path}");
-        return Ok(());
-    }
+    };
 
     println!("Cadette — interactive modeler");
     println!("  history panel: edit/suppress/reorder features, drag the rollback bar");
@@ -3557,7 +3144,7 @@ fn main() -> anyhow::Result<()> {
     // Name the app for the macOS menu bar + About panel before the event loop
     // builds the menu (dev binaries would otherwise show "cdt-app").
     #[cfg(target_os = "macos")]
-    set_macos_app_identity("Cadette", env!("CARGO_PKG_VERSION"));
+    macos::set_macos_app_identity("Cadette", env!("CARGO_PKG_VERSION"));
 
     cdt_render::run(modeler)?;
     Ok(())
@@ -3747,7 +3334,7 @@ mod tests {
     fn macos_app_identity_renames_the_process_without_crashing() {
         // Exercises the objc message sends headlessly: if the info-dictionary
         // mutation were to raise (immutable dict), this aborts the test.
-        set_macos_app_identity("Cadette", "9.9.9");
+        macos::set_macos_app_identity("Cadette", "9.9.9");
         use objc2_foundation::NSProcessInfo;
         let name = NSProcessInfo::processInfo().processName().to_string();
         assert_eq!(name, "Cadette", "process name drives the macOS app menu");
