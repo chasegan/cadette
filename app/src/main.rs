@@ -169,6 +169,9 @@ struct SketchSession {
     selected_beziers: Vec<usize>,
     /// Remaining degrees of freedom from the last solve (for UI feedback).
     dof: usize,
+    /// True when the last solve found contradictory constraints (redundant
+    /// equations that failed to converge) — surfaced as "over-constrained".
+    conflicted: bool,
     /// The feature being re-edited, if this session reopened an existing sketch
     /// — `finish` writes back to it in place. `None` for a brand-new sketch.
     editing: Option<FeatureId>,
@@ -1067,6 +1070,7 @@ impl Modeler {
             selected_lines: Vec::new(),
             selected_beziers: Vec::new(),
             dof: 0,
+            conflicted: false,
             editing: None,
             sweep_profile: None,
             dragging: None,
@@ -1118,6 +1122,7 @@ impl Modeler {
             selected_lines: Vec::new(),
             selected_beziers: Vec::new(),
             dof: 0,
+            conflicted: false,
             editing: Some(id),
             sweep_profile: None,
             dragging: None,
@@ -1154,6 +1159,7 @@ impl Modeler {
         if let Some(session) = self.sketch_session.as_mut() {
             let solution = cdt_solver::solve_sketch(&mut session.sketch);
             session.dof = solution.degrees_of_freedom;
+            session.conflicted = solution.is_over_constrained() && !solution.report.converged;
         }
     }
 
@@ -1365,7 +1371,10 @@ impl Modeler {
                 }
                 ui.separator();
                 let dof = session.dof;
-                let status = if dof == 0 {
+                let status = if session.conflicted {
+                    egui::RichText::new("over-constrained")
+                        .color(self.ui.theme.palette().error)
+                } else if dof == 0 {
                     egui::RichText::new("fully constrained").color(self.ui.theme.palette().positive)
                 } else {
                     egui::RichText::new(format!("{dof} dof")).weak()
