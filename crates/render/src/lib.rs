@@ -7,6 +7,7 @@
 
 pub mod camera;
 mod math;
+mod theme;
 mod view;
 mod viewer;
 
@@ -14,10 +15,11 @@ mod viewer;
 pub use egui;
 
 pub use camera::OrbitCamera;
+pub use theme::ViewportTheme;
 pub use view::ViewContext;
 pub use viewer::{
     run, screenshot, Axis3, Controller, Gizmo, GizmoHandle, GridSpec, Highlights, MeshData, Pick,
-    Plane3, ResizeBox, TransformDelta, ViewportTheme,
+    Plane3, ResizeBox, TransformDelta,
 };
 
 use bytemuck::{Pod, Zeroable};
