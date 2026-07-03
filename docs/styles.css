@@ -207,6 +207,17 @@ a { color: inherit; }
 .card h3 { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 9px; }
 .card p { font-size: 15px; color: var(--ink-70); line-height: 1.55; }
 
+/* --------------------------- SCREENSHOT ---------------------------- */
+.shot { max-width: var(--maxw); margin: 0 auto; padding: 56px 24px 8px; }
+.shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  box-shadow: 0 24px 60px -28px rgba(24, 34, 65, 0.35);
+}
+
 /* ----------------------------- ABOUT ------------------------------ */
 .about { padding: 80px 24px 88px; }
 .about-inner {
@@ -221,11 +232,8 @@ a { color: inherit; }
 .about-mark { width: 64px; height: 64px; margin: 0 auto 22px; display: block; }
 .about h2 { font-size: clamp(28px, 4vw, 38px); letter-spacing: -0.03em; margin-bottom: 18px; }
 .about p { font-size: 17px; line-height: 1.6; color: rgba(243, 236, 220, 0.82); max-width: 52ch; margin: 0 auto 16px; }
-.about .voice {
-  font-style: italic;
-  color: rgba(243, 236, 220, 0.62);
-  font-size: 16px;
-}
+.about p a { color: var(--coral); text-decoration: none; }
+.about p a:hover { text-decoration: underline; }
 .about-cta { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 32px; }
 .about .btn-ghost { border-color: rgba(243, 236, 220, 0.55); color: var(--paper); }
 .about .btn-ghost:hover { background: var(--paper); color: var(--navy); }

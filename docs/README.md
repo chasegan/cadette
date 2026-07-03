@@ -5,12 +5,13 @@ No build step, no dependencies. Just `index.html`, `styles.css`, and `favicon.sv
 
 ## Files
 
-| File          | Purpose                                                        |
-|---------------|---------------------------------------------------------------|
-| `index.html`  | The page.                                                     |
-| `styles.css`  | All styling. Palette + type from the Cadette Brand Guide.     |
-| `favicon.svg` | C-monogram favicon.                                           |
-| `CNAME`       | Custom domain for GitHub Pages (`cadette.org`). Remove if hosting elsewhere. |
+| File                | Purpose                                                  |
+|---------------------|----------------------------------------------------------|
+| `index.html`        | The page.                                                |
+| `styles.css`        | All styling. Palette + type from the Cadette Brand Guide. |
+| `favicon.svg`       | C-monogram favicon.                                      |
+| `modeler-light.png` | App screenshot (light theme). Regenerate with `CADETTE_THEME=light cargo run -p cdt-app -- --screenshot`, then copy `out/modeler.png` here. |
+| `CNAME`             | Custom domain for GitHub Pages (`cadette.org`). Remove if hosting elsewhere. |
 
 ## Preview locally
 
@@ -37,9 +38,12 @@ Windows and Linux are shown as disabled "soon" stubs. When builds exist, replace
 each stub `<span>` with an `<a class="btn …">` pointing at, e.g.:
 
 ```
-https://github.com/chasegan/cadette/releases/latest/download/Cadette-Windows.exe
+https://github.com/chasegan/cadette/releases/latest/download/cadette-windows-x64.zip
 https://github.com/chasegan/cadette/releases/latest/download/Cadette-Linux.AppImage
 ```
+
+(`cadette-windows-x64.zip` is the name the release workflow's Windows job
+publishes — keep the two in sync.)
 
 ## Deploy on GitHub Pages
 
