@@ -12,6 +12,7 @@ mod grid;
 mod math;
 mod picking;
 mod scene;
+mod screenshot;
 mod theme;
 mod view;
 mod view_cube;
@@ -27,7 +28,8 @@ pub use controller::{
 };
 pub use theme::ViewportTheme;
 pub use view::ViewContext;
-pub use viewer::{run, screenshot};
+pub use screenshot::screenshot;
+pub use viewer::run;
 
 use bytemuck::{Pod, Zeroable};
 
