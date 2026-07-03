@@ -12,6 +12,7 @@ mod grid;
 mod math;
 mod theme;
 mod view;
+mod view_cube;
 mod viewer;
 
 // Re-export egui so `cdt-ui` and the app share exactly this version.
