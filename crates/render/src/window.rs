@@ -807,9 +807,10 @@ impl<C: Controller> WindowApp<C> {
             state.egui_renderer.free_texture(id);
         }
 
-        // Reclaim GPU memory from resources dropped this frame — the per-frame
-        // command buffer, the rebuilt gizmo buffer, any replaced mesh buffers.
-        // wgpu only frees on poll; this loop redraws continuously, so without a
+        // Reclaim GPU memory from resources dropped this frame — chiefly the
+        // per-frame command buffers and staging allocations (the mesh, gizmo,
+        // and grid buffers are persistent now and rewritten in place). wgpu
+        // only frees on poll; this loop redraws continuously, so without a
         // non-blocking poll every frame the deferred-destruction queue grows
         // unbounded and exhausts (unified) memory until the OS freezes.
         device.poll(wgpu::PollType::Poll).ok();
