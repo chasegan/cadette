@@ -21,11 +21,20 @@ pub struct SketchSolution {
     /// Variables minus independent constraints. `0` = well-constrained,
     /// `> 0` = under-constrained (free to move).
     pub degrees_of_freedom: usize,
+    /// Residual equations beyond the Jacobian's rank. `> 0` means some
+    /// constraints are redundant (restating each other) or contradictory —
+    /// check [`SolveReport::converged`] to tell which: a contradiction can't
+    /// converge, a harmless restatement can.
+    pub redundant: usize,
 }
 
 impl SketchSolution {
     pub fn is_fully_constrained(&self) -> bool {
         self.degrees_of_freedom == 0
+    }
+
+    pub fn is_over_constrained(&self) -> bool {
+        self.redundant > 0
     }
 }
 
@@ -70,6 +79,7 @@ pub fn solve_sketch(sketch: &mut Sketch2d) -> SketchSolution {
         variables: n_vars,
         equations: residuals.len(),
         degrees_of_freedom: n_vars.saturating_sub(rank),
+        redundant: residuals.len().saturating_sub(rank),
     }
 }
 
@@ -123,7 +133,12 @@ fn build_residuals(
                 residuals.push(Box::new(move |x| {
                     let (u1, u2) = (x[bx] - x[ax], x[by] - x[ay]);
                     let (v1, v2) = (x[dx] - x[cx], x[dy] - x[cy]);
-                    u1 * v2 - u2 * v1 // cross product = 0 when parallel
+                    // Cross product over the length product: the sine of the
+                    // angle between the lines. Dimensionless, so the solver's
+                    // one tolerance fits every sketch scale (the raw cross is
+                    // mm² and explodes for long lines).
+                    let scale = (u1.hypot(u2) * v1.hypot(v2)).max(1e-12);
+                    (u1 * v2 - u2 * v1) / scale
                 }));
             }
             Constraint::Perpendicular(l1, l2) => {
@@ -134,7 +149,10 @@ fn build_residuals(
                 residuals.push(Box::new(move |x| {
                     let (u1, u2) = (x[bx] - x[ax], x[by] - x[ay]);
                     let (v1, v2) = (x[dx] - x[cx], x[dy] - x[cy]);
-                    u1 * v1 + u2 * v2 // dot product = 0 when perpendicular
+                    // Dot product over the length product: the cosine of the
+                    // angle — dimensionless for the same reason as Parallel.
+                    let scale = (u1.hypot(u2) * v1.hypot(v2)).max(1e-12);
+                    (u1 * v1 + u2 * v2) / scale
                 }));
             }
             Constraint::EqualLength(l1, l2) => {

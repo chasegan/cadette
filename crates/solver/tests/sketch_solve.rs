@@ -86,6 +86,71 @@ fn radius_constraint_drives_circle_size() {
 }
 
 #[test]
+fn parallel_converges_at_large_scale() {
+    // Two ~800 mm lines, slightly skewed. The raw cross-product residual is in
+    // mm² (~1e5 per milliradian here), which spuriously failed the solver's
+    // absolute tolerance; normalized to sin(angle) it must converge.
+    let mut s = Sketch2d::new();
+    let p0 = s.add_point(0.0, 0.0);
+    let p1 = s.add_point(800.0, 3.0);
+    let p2 = s.add_point(0.0, 200.0);
+    let p3 = s.add_point(790.0, 212.0);
+
+    let a = s.add_line(p0, p1);
+    let b = s.add_line(p2, p3);
+
+    s.add_constraint(Constraint::Fixed(p0));
+    s.add_constraint(Constraint::Fixed(p1));
+    s.add_constraint(Constraint::Fixed(p2));
+    s.add_constraint(Constraint::Parallel(a, b));
+
+    let solution = solve_sketch(&mut s);
+    assert!(solution.report.converged, "norm {}", solution.report.residual_norm);
+
+    // b ends up truly parallel to a.
+    let (q0, q1, q2, q3) = (s.point(p0), s.point(p1), s.point(p2), s.point(p3));
+    let cross = (q1.x - q0.x) * (q3.y - q2.y) - (q1.y - q0.y) * (q3.x - q2.x);
+    let sin = cross / ((q1.x - q0.x).hypot(q1.y - q0.y) * (q3.x - q2.x).hypot(q3.y - q2.y));
+    assert!(sin.abs() < 1e-8, "sin(angle) {sin}");
+}
+
+#[test]
+fn coincident_merges_two_points() {
+    let mut s = Sketch2d::new();
+    let p0 = s.add_point(0.0, 0.0);
+    let p1 = s.add_point(5.0, 4.0);
+    s.add_constraint(Constraint::Fixed(p0));
+    s.add_constraint(Constraint::Coincident(p0, p1));
+
+    let solution = solve_sketch(&mut s);
+    assert!(solution.report.converged);
+    let q = s.point(p1);
+    assert!(close(q.x, 0.0) && close(q.y, 0.0), "p1 ({}, {})", q.x, q.y);
+    assert!(solution.is_fully_constrained());
+    assert!(!solution.is_over_constrained());
+}
+
+#[test]
+fn contradictory_distances_fail_and_report_over_constraint() {
+    // The same two points must be both 10 and 12 apart — unsatisfiable.
+    let mut s = Sketch2d::new();
+    let p0 = s.add_point(0.0, 0.0);
+    let p1 = s.add_point(11.0, 0.0);
+    let line = s.add_line(p0, p1);
+    s.add_constraint(Constraint::Fixed(p0));
+    s.add_constraint(Constraint::Horizontal(line));
+    s.add_constraint(Constraint::Distance(p0, p1, 10.0));
+    s.add_constraint(Constraint::Distance(p0, p1, 12.0));
+
+    let solution = solve_sketch(&mut s);
+    assert!(!solution.report.converged, "a contradiction must not converge");
+    assert!(solution.is_over_constrained(), "redundant {}", solution.redundant);
+    // The two distance rows collapse to one independent equation, so the
+    // geometry still reads as fully constrained — just inconsistently so.
+    assert!(solution.redundant >= 1);
+}
+
+#[test]
 fn underconstrained_sketch_reports_free_dofs() {
     // A lone line with only one endpoint fixed: the other end is free (2 dof).
     let mut s = Sketch2d::new();
