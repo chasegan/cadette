@@ -6,6 +6,7 @@
 //! split this into the scene/picking/overlay structure from the outline.
 
 pub mod camera;
+mod math;
 mod view;
 mod viewer;
 
