@@ -10,6 +10,7 @@ mod controller;
 mod gizmo;
 mod grid;
 mod math;
+mod picking;
 mod scene;
 mod theme;
 mod view;
