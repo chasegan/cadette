@@ -6,6 +6,7 @@
 //! split this into the scene/picking/overlay structure from the outline.
 
 pub mod camera;
+mod controller;
 mod math;
 mod theme;
 mod view;
@@ -15,12 +16,13 @@ mod viewer;
 pub use egui;
 
 pub use camera::OrbitCamera;
+pub use controller::{
+    Axis3, Controller, Gizmo, GizmoHandle, GridSpec, Highlights, MeshData, Pick, Plane3,
+    ResizeBox, TransformDelta,
+};
 pub use theme::ViewportTheme;
 pub use view::ViewContext;
-pub use viewer::{
-    run, screenshot, Axis3, Controller, Gizmo, GizmoHandle, GridSpec, Highlights, MeshData, Pick,
-    Plane3, ResizeBox, TransformDelta,
-};
+pub use viewer::{run, screenshot};
 
 use bytemuck::{Pod, Zeroable};
 
