@@ -38,6 +38,11 @@ const MIN_DIM: f64 = 0.1;
 /// How far (mm, in X and Y) a paste is offset from its original so it's visibly
 /// a separate body, ready to be moved.
 const PASTE_OFFSET: f64 = 10.0;
+/// Marker written to the OS clipboard on body copy. Copying seeds the clipboard
+/// so egui emits a Paste event on Cmd/Ctrl+V; paste acts only when the incoming
+/// payload is exactly this marker, so text copied in another app can't trigger
+/// a stale body paste.
+const CLIPBOARD_SENTINEL: &str = "cadette:body";
 
 /// A centered, axis-aligned rectangle defined by constraints. The corner points
 /// start deliberately rough; the solver snaps them to an exact `width x height`
@@ -1232,6 +1237,7 @@ impl Modeler {
         match self.undo.pop() {
             Some(prev) => {
                 self.redo.push(std::mem::replace(&mut self.doc, prev));
+                self.drop_transient_state();
                 true
             }
             None => false,
@@ -1243,9 +1249,30 @@ impl Modeler {
         match self.redo.pop() {
             Some(next) => {
                 self.undo.push(std::mem::replace(&mut self.doc, next));
+                self.drop_transient_state();
                 true
             }
             None => false,
+        }
+    }
+
+    /// Drop state tied to the document that was just swapped out from under us
+    /// (undo/redo): the viewport selection and edge anchors hold face/edge ids
+    /// that are only valid for one regeneration, and an in-flight drag would
+    /// commit against the wrong body. A sketch session survives unless the
+    /// feature it edits (or sweeps from) no longer exists.
+    fn drop_transient_state(&mut self) {
+        self.selection.clear();
+        self.edge_anchors.clear();
+        self.manipulation = None;
+        self.transform = None;
+        self.resize = None;
+        let session_target_gone = self.sketch_session.as_ref().is_some_and(|s| {
+            let gone = |id: FeatureId| self.doc.history.get(id).is_none();
+            s.editing.is_some_and(gone) || s.sweep_profile.is_some_and(gone)
+        });
+        if session_target_gone {
+            self.sketch_session = None;
         }
     }
 
@@ -2305,7 +2332,11 @@ impl Controller for Modeler {
         let (copy_key, paste_key) = ctx.input(|i| {
             (
                 i.events.iter().any(|e| matches!(e, egui::Event::Copy)),
-                i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))),
+                // Only our own sentinel counts: pasting text copied in another
+                // app must not resurrect a stale body.
+                i.events
+                    .iter()
+                    .any(|e| matches!(e, egui::Event::Paste(t) if t == CLIPBOARD_SENTINEL)),
             )
         });
         // Group ⌘G / Ungroup ⇧⌘G (plain key presses — egui only special-cases
@@ -2321,7 +2352,7 @@ impl Controller for Modeler {
                 // Paste event — egui only emits one when the OS clipboard isn't
                 // empty, and copying a shape otherwise leaves it untouched.
                 if self.clipboard.is_some() {
-                    ctx.copy_text("cadette:body".to_owned());
+                    ctx.copy_text(CLIPBOARD_SENTINEL.to_owned());
                 }
             }
             if paste_key {
@@ -3743,6 +3774,28 @@ mod tests {
         assert!(m.undo());
         m.refresh_dirty();
         assert!(m.dirty, "undo away from the saved state is dirty");
+    }
+
+    #[test]
+    fn undo_and_redo_drop_stale_viewport_state() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("t");
+        m.doc.add("A", FeatureKind::Box { size: DVec3::splat(10.0) });
+        m.record_undo(m.doc.clone());
+        m.doc.add("B", FeatureKind::Box { size: DVec3::splat(5.0) });
+
+        // Face/edge pick ids are only valid for one regeneration; after the
+        // document is swapped they'd resolve to different geometry.
+        m.selection.select(Some(Pick::Face(0)), false, None);
+        m.edge_anchors.insert(3, DVec3::ZERO);
+
+        assert!(m.undo());
+        assert!(m.selection.selected().is_empty(), "undo clears the selection");
+        assert!(m.edge_anchors.is_empty(), "undo clears edge anchors");
+
+        m.selection.select(Some(Pick::Face(1)), false, None);
+        assert!(m.redo());
+        assert!(m.selection.selected().is_empty(), "redo clears the selection");
     }
 
     #[test]
