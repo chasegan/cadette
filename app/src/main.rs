@@ -296,6 +296,15 @@ impl Modeler {
         self.dirty = doc_signature(&self.doc) != self.saved_sig;
     }
 
+    /// True while a continuous edit is reshaping the document every frame — a
+    /// parameter-slider drag, push/pull, gizmo transform, or resize drag.
+    fn interacting(&self) -> bool {
+        self.editing
+            || self.manipulation.is_some()
+            || self.transform.is_some()
+            || self.resize.is_some()
+    }
+
     /// Restore the previous document state. Returns whether anything changed.
     fn undo(&mut self) -> bool {
         match self.undo.pop() {
@@ -675,7 +684,12 @@ impl Controller for Modeler {
         // The viewer calls this exactly when the doc changed (edit / undo / redo /
         // drag), so it's the natural place to refresh the unsaved-changes flag.
         // Compared post-solve, matching the state a save would serialize.
-        self.refresh_dirty();
+        // Skipped mid-interaction: the signature serializes the whole document,
+        // which is too heavy for a per-mouse-move frame — the end-of-drag mesh()
+        // call refreshes it.
+        if !self.interacting() {
+            self.refresh_dirty();
+        }
         let regen = self.regen_cache.regenerate(&self.doc, &mut self.backend);
         self.ui.errors = regen
             .errors()
