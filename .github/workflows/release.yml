@@ -1,10 +1,8 @@
 name: Release
 
 # Build distributable assets when a version tag (v#.#.#) is pushed, and attach
-# them to a GitHub Release for that tag.
-#
-# macOS only for now. A Windows asset needs build.rs taught to link OCCT on MSVC
-# (no -Wl,-rpath) plus OCCT provisioned via vcpkg — tracked as a follow-up.
+# them to a GitHub Release for that tag. Each platform job uploads its own
+# asset; softprops appends to the same tag's release, so no fan-in is needed.
 on:
   push:
     tags:
@@ -14,9 +12,9 @@ permissions:
   contents: write # create the release and upload assets
 
 jobs:
-  macos:
-    name: macOS (Apple Silicon)
-    runs-on: macos-latest
+  verify:
+    name: Verify tag matches crate version
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
@@ -31,6 +29,13 @@ jobs:
             echo "::error::Tag v$tag does not match the crate version $crate (workspace Cargo.toml). Bump the version or fix the tag."
             exit 1
           fi
+
+  macos:
+    name: macOS (Apple Silicon)
+    needs: verify
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
 
       - name: Install OpenCASCADE + dylibbundler
         # The runner image pre-taps aws/tap, which now trips Homebrew's tap-trust
@@ -155,3 +160,54 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: cadette-macos-arm64.dmg
+
+  windows:
+    name: Windows (x64)
+    needs: verify
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Restore vcpkg binary cache
+        # Shared with ci.yml's cache (same key prefix), so a release normally
+        # restores OCCT in seconds instead of compiling it for ~40-60 min.
+        uses: actions/cache@v4
+        with:
+          path: vcpkg-binary-cache
+          key: vcpkg-occt-x64-windows-release-${{ github.run_id }}
+          restore-keys: vcpkg-occt-x64-windows-
+
+      - name: Install OpenCASCADE (vcpkg)
+        env:
+          VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-binary-cache
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          vcpkg install opencascade --triplet x64-windows
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --locked -p cdt-app
+
+      - name: Package portable zip
+        # The Windows analogue of the dmg's dylibbundler step: the exe plus the
+        # DLLs it loads at runtime, side by side (Windows searches the exe's own
+        # directory first — no rpath concept). Copying every vcpkg-installed
+        # DLL is deliberate: simpler and more robust than walking the import
+        # tables, at the cost of some unused libraries in the zip.
+        run: |
+          $stage = "Cadette"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item target\release\cdt-app.exe "$stage\cadette.exe"
+          Copy-Item "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin\*.dll" $stage
+          Copy-Item LICENSE "$stage\LICENSE.txt"
+          Compress-Archive -Path $stage -DestinationPath cadette-windows-x64.zip
+
+      - name: Publish release asset
+        uses: softprops/action-gh-release@v3
+        with:
+          files: cadette-windows-x64.zip
