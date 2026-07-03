@@ -16,7 +16,7 @@ mod screenshot;
 mod theme;
 mod view;
 mod view_cube;
-mod viewer;
+mod window;
 
 // Re-export egui so `cdt-ui` and the app share exactly this version.
 pub use egui;
@@ -29,7 +29,7 @@ pub use controller::{
 pub use theme::ViewportTheme;
 pub use view::ViewContext;
 pub use screenshot::screenshot;
-pub use viewer::run;
+pub use window::run;
 
 use bytemuck::{Pod, Zeroable};
 

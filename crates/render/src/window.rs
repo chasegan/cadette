@@ -1,4 +1,4 @@
-//! The interactive viewport: wgpu 3D scene + egui overlay, driven by a
+//! The interactive viewport window: wgpu 3D scene + egui overlay, driven by a
 //! [`Controller`] the application implements.
 //!
 //! Two entry points share the same render path:
@@ -9,6 +9,8 @@
 //! Layering: this module knows nothing about documents or the kernel. The
 //! application supplies a [`Controller`] that draws egui UI and produces the
 //! mesh to display; re-meshing happens whenever `ui` reports a change.
+//!
+//! [`screenshot`]: crate::screenshot
 
 use std::sync::Arc;
 
