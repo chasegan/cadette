@@ -8,6 +8,7 @@
 pub mod camera;
 mod controller;
 mod gizmo;
+mod grid;
 mod math;
 mod theme;
 mod view;
