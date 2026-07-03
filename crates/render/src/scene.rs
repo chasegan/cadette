@@ -129,6 +129,57 @@ impl Globals {
 // Scene: the 3D pipeline + mesh buffers, encodable into any color/depth target.
 // ---------------------------------------------------------------------------
 
+/// A persistent GPU buffer with grow-only capacity: rewritten in place via
+/// `queue.write_buffer` while the data fits, reallocated (never shrunk) when
+/// it doesn't. Steady-state geometry updates — e.g. a push/pull drag that
+/// re-meshes every frame — therefore allocate nothing, matching the pattern
+/// the gizmo/grid vertex buffers already use.
+pub(crate) struct GrowBuffer {
+    pub(crate) buffer: wgpu::Buffer,
+    /// Allocated size in bytes (>= the live data, which the draw-count fields
+    /// on [`Scene`] bound; stale bytes past the count are never read).
+    capacity: u64,
+    usage: wgpu::BufferUsages,
+    label: &'static str,
+}
+
+impl GrowBuffer {
+    fn new(device: &wgpu::Device, label: &'static str, usage: wgpu::BufferUsages, capacity: u64) -> Self {
+        // Never zero-sized (an empty mesh still binds the buffer), and keep the
+        // size copy-aligned.
+        let capacity = capacity.max(4).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT);
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: capacity,
+            usage: usage | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Self { buffer, capacity, usage, label }
+    }
+
+    fn with_data(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: &'static str,
+        usage: wgpu::BufferUsages,
+        data: &[u8],
+    ) -> Self {
+        let mut this = Self::new(device, label, usage, data.len() as u64);
+        this.write(device, queue, data);
+        this
+    }
+
+    /// Upload `data`, growing (never shrinking) the buffer first if needed.
+    fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, data: &[u8]) {
+        if data.len() as u64 > self.capacity {
+            *self = Self::new(device, self.label, self.usage, data.len() as u64);
+        }
+        if !data.is_empty() {
+            queue.write_buffer(&self.buffer, 0, data);
+        }
+    }
+}
+
 pub(crate) struct Scene {
     pub(crate) device: wgpu::Device,
     pub(crate) queue: wgpu::Queue,
@@ -145,11 +196,11 @@ pub(crate) struct Scene {
     bg_pipeline: wgpu::RenderPipeline,
     bg_buffer: wgpu::Buffer,
     bg_bind_group: wgpu::BindGroup,
-    pub(crate) vertex_buffer: wgpu::Buffer,
-    pub(crate) index_buffer: wgpu::Buffer,
+    pub(crate) vertex_buffer: GrowBuffer,
+    pub(crate) index_buffer: GrowBuffer,
     pub(crate) index_count: u32,
-    edge_vertex_buffer: wgpu::Buffer,
-    edge_index_buffer: wgpu::Buffer,
+    edge_vertex_buffer: GrowBuffer,
+    edge_index_buffer: GrowBuffer,
     edge_index_count: u32,
     /// Gizmo line vertices (rebuilt each frame; empty when hidden).
     gizmo_vertex_buffer: wgpu::Buffer,
@@ -162,6 +213,9 @@ pub(crate) struct Scene {
     pub(crate) edge_segments: Vec<(Vec3, Vec3, u32)>,
     pub(crate) globals_buffer: wgpu::Buffer,
     pub(crate) bind_group: wgpu::BindGroup,
+    /// Persistent pick-pass targets + readback buffers, created lazily on the
+    /// first pick and recreated only when the surface size changes.
+    pub(crate) pick_targets: Option<crate::picking::PickTargets>,
 }
 
 impl Scene {
@@ -520,9 +574,36 @@ impl Scene {
             cache: None,
         });
 
-        let (vertex_buffer, index_buffer, index_count) = make_mesh_buffers(&device, mesh);
-        let (edge_vertex_buffer, edge_index_buffer, edge_index_count) =
-            make_edge_buffers(&device, mesh);
+        let vertex_buffer = GrowBuffer::with_data(
+            &device,
+            &queue,
+            "cdt-vertices",
+            wgpu::BufferUsages::VERTEX,
+            bytemuck::cast_slice(&mesh.vertices),
+        );
+        let index_buffer = GrowBuffer::with_data(
+            &device,
+            &queue,
+            "cdt-indices",
+            wgpu::BufferUsages::INDEX,
+            bytemuck::cast_slice(&mesh.indices),
+        );
+        let index_count = mesh_draw_count(mesh);
+        let edge_vertex_buffer = GrowBuffer::with_data(
+            &device,
+            &queue,
+            "cdt-edge-vertices",
+            wgpu::BufferUsages::VERTEX,
+            bytemuck::cast_slice(&mesh.edge_vertices),
+        );
+        let edge_index_buffer = GrowBuffer::with_data(
+            &device,
+            &queue,
+            "cdt-edge-indices",
+            wgpu::BufferUsages::INDEX,
+            bytemuck::cast_slice(&mesh.edge_indices),
+        );
+        let edge_index_count = edge_draw_count(mesh);
         let gizmo_vertex_buffer = make_gizmo_buffer(&device);
         let gizmo_vertex_count = 0u32;
         let grid_vertex_buffer = make_grid_buffer(&device);
@@ -552,19 +633,25 @@ impl Scene {
             edge_segments: edge_segments(mesh),
             globals_buffer,
             bind_group,
+            pick_targets: None,
         }
     }
 
-    /// Replace the displayed mesh.
+    /// Replace the displayed mesh. Rewrites the persistent buffers in place
+    /// (growing them only when the mesh outgrows their capacity) — this runs
+    /// per frame during a push/pull drag, so it must not allocate in steady
+    /// state.
     pub(crate) fn upload_mesh(&mut self, mesh: &MeshData) {
-        let (v, i, n) = make_mesh_buffers(&self.device, mesh);
-        self.vertex_buffer = v;
-        self.index_buffer = i;
-        self.index_count = n;
-        let (ev, ei, en) = make_edge_buffers(&self.device, mesh);
-        self.edge_vertex_buffer = ev;
-        self.edge_index_buffer = ei;
-        self.edge_index_count = en;
+        self.vertex_buffer
+            .write(&self.device, &self.queue, bytemuck::cast_slice(&mesh.vertices));
+        self.index_buffer
+            .write(&self.device, &self.queue, bytemuck::cast_slice(&mesh.indices));
+        self.index_count = mesh_draw_count(mesh);
+        self.edge_vertex_buffer
+            .write(&self.device, &self.queue, bytemuck::cast_slice(&mesh.edge_vertices));
+        self.edge_index_buffer
+            .write(&self.device, &self.queue, bytemuck::cast_slice(&mesh.edge_indices));
+        self.edge_index_count = edge_draw_count(mesh);
         self.edge_segments = edge_segments(mesh);
     }
 
@@ -658,15 +745,18 @@ impl Scene {
         if self.index_count > 0 {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
-            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.set_vertex_buffer(0, self.vertex_buffer.buffer.slice(..));
+            pass.set_index_buffer(self.index_buffer.buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.index_count, 0, 0..1);
         }
         if self.edge_index_count > 0 {
             pass.set_pipeline(&self.edge_pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
-            pass.set_vertex_buffer(0, self.edge_vertex_buffer.slice(..));
-            pass.set_index_buffer(self.edge_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.set_vertex_buffer(0, self.edge_vertex_buffer.buffer.slice(..));
+            pass.set_index_buffer(
+                self.edge_index_buffer.buffer.slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
             pass.draw_indexed(0..self.edge_index_count, 0, 0..1);
         }
         // The gizmo draws last, on top of everything (its pipeline ignores depth).
@@ -691,65 +781,23 @@ fn edge_segments(mesh: &MeshData) -> Vec<(Vec3, Vec3, u32)> {
         .collect()
 }
 
-fn make_mesh_buffers(
-    device: &wgpu::Device,
-    mesh: &MeshData,
-) -> (wgpu::Buffer, wgpu::Buffer, u32) {
-    use wgpu::util::DeviceExt;
-    // Avoid zero-sized buffers when the mesh is empty (failed regen): use a
-    // single dummy vertex/index and draw nothing (index_count = 0).
+/// Indices to draw for the face mesh — 0 when either array is empty (a failed
+/// regen), which leaves the persistent buffers bound but unused.
+fn mesh_draw_count(mesh: &MeshData) -> u32 {
     if mesh.vertices.is_empty() || mesh.indices.is_empty() {
-        let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("cdt-vertices-empty"),
-            contents: bytemuck::bytes_of(&Vertex::default()),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("cdt-indices-empty"),
-            contents: bytemuck::cast_slice(&[0u32]),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-        return (vbuf, ibuf, 0);
+        0
+    } else {
+        mesh.indices.len() as u32
     }
-    let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("cdt-vertices"),
-        contents: bytemuck::cast_slice(&mesh.vertices),
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-    let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("cdt-indices"),
-        contents: bytemuck::cast_slice(&mesh.indices),
-        usage: wgpu::BufferUsages::INDEX,
-    });
-    (vbuf, ibuf, mesh.indices.len() as u32)
 }
 
-fn make_edge_buffers(device: &wgpu::Device, mesh: &MeshData) -> (wgpu::Buffer, wgpu::Buffer, u32) {
-    use wgpu::util::DeviceExt;
+/// Indices to draw for the feature-edge lines (0 when there are none).
+fn edge_draw_count(mesh: &MeshData) -> u32 {
     if mesh.edge_vertices.is_empty() || mesh.edge_indices.is_empty() {
-        let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("cdt-edge-vertices-empty"),
-            contents: bytemuck::bytes_of(&EdgeVertex::default()),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("cdt-edge-indices-empty"),
-            contents: bytemuck::cast_slice(&[0u32]),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-        return (vbuf, ibuf, 0);
+        0
+    } else {
+        mesh.edge_indices.len() as u32
     }
-    let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("cdt-edge-vertices"),
-        contents: bytemuck::cast_slice(&mesh.edge_vertices),
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-    let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("cdt-edge-indices"),
-        contents: bytemuck::cast_slice(&mesh.edge_indices),
-        usage: wgpu::BufferUsages::INDEX,
-    });
-    (vbuf, ibuf, mesh.edge_indices.len() as u32)
 }
 
 pub(crate) fn create_depth(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {

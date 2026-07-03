@@ -35,6 +35,25 @@ pub(crate) fn cursor_ray(
     (near, (unproject(1.0) - near).normalize_or_zero())
 }
 
+/// Unproject the CENTRE of pixel `(px, py)` at NDC depth `z` back to world
+/// space. The `+0.5` matches where the rasterizer sampled that depth, so the
+/// result lands on the rendered surface.
+pub(crate) fn unproject_pixel(
+    px: u32,
+    py: u32,
+    z: f32,
+    camera: &OrbitCamera,
+    width: u32,
+    height: u32,
+) -> Vec3 {
+    let nx = (px as f32 + 0.5) / width as f32 * 2.0 - 1.0;
+    let ny = 1.0 - (py as f32 + 0.5) / height as f32 * 2.0;
+    let aspect = width as f32 / height.max(1) as f32;
+    let inv = camera.view_proj(aspect).inverse();
+    let p = inv * glam::Vec4::new(nx, ny, z, 1.0);
+    p.truncate() / p.w
+}
+
 /// Intersection of ray `(ro, rd)` with the plane through `p` with normal `n`.
 pub(crate) fn ray_plane_intersect(ro: Vec3, rd: Vec3, p: Vec3, n: Vec3) -> Option<Vec3> {
     let denom = rd.dot(n);

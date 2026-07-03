@@ -23,7 +23,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::WindowId;
 
 use crate::camera::OrbitCamera;
-use crate::controller::{Axis3, Controller, GizmoHandle, Pick, TransformDelta};
+use crate::controller::{Axis3, Controller, GizmoHandle, GridSpec, Pick, TransformDelta};
 use crate::gizmo::{
     gizmo_geometry, gizmo_hit_test, gizmo_ring_ratio, resize_geometry, resize_grip_pos,
     resize_hit_test, ring_angle, snap_distance, snap_increment, snap_rotation, snap_translation,
@@ -35,8 +35,39 @@ use crate::scene::{
     create_depth, egui_renderer, encode_egui, frame_camera, install_phosphor, request_device,
     Scene,
 };
+use crate::theme::ViewportTheme;
 use crate::view::ViewContext;
 use crate::view_cube::draw_view_cube;
+
+
+/// Everything that determines the workplane-grid geometry, compared bitwise:
+/// the grid spec's geometry-affecting fields plus the theme's grid colors (the
+/// light/dark variant). The grid is up to ~12k vertices, so `redraw` rebuilds
+/// and re-uploads it only when this key changes, not every frame.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct GridKey {
+    spacing: u32,
+    half_extent: u32,
+    visible: bool,
+    xz: bool,
+    yz: bool,
+    grid_minor: [u32; 4],
+    grid_major: [u32; 4],
+}
+
+impl GridKey {
+    fn new(spec: &GridSpec, theme: &ViewportTheme) -> Self {
+        Self {
+            spacing: spec.spacing.to_bits(),
+            half_extent: spec.half_extent.to_bits(),
+            visible: spec.visible,
+            xz: spec.xz,
+            yz: spec.yz,
+            grid_minor: theme.grid_minor.map(f32::to_bits),
+            grid_major: theme.grid_major.map(f32::to_bits),
+        }
+    }
+}
 
 
 /// The window icon (Windows/Linux taskbar + title bar). macOS ignores this and
@@ -98,6 +129,9 @@ struct WindowApp<C: Controller> {
     /// The window title we last applied, so we only call `set_title` when the
     /// controller's title (filename + dirty marker) actually changes.
     last_title: String,
+    /// The grid spec + theme colors the uploaded grid geometry was built from;
+    /// `redraw` rebuilds the grid only when this changes.
+    grid_key: Option<GridKey>,
     /// The central viewport rect (panels excluded), captured from the last
     /// frame's egui pass. Camera-nav routing in `window_event` runs outside a
     /// pass — where `available_rect()` is unavailable — so it hit-tests against
@@ -129,6 +163,7 @@ impl<C: Controller> WindowApp<C> {
             modifiers: winit::keyboard::ModifiersState::empty(),
             occluded: false,
             last_title: String::new(),
+            grid_key: None,
             central_rect: egui::Rect::NOTHING,
             state: None,
         }
@@ -603,8 +638,8 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
 
 impl<C: Controller> WindowApp<C> {
     /// The entity (and, for faces, the world point) under the cursor now.
-    fn pick_with_point_under_cursor(&self) -> (Option<Pick>, Option<Vec3>) {
-        let Some(state) = self.state.as_ref() else {
+    fn pick_with_point_under_cursor(&mut self) -> (Option<Pick>, Option<Vec3>) {
+        let Some(state) = self.state.as_mut() else {
             return (None, None);
         };
         let (w, h) = (state.config.width, state.config.height);
@@ -742,9 +777,15 @@ impl<C: Controller> WindowApp<C> {
             }
         }
         state.scene.upload_gizmo(&gizmo_verts);
-        state
-            .scene
-            .upload_grid(&grid_geometry(self.controller.grid(), &self.controller.viewport_theme()));
+        // The workplane grid only depends on the grid spec + theme colors —
+        // rebuild and re-upload it only when those change, not every frame.
+        let grid_spec = self.controller.grid();
+        let vp_theme = self.controller.viewport_theme();
+        let grid_key = GridKey::new(&grid_spec, &vp_theme);
+        if self.grid_key != Some(grid_key) {
+            self.grid_key = Some(grid_key);
+            state.scene.upload_grid(&grid_geometry(grid_spec, &vp_theme));
+        }
 
         let jobs = state
             .egui_ctx
@@ -807,9 +848,10 @@ impl<C: Controller> WindowApp<C> {
             state.egui_renderer.free_texture(id);
         }
 
-        // Reclaim GPU memory from resources dropped this frame — the per-frame
-        // command buffer, the rebuilt gizmo buffer, any replaced mesh buffers.
-        // wgpu only frees on poll; this loop redraws continuously, so without a
+        // Reclaim GPU memory from resources dropped this frame — chiefly the
+        // per-frame command buffers and staging allocations (the mesh, gizmo,
+        // and grid buffers are persistent now and rewritten in place). wgpu
+        // only frees on poll; this loop redraws continuously, so without a
         // non-blocking poll every frame the deferred-destruction queue grows
         // unbounded and exhausts (unified) memory until the OS freezes.
         device.poll(wgpu::PollType::Poll).ok();
