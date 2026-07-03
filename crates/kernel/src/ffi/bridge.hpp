@@ -3,6 +3,8 @@
 // cxx runtime types (rust::Str, rust::Vec, ...).
 #include "rust/cxx.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <TopoDS_Shape.hxx>
 

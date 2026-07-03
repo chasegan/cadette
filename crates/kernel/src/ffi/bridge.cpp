@@ -573,16 +573,20 @@ std::unique_ptr<Shape> unify(const Shape& s) {
 
 // Number of faces in the shape (TopExp order) — for asserting topology.
 std::size_t count_faces(const Shape& s) {
-  std::size_t n = 0;
-  for (TopExp_Explorer ex(s.shape, TopAbs_FACE); ex.More(); ex.Next()) n++;
-  return n;
+  return guard("count_faces", [&] {
+    std::size_t n = 0;
+    for (TopExp_Explorer ex(s.shape, TopAbs_FACE); ex.More(); ex.Next()) n++;
+    return n;
+  });
 }
 
 // Enclosed volume of the solid (model units³) — for validating swept/built bodies.
 double volume(const Shape& s) {
-  GProp_GProps props;
-  BRepGProp::VolumeProperties(s.shape, props);
-  return props.Mass();
+  return guard("volume", [&] {
+    GProp_GProps props;
+    BRepGProp::VolumeProperties(s.shape, props);
+    return props.Mass();
+  });
 }
 
 // --- Edge treatments --------------------------------------------------------

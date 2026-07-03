@@ -24,13 +24,13 @@ fn sweeping_a_circle_up_a_straight_path_is_a_cylinder() {
     let tube = profile.sweep(&path, [0.0, 1.0, 0.0]).unwrap();
     // Volume of a cylinder r=2, h=10 = π r² h.
     let expected = PI * 2.0 * 2.0 * 10.0;
-    let v = tube.volume();
+    let v = tube.volume().unwrap();
     assert!(
         (v - expected).abs() < 1e-3,
         "swept tube volume {v} vs cylinder {expected}"
     );
     // A cylinder is three faces: the round side plus two end caps.
-    assert_eq!(tube.face_count(), 3, "round side + two caps");
+    assert_eq!(tube.face_count().unwrap(), 3, "round side + two caps");
 }
 
 #[test]
@@ -50,7 +50,7 @@ fn sweeping_around_a_bend_stays_a_valid_solid() {
     .unwrap();
 
     let tube = profile.sweep(&path, [0.0, 1.0, 0.0]).unwrap();
-    assert!(tube.volume() > 0.0, "bent sweep encloses a volume");
+    assert!(tube.volume().unwrap() > 0.0, "bent sweep encloses a volume");
     // Tessellation must succeed and produce geometry (no degenerate result).
     let mesh = tube.tessellate(0.2).unwrap();
     assert!(!mesh.positions.is_empty(), "swept solid meshes");
@@ -94,9 +94,9 @@ fn the_section_reorients_along_a_polyline_corner() {
     .unwrap();
     let tube = profile.sweep(&path, [0.0, -1.0, 0.0]).unwrap();
     // A round profile swept the full length (≈20) → volume ≈ π·1²·20.
-    assert!((tube.volume() - PI * 20.0).abs() < 3.0, "full-length tube, got {}", tube.volume());
+    assert!((tube.volume().unwrap() - PI * 20.0).abs() < 3.0, "full-length tube, got {}", tube.volume().unwrap());
     // Some planar end cap must face ~+X (the final segment direction).
-    let faces_x = (0..tube.face_count() as u32).any(|i| {
+    let faces_x = (0..tube.face_count().unwrap() as u32).any(|i| {
         tube.face_plane(i).unwrap().is_some_and(|(_, x, y)| {
             let nx = x[1] * y[2] - x[2] * y[1];
             nx.abs() > 0.9

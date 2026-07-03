@@ -209,13 +209,13 @@ impl Solid {
     }
 
     /// The number of faces in this solid (TopExp order).
-    pub fn face_count(&self) -> usize {
-        ffi::count_faces(&self.0)
+    pub fn face_count(&self) -> Result<usize> {
+        Ok(ffi::count_faces(&self.0)?)
     }
 
     /// The enclosed volume of this solid (model units³).
-    pub fn volume(&self) -> f64 {
-        ffi::volume(&self.0)
+    pub fn volume(&self) -> Result<f64> {
+        Ok(ffi::volume(&self.0)?)
     }
 
     // --- Edge treatments ----------------------------------------------------

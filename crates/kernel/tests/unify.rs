@@ -17,14 +17,14 @@ fn fusing_stacked_boxes_merges_the_coplanar_sides() {
 
     // With seam merging the result is a clean box: 6 faces. Without it the four
     // sides would each stay split into two halves (→ 10 faces).
-    assert_eq!(fused.face_count(), 6, "coplanar sides should merge into one");
+    assert_eq!(fused.face_count().unwrap(), 6, "coplanar sides should merge into one");
 }
 
 #[test]
 fn unify_is_idempotent_on_a_clean_box() {
     let cube = Solid::cuboid(10.0, 10.0, 10.0).unwrap();
-    assert_eq!(cube.face_count(), 6);
+    assert_eq!(cube.face_count().unwrap(), 6);
     // Refining a shape with nothing to merge leaves its six faces intact.
     let refined = cube.unify().unwrap();
-    assert_eq!(refined.face_count(), 6);
+    assert_eq!(refined.face_count().unwrap(), 6);
 }

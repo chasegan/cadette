@@ -192,10 +192,10 @@ pub mod ffi {
         fn unify(s: &Shape) -> Result<UniquePtr<Shape>>;
 
         /// Count the faces of a shape (for topology assertions/debugging).
-        fn count_faces(s: &Shape) -> usize;
+        fn count_faces(s: &Shape) -> Result<usize>;
 
         /// Enclosed volume of a solid (model units³), for validating builds.
-        fn volume(s: &Shape) -> f64;
+        fn volume(s: &Shape) -> Result<f64>;
 
         // --- Edge treatments ----------------------------------------------
         /// Fillet every edge of `shape` with a constant `radius`.
