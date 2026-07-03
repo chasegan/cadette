@@ -43,14 +43,38 @@ impl History {
 
     /// Append a feature, returning its freshly allocated id.
     pub fn add(&mut self, name: impl Into<String>, kind: FeatureKind) -> FeatureId {
+        self.insert(self.features.len(), name, kind).1
+    }
+
+    /// Insert a feature at `index`, returning where it actually landed and its
+    /// freshly allocated id. The index is clamped into `0..=len`, and clamped
+    /// forward past the feature's inputs so every reference keeps pointing
+    /// backward (the invariant [`crate::regen`] replay relies on).
+    pub fn insert(
+        &mut self,
+        index: usize,
+        name: impl Into<String>,
+        kind: FeatureKind,
+    ) -> (usize, FeatureId) {
+        let after_inputs = kind
+            .inputs()
+            .iter()
+            .filter_map(|&input| self.index_of(input))
+            .map(|i| i + 1)
+            .max()
+            .unwrap_or(0);
+        let index = index.max(after_inputs).min(self.features.len());
         let id = self.alloc_id();
-        self.features.push(Feature {
-            id,
-            name: name.into(),
-            suppressed: false,
-            kind,
-        });
-        id
+        self.features.insert(
+            index,
+            Feature {
+                id,
+                name: name.into(),
+                suppressed: false,
+                kind,
+            },
+        );
+        (index, id)
     }
 
     pub fn features(&self) -> &[Feature] {

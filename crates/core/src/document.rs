@@ -33,18 +33,13 @@ impl Document {
     }
 
     /// Add a feature at the rollback bar (the tip, normally), returning its id.
-    /// If the bar is at the tip it advances to include the new feature; if it's
-    /// pulled back, the feature is inserted there and becomes the new active end.
+    /// If the bar is pulled back, the feature is inserted there and the bar
+    /// moves just past it, so it becomes the new active end. (Should an input
+    /// somehow sit beyond the bar, the insertion — and the bar with it — is
+    /// pushed past that input; see [`History::insert`].)
     pub fn add(&mut self, name: impl Into<String>, kind: FeatureKind) -> FeatureId {
-        let at_tip = self.rollback == self.history.len();
-        let id = self.history.add(name, kind);
-        if at_tip {
-            self.rollback = self.history.len();
-        } else {
-            // Keep the new (appended) feature inside the active range by moving
-            // the bar just past it.
-            self.rollback += 1;
-        }
+        let (index, id) = self.history.insert(self.rollback, name, kind);
+        self.rollback = index + 1;
         id
     }
 
@@ -95,5 +90,64 @@ impl Document {
 impl Default for Document {
     fn default() -> Self {
         Self::new("Untitled")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::DVec3;
+
+    fn boxx() -> FeatureKind {
+        FeatureKind::Box { size: DVec3::splat(1.0) }
+    }
+
+    fn translate(source: FeatureId) -> FeatureKind {
+        FeatureKind::Translate { source, offset: DVec3::X }
+    }
+
+    #[test]
+    fn add_at_tip_advances_the_bar() {
+        let mut doc = Document::new("t");
+        let a = doc.add("A", boxx());
+        assert!(doc.is_at_tip());
+        assert_eq!(doc.active_features().last().unwrap().id, a);
+    }
+
+    #[test]
+    fn add_while_rolled_back_inserts_at_the_bar() {
+        let mut doc = Document::new("t");
+        let a = doc.add("A", boxx());
+        let b = doc.add("B", boxx());
+        let c = doc.add("C", boxx());
+        doc.set_rollback(1); // only A active; B and C rolled back
+
+        let d = doc.add("D", translate(a));
+
+        // D sits right after A; B and C stay rolled back, in order.
+        let ids: Vec<_> = doc.history.features().iter().map(|f| f.id).collect();
+        assert_eq!(ids, vec![a, d, b, c]);
+        assert_eq!(doc.rollback(), 2);
+        let active: Vec<_> = doc.active_features().iter().map(|f| f.id).collect();
+        assert_eq!(active, vec![a, d], "the new feature is active; B and C are not");
+        doc.history.validate().expect("insertion keeps references backward");
+    }
+
+    #[test]
+    fn add_with_an_input_beyond_the_bar_lands_after_that_input() {
+        let mut doc = Document::new("t");
+        let a = doc.add("A", boxx());
+        let b = doc.add("B", boxx());
+        doc.set_rollback(0); // everything rolled back
+
+        // Defensive path: hosts only offer active features as inputs, but if a
+        // reference to rolled-back B arrives anyway, the insertion may not land
+        // before B or replay would see a forward reference.
+        let d = doc.add("D", translate(b));
+
+        let ids: Vec<_> = doc.history.features().iter().map(|f| f.id).collect();
+        assert_eq!(ids, vec![a, b, d]);
+        assert_eq!(doc.rollback(), 3, "bar moves just past the inserted feature");
+        doc.history.validate().expect("insertion keeps references backward");
     }
 }
