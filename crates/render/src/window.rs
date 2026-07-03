@@ -603,8 +603,8 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
 
 impl<C: Controller> WindowApp<C> {
     /// The entity (and, for faces, the world point) under the cursor now.
-    fn pick_with_point_under_cursor(&self) -> (Option<Pick>, Option<Vec3>) {
-        let Some(state) = self.state.as_ref() else {
+    fn pick_with_point_under_cursor(&mut self) -> (Option<Pick>, Option<Vec3>) {
+        let Some(state) = self.state.as_mut() else {
             return (None, None);
         };
         let (w, h) = (state.config.width, state.config.height);

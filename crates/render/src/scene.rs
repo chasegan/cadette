@@ -162,6 +162,9 @@ pub(crate) struct Scene {
     pub(crate) edge_segments: Vec<(Vec3, Vec3, u32)>,
     pub(crate) globals_buffer: wgpu::Buffer,
     pub(crate) bind_group: wgpu::BindGroup,
+    /// Persistent pick-pass targets + readback buffers, created lazily on the
+    /// first pick and recreated only when the surface size changes.
+    pub(crate) pick_targets: Option<crate::picking::PickTargets>,
 }
 
 impl Scene {
@@ -552,6 +555,7 @@ impl Scene {
             edge_segments: edge_segments(mesh),
             globals_buffer,
             bind_group,
+            pick_targets: None,
         }
     }
 
