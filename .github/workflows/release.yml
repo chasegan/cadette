@@ -80,6 +80,10 @@ jobs:
           # App icon (Finder / Dock / About panel).
           cp assets/icon/Cadette.icns "$APP/Contents/Resources/Cadette.icns"
 
+          # Bundled OCCT/freetype/libpng/tbb notices (LGPL et al. require
+          # shipping these alongside the redistributed libraries).
+          cp THIRD_PARTY_LICENSES.md "$APP/Contents/Resources/THIRD_PARTY_LICENSES.md"
+
           cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -205,6 +209,7 @@ jobs:
           Copy-Item target\release\cdt-app.exe "$stage\cadette.exe"
           Copy-Item "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin\*.dll" $stage
           Copy-Item LICENSE "$stage\LICENSE.txt"
+          Copy-Item THIRD_PARTY_LICENSES.md "$stage\THIRD_PARTY_LICENSES.md"
           Compress-Archive -Path $stage -DestinationPath cadette-windows-x64.zip
 
       - name: Publish release asset
