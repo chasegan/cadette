@@ -8,7 +8,7 @@
 //! - [`solids`] — safe, owned wrappers and the public modeling API.
 
 pub mod backend;
-pub mod ffi;
+pub(crate) mod ffi;
 pub mod solids;
 
 pub use backend::KernelBackend;

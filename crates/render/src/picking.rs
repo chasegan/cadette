@@ -105,7 +105,7 @@ impl Scene {
         if self
             .pick_targets
             .as_ref()
-            .map_or(true, |t| t.width != width || t.height != height)
+            .is_none_or(|t| t.width != width || t.height != height)
         {
             self.pick_targets = Some(PickTargets::new(&self.device, width, height));
         }
@@ -210,6 +210,9 @@ impl Scene {
     /// Whether the picked `edge` is occluded by the front surface (whose depth at
     /// the cursor is `face_depth`). Lets a nearby edge be ignored when it's
     /// really behind the face the cursor is over — the cause of hover flicker.
+    // Parameter-object refactor (bundling camera/cursor/size into a view struct)
+    // is planned alongside the Controller-trait slimming.
+    #[expect(clippy::too_many_arguments)]
     fn edge_occluded(
         &self,
         edge: u32,

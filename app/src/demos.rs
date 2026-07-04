@@ -85,7 +85,7 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
 
         // OLD behavior: replay the whole history through OCCT + tessellate, every
         // frame (a fresh backend with no cache).
-        let mut fresh = KernelBackend::default();
+        let mut fresh = KernelBackend;
         let _ = regenerate(&modeler.doc, &mut fresh); // warm OCCT
         let t0 = Instant::now();
         for _ in 0..runs {

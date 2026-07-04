@@ -28,18 +28,13 @@ const EGGSHELL_DIM: Color32 = Color32::from_rgb(0xEA, 0xE1, 0xCC);
 const SIGNAL_RED: Color32 = Color32::from_rgb(0xC0, 0x39, 0x2B);
 
 /// The active look-and-feel. Persisted in app preferences.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Theme {
     /// The original dark studio look (egui's default dark visuals).
     Dark,
     /// On-brand light look built from the Cadette palette.
+    #[default]
     Light,
-}
-
-impl Default for Theme {
-    fn default() -> Self {
-        Theme::Light
-    }
 }
 
 impl Theme {

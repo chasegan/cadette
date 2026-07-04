@@ -12,6 +12,9 @@ use crate::{ffi, Result};
 /// Re-export the tessellated mesh produced by [`Solid::tessellate`].
 pub use crate::ffi::Mesh;
 
+/// A planar face's frame as `(origin, x_dir, y_dir)` — see [`Solid::face_plane`].
+pub type PlaneBasis = ([f64; 3], [f64; 3], [f64; 3]);
+
 /// An owned B-rep solid (or, generally, any OCCT topology).
 pub struct Solid(UniquePtr<ffi::Shape>);
 
@@ -253,7 +256,7 @@ impl Solid {
 
     /// The plane of the face at `index` (TopExp order) as `(origin, x_dir,
     /// y_dir)`, or `None` if the index is out of range or the face isn't planar.
-    pub fn face_plane(&self, index: u32) -> Result<Option<([f64; 3], [f64; 3], [f64; 3])>> {
+    pub fn face_plane(&self, index: u32) -> Result<Option<PlaneBasis>> {
         let pf = ffi::face_plane(&self.0, index)?;
         Ok(pf.ok.then_some((
             [pf.ox, pf.oy, pf.oz],

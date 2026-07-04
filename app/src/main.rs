@@ -218,7 +218,7 @@ impl Modeler {
         let saved_sig = doc_signature(&doc);
         Self {
             doc,
-            backend: KernelBackend::default(),
+            backend: KernelBackend,
             regen_cache: RegenCache::new(),
             status: None,
             ui: HistoryState::default(),
@@ -409,9 +409,13 @@ impl Controller for Modeler {
             let (mut group, mut fillet_edges, mut revolve) = (false, false, false);
             let mut editor_changed = false;
 
-            egui::SidePanel::right("actions_panel")
+            // Top-level `Panel::show` is deprecated in favor of `show_inside`,
+            // but migrating means restructuring the whole frame layout — done
+            // together in a dedicated egui panel pass.
+            #[allow(deprecated)]
+            egui::Panel::right("actions_panel")
                 .resizable(true)
-                .default_width(236.0)
+                .default_size(236.0)
                 .show(ctx, |ui| {
                     ui.add_space(4.0);
                     ui.label(egui::RichText::new("Actions").strong());
@@ -1494,7 +1498,7 @@ mod tests {
         );
         let mut m = Modeler {
             doc,
-            backend: KernelBackend::default(),
+            backend: KernelBackend,
             regen_cache: RegenCache::new(),
             status: None,
             ui: HistoryState::default(),
@@ -2008,7 +2012,7 @@ mod tests {
             assert!(sess.sketch.delete_points(&[order[2]]));
         }
         assert!(m.finish_sketch());
-        let mesh = m.mesh();
+        let _mesh = m.mesh();
         assert!(m.ui.errors.is_empty(), "delete rebuild: {:?}", m.ui.errors);
     }
 
@@ -2260,7 +2264,7 @@ mod tests {
         use cdt_render::{Axis3, GizmoHandle, TransformDelta};
         let mut m = Modeler::new();
         m.doc = Document::new("one");
-        let b = m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let _b = m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
         let _ = m.mesh();
 
         // No selection → no gizmo. Selecting a face shows it at the body center.
@@ -2918,7 +2922,7 @@ mod tests {
 
         let mut m = Modeler {
             doc,
-            backend: KernelBackend::default(),
+            backend: KernelBackend,
             regen_cache: RegenCache::new(),
             status: None,
             ui: HistoryState::default(),

@@ -684,6 +684,9 @@ impl Scene {
 
     /// Record the 3D pass (clearing color + depth) into `encoder`. `selected`
     /// highlights that face id, if any.
+    // Parameter-object refactor (bundling camera/size into a view struct) is
+    // planned alongside the Controller-trait slimming.
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn encode(
         &self,
         encoder: &mut wgpu::CommandEncoder,

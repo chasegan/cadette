@@ -542,10 +542,11 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
                             state.window.request_redraw();
                         }
                         self.mouse.last = None;
-                    } else if self.manip_axis.is_some() && self.mouse.dragged {
+                    } else if let Some((point, dir)) =
+                        self.manip_axis.filter(|_| self.mouse.dragged)
+                    {
                         // Push/pull: distance = drag along the face normal, snapped
                         // to the grid (Alt for free) — a face push/pull is a resize.
-                        let (point, dir) = self.manip_axis.unwrap();
                         let dist = manip_distance(
                             &self.camera,
                             self.mouse.cursor,

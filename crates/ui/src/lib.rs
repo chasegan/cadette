@@ -257,7 +257,11 @@ fn command_bar(
         )
     });
 
-    egui::TopBottomPanel::top("command_bar").show(ctx, |ui| {
+    // Top-level `Panel::show` is deprecated in favor of `show_inside`, but
+    // migrating means restructuring the whole frame layout — done together in
+    // a dedicated egui panel pass.
+    #[allow(deprecated)]
+    egui::Panel::top("command_bar").show(ctx, |ui| {
         ui.add_space(2.0);
         ui.horizontal_wrapped(|ui| {
             // File.

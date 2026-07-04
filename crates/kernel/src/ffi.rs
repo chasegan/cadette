@@ -12,7 +12,7 @@
 //!   returns `Result`.
 
 #[cxx::bridge(namespace = "cdt")]
-pub mod ffi {
+mod bridge {
     /// A tessellated, render-ready triangle mesh produced from a B-rep `Shape`.
     ///
     /// All arrays are flat. `positions` and `normals` hold `3 * vertex_count`
@@ -225,6 +225,7 @@ pub mod ffi {
     }
 }
 
-// Re-export the bridge contents at module root so consumers write
-// `kernel::ffi::Shape` rather than `kernel::ffi::ffi::Shape`.
-pub use ffi::*;
+// Re-export the bridge contents at module root so crate-internal consumers
+// write `crate::ffi::Shape` (the module is `pub(crate)` — `solids` is the only
+// intended user).
+pub use bridge::*;
