@@ -82,8 +82,12 @@ impl Modeler {
             return Err(format!("unsupported project version {version}"));
         }
         let doc_value = value.get("document").cloned().ok_or("missing document")?;
-        let document: Document =
+        let mut document: Document =
             serde_json::from_value(doc_value).map_err(|e| e.to_string())?;
+        // Defensive: repair invariants a corrupt/hand-edited file may violate
+        // (id allocator behind existing ids, rollback bar out of range).
+        // Repair is safe, so a repaired document just loads.
+        document.sanitize();
 
         // Swap in the new document and drop all state tied to the old one.
         self.doc = document;

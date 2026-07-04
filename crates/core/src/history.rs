@@ -81,6 +81,22 @@ impl History {
         &self.features
     }
 
+    /// Repair the id-allocation invariant that a corrupt or hand-edited file
+    /// can violate: `next_id` must be greater than every existing feature id,
+    /// or the next [`Self::add`] would mint a duplicate [`FeatureId`] and
+    /// references would silently alias. Raises `next_id` to `max(id) + 1`
+    /// when it lags behind. Returns `true` if anything was fixed. Safe to
+    /// call on any history; a consistent one is left untouched.
+    pub fn repair(&mut self) -> bool {
+        match self.features.iter().map(|f| f.id.0).max() {
+            Some(max) if self.next_id <= max => {
+                self.next_id = max + 1;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The next monotonic number for an auto-named `"{base} {n}"` feature: one
     /// more than the highest `n` currently in use for that `base` (so numbers
     /// climb and a gap left by a deletion is never backfilled). Starts at 1.
@@ -266,5 +282,31 @@ mod tests {
         h.add("Fillet edges", boxx());
         assert_eq!(h.next_name_number("Fillet"), 4);
         assert_eq!(h.next_name_number("Move"), 1);
+    }
+
+    #[test]
+    fn repair_raises_a_lagging_next_id_past_the_max() {
+        let mut h = History::new();
+        let a = h.add("A", boxx());
+        let b = h.add("B", boxx());
+        // Simulate a corrupt/hand-edited file whose next_id lags the ids.
+        h.next_id = 1;
+        assert!(h.repair(), "an inconsistent next_id is reported as fixed");
+        let c = h.add("C", boxx());
+        assert!(c != a && c != b, "the next add mints a fresh id, not a duplicate");
+        assert!(c.0 > b.0, "allocation resumes past the highest existing id");
+    }
+
+    #[test]
+    fn repair_leaves_a_healthy_history_untouched() {
+        let mut h = History::new();
+        assert!(!h.repair(), "an empty history needs no repair");
+        h.add("A", boxx());
+        h.add("B", boxx());
+        let before = h.features().to_vec();
+        assert!(!h.repair(), "a consistent history needs no repair");
+        assert_eq!(h.features(), &before[..]);
+        let c = h.add("C", boxx());
+        assert_eq!(h.index_of(c), Some(2), "allocation is unaffected");
     }
 }

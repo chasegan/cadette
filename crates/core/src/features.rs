@@ -54,6 +54,17 @@ pub enum BooleanOp {
 /// The operation a feature performs, with its parameters and input references.
 ///
 /// All lengths are in the document's internal unit (millimeters).
+///
+/// # Save-format compatibility — read before adding a field
+///
+/// This enum (and everything reachable from it: [`Sketch2d`], [`SketchPlane`],
+/// anchors, …) is serialized verbatim into `.cdt` project files, and files in
+/// the wild must keep loading. Adding a NEW variant is safe; adding a new
+/// field to an EXISTING variant or serialized struct is not, unless it carries
+/// `#[serde(default)]` (or ships with a versioned migration): a bare new field
+/// makes every previously saved project fail to deserialize. See
+/// `Sketch2d::beziers` for the pattern. Never rename or remove a serialized
+/// field/variant without a migration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum FeatureKind {
     // --- Primitives (no inputs) ---

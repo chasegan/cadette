@@ -10,3 +10,6 @@ description = "Pure-Rust domain logic for Cadette: document, history, sketch, fe
 thiserror = { workspace = true }
 serde = { workspace = true }
 glam = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
+serde_json = "1"

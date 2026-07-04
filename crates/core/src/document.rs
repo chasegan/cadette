@@ -85,6 +85,21 @@ impl Document {
     pub fn is_at_tip(&self) -> bool {
         self.rollback == self.history.len()
     }
+
+    /// Repair invariants a corrupt or hand-edited `.cdt` file can violate, so
+    /// a freshly deserialized document is always safe to use: raises the
+    /// history's id allocator past every existing id (see [`History::repair`])
+    /// and clamps the rollback bar into `0..=history.len()`. Returns `true` if
+    /// anything was fixed. Repair is safe — call it right after
+    /// deserialization and load the document normally.
+    pub fn sanitize(&mut self) -> bool {
+        let repaired = self.history.repair();
+        let out_of_range = self.rollback > self.history.len();
+        if out_of_range {
+            self.rollback = self.history.len();
+        }
+        repaired || out_of_range
+    }
 }
 
 impl Default for Document {
@@ -149,5 +164,27 @@ mod tests {
         assert_eq!(ids, vec![a, b, d]);
         assert_eq!(doc.rollback(), 3, "bar moves just past the inserted feature");
         doc.history.validate().expect("insertion keeps references backward");
+    }
+
+    #[test]
+    fn sanitize_clamps_an_out_of_range_rollback() {
+        let mut doc = Document::new("t");
+        doc.add("A", boxx());
+        // Simulate a hand-edited file whose rollback exceeds the history.
+        doc.rollback = 99;
+        assert!(doc.sanitize(), "an out-of-range bar is reported as fixed");
+        assert_eq!(doc.rollback(), 1, "clamped to history.len()");
+        assert_eq!(doc.active_features().len(), 1);
+    }
+
+    #[test]
+    fn sanitize_leaves_a_healthy_document_untouched() {
+        let mut doc = Document::new("t");
+        assert!(!doc.sanitize(), "an empty document needs no repair");
+        let a = doc.add("A", boxx());
+        doc.add("B", translate(a));
+        doc.set_rollback(1);
+        assert!(!doc.sanitize(), "a consistent document needs no repair");
+        assert_eq!(doc.rollback(), 1, "a valid rolled-back bar is preserved");
     }
 }
