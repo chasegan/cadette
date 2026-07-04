@@ -131,10 +131,10 @@ impl History {
             });
             prev_open = open;
 
-            // A leaf (no consumers, i.e. a visible body) ends its lane here.
-            if remaining.get(&f.id).copied().unwrap_or(0) == 0 {
-                lanes[node_lane] = None;
-            }
+            // A feature with no consumers is a LIVE body: its lane stays
+            // occupied all the way down, so later independent chains can't
+            // move into its column. (Freeing it here was the bug that put a
+            // new primitive on the same line as a still-visible sweep.)
             while lanes.last() == Some(&None) {
                 lanes.pop();
             }
@@ -192,10 +192,36 @@ mod tests {
         let _m2 = doc.add("M2", FeatureKind::Translate { source: s, offset: DVec3::Y });
 
         let g = doc.history.build_graph();
-        // The source feeds two: it keeps lane 0 and the consumers branch off it.
-        assert_eq!(g.lane_count, 2, "a branch opens a second lane");
+        // The source feeds two: it keeps lane 0 and the consumers branch off
+        // onto lanes of their own. Both results are live bodies, so both
+        // branch lanes stay open — three lanes total.
+        assert_eq!(g.lane_count, 3, "source lane + one lane per live branch");
         assert_eq!(g.rows[0].lane, 0, "the source holds lane 0");
         assert!(g.rows[1].lane != 0 && g.rows[2].lane != 0, "both consumers branch off");
+        assert_ne!(g.rows[1].lane, g.rows[2].lane, "each live body has its own lane");
         let _ = (s, _m1, _m2);
+    }
+
+    #[test]
+    fn independent_chains_keep_separate_lanes() {
+        // Two unrelated bodies (a swept part, then a new box) must not share a
+        // line: the first chain's tip is a live body, so its lane stays
+        // occupied to the bottom of the graph.
+        let mut doc = Document::new("two-chains");
+        let a = doc.add("A", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let am = doc.add("Move A", FeatureKind::Translate { source: a, offset: DVec3::X });
+        let b = doc.add("B", FeatureKind::Box { size: DVec3::splat(5.0) });
+        let bm = doc.add("Move B", FeatureKind::Translate { source: b, offset: DVec3::Y });
+
+        let g = doc.history.build_graph();
+        assert_eq!(g.lane_count, 2, "two live chains → two lanes");
+        let lane = |id| g.rows.iter().find(|r| r.id == id).unwrap().lane;
+        assert_eq!(lane(a), 0);
+        assert_eq!(lane(am), 0);
+        assert_eq!(lane(b), 1, "the second chain must not reuse the live first lane");
+        assert_eq!(lane(bm), 1);
+        // The live first chain's lane stays open under the second chain's rows.
+        let last = g.rows.last().unwrap();
+        assert!(last.open.contains(&0) && last.open.contains(&1));
     }
 }
