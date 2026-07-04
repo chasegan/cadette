@@ -211,6 +211,12 @@ impl Solid {
         Ok(Self::wrap(ffi::unify(&self.0)?))
     }
 
+    /// One-line structural summary (root type, sub-shape counts, closedness,
+    /// validity) — for diagnostics and tests.
+    pub fn describe(&self) -> Result<String> {
+        Ok(ffi::describe(&self.0)?)
+    }
+
     /// The number of faces in this solid (TopExp order).
     pub fn face_count(&self) -> Result<usize> {
         Ok(ffi::count_faces(&self.0)?)

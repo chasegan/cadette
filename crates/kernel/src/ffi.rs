@@ -191,6 +191,10 @@ mod bridge {
         /// neighbours) — an explicit "refine". Booleans already do this.
         fn unify(s: &Shape) -> Result<UniquePtr<Shape>>;
 
+        /// One-line structural summary of a shape (root type, sub-shape
+        /// counts, closedness, validity) — for diagnostics and tests.
+        fn describe(s: &Shape) -> Result<String>;
+
         /// Count the faces of a shape (for topology assertions/debugging).
         fn count_faces(s: &Shape) -> Result<usize>;
 

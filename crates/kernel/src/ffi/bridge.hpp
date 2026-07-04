@@ -78,6 +78,7 @@ std::unique_ptr<Shape> fuse(const Shape& a, const Shape& b);
 std::unique_ptr<Shape> cut(const Shape& a, const Shape& b);
 std::unique_ptr<Shape> common(const Shape& a, const Shape& b);
 std::unique_ptr<Shape> unify(const Shape& s);
+rust::String describe(const Shape& s);
 std::size_t count_faces(const Shape& s);
 double volume(const Shape& s);
 

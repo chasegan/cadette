@@ -19,6 +19,7 @@
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
+#include <ShapeFix_Shape.hxx>
 #include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
@@ -43,6 +44,7 @@
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRep_Tool.hxx>
 #include <BRep_Builder.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <Geom_Curve.hxx>
@@ -397,8 +399,30 @@ std::unique_ptr<Shape> sweep(const Shape& profile, const Shape& spine,
     if (!shell.IsDone()) {
       throw std::runtime_error("sweep: MakePipeShell failed");
     }
-    shell.MakeSolid();
-    return std::make_unique<Shape>(shell.Shape());
+    if (!shell.MakeSolid()) {
+      throw std::runtime_error("sweep: could not cap the swept shell into a solid");
+    }
+    TopoDS_Shape result = shell.Shape();
+    // PipeShell output — especially RoundCorner transitions over bezier
+    // profiles — is routinely slightly invalid (tolerance gaps, bad pcurves).
+    // It renders and even measures fine, but booleans silently classify an
+    // invalid solid as nothing (empty cut, fuse that drops it). Heal it here
+    // so downstream ops see a genuinely valid solid.
+    if (!BRepCheck_Analyzer(result).IsValid()) {
+      ShapeFix_Shape fixer(result);
+      fixer.Perform();
+      result = fixer.Shape();
+      // A sweep that stays invalid after healing (typically a bend tighter
+      // than the profile is wide, self-intersecting at the elbow) must be an
+      // error, not a silently broken body: it renders fine but corrupts every
+      // downstream boolean and STL.
+      if (!BRepCheck_Analyzer(result).IsValid()) {
+        throw std::runtime_error(
+            "sweep: the swept solid self-intersects (the bend is too tight "
+            "for this profile size) — widen the bend or shrink the profile");
+      }
+    }
+    return std::make_unique<Shape>(result);
   });
 }
 
@@ -565,6 +589,33 @@ std::unique_ptr<Shape> common(const Shape& a, const Shape& b) {
 }
 
 // Standalone refine — merge same-domain faces/edges of any shape on demand.
+// One-line structural summary — root type, sub-shape counts, closedness,
+// validity — the first thing to look at when a boolean misbehaves: booleans
+// only classify volumes for true closed SOLIDs, so a shape that renders and
+// even measures fine (a closed SHELL) still contributes nothing to a cut/fuse.
+rust::String describe(const Shape& s) {
+  return guard("describe", [&]() -> rust::String {
+    static const char* kinds[] = {"COMPOUND", "COMPSOLID", "SOLID",  "SHELL",
+                                  "FACE",     "WIRE",      "EDGE",   "VERTEX",
+                                  "SHAPE"};
+    std::string out = kinds[s.shape.ShapeType()];
+    int solids = 0, shells = 0, closed_shells = 0, faces = 0;
+    for (TopExp_Explorer ex(s.shape, TopAbs_SOLID); ex.More(); ex.Next()) solids++;
+    for (TopExp_Explorer ex(s.shape, TopAbs_SHELL); ex.More(); ex.Next()) {
+      shells++;
+      if (BRep_Tool::IsClosed(ex.Current())) closed_shells++;
+    }
+    for (TopExp_Explorer ex(s.shape, TopAbs_FACE); ex.More(); ex.Next()) faces++;
+    BRepCheck_Analyzer check(s.shape);
+    out += ": solids=" + std::to_string(solids) +
+           " shells=" + std::to_string(shells) +
+           " (closed " + std::to_string(closed_shells) + ")" +
+           " faces=" + std::to_string(faces) +
+           (check.IsValid() ? " valid" : " INVALID");
+    return rust::String(out);
+  });
+}
+
 std::unique_ptr<Shape> unify(const Shape& s) {
   return guard("unify", [&] {
     return std::make_unique<Shape>(unify_same_domain(s.shape));

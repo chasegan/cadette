@@ -104,3 +104,85 @@ fn the_section_reorients_along_a_polyline_corner() {
     });
     assert!(faces_x, "the section reoriented: an end cap faces +X");
 }
+
+fn wide_profile() -> Solid {
+    // A ~40-wide line+bezier profile (a cable-elbow-ish section).
+    Solid::profile_face(
+        [0.0; 3],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        &[-22.0, -20.0, 10.0, -20.0, 10.0, 20.0, -22.0, 20.0],
+        &[
+            0.0, 0.0, 0.0, 0.0, 0.0, // bottom line
+            1.0, 14.0, -20.0, 14.0, 20.0, // bulged right side
+            0.0, 0.0, 0.0, 0.0, 0.0, // top line
+            1.0, -26.0, 20.0, -26.0, -20.0, // bulged left side
+        ],
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_sweep_needing_healing_still_supports_booleans() {
+    // Regression (the "both bodies disappear on subtract" bug): sweeping a
+    // wide line+bezier profile through a moderate bezier bend makes
+    // MakePipeShell emit a slightly INVALID solid (tolerance/pcurve defects).
+    // It renders and measures fine, but OCCT booleans silently classify an
+    // invalid solid as nothing: cut returned an empty shape and fuse dropped
+    // the swept body entirely. The sweep must heal its output (ShapeFix) so
+    // downstream booleans see a valid solid.
+    let path = Solid::path_wire(
+        [0.0; 3],
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0],
+        &[0.0, 0.0, 40.0, 0.0, 55.0, 25.0],
+        &[0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 50.0, 0.0, 55.0, 10.0],
+    )
+    .unwrap();
+    let tube = wide_profile().sweep(&path, [0.0, 1.0, 0.0]).unwrap();
+
+    let desc = tube.describe().unwrap();
+    assert!(desc.contains("SOLID"), "swept result is a solid: {desc}");
+    assert!(!desc.contains("INVALID"), "swept solid passes BRepCheck: {desc}");
+
+    // A box overlapping the straight leg: the cut must remove SOME volume but
+    // not all of it, and the fuse must keep the tube (an invalid input would
+    // be silently dropped, which is exactly the regression).
+    let tool = Solid::cuboid(10.0, 10.0, 10.0).unwrap().translate(-5.0, -5.0, 5.0).unwrap();
+    let v_tube = tube.volume().unwrap();
+    let cut = tube.cut(&tool).unwrap();
+    let v_cut = cut.volume().unwrap();
+    assert!(
+        v_cut > 0.0 && v_cut < v_tube - 1.0,
+        "cut removes part of the tube: {v_cut} of {v_tube}"
+    );
+    let fuse = tube.fuse(&tool).unwrap();
+    assert!(
+        fuse.volume().unwrap() > v_tube - 1.0,
+        "fuse keeps the tube's volume (an invalid input would be dropped)"
+    );
+}
+
+#[test]
+fn an_unhealable_self_intersecting_sweep_is_an_error() {
+    // When the bend is far tighter than the profile is wide, the sweep
+    // self-intersects and no healing can fix it. That must surface as a
+    // per-feature error — not a silently broken body that renders fine and
+    // then corrupts booleans and STL export.
+    let path = Solid::path_wire(
+        [0.0; 3],
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0],
+        &[0.0, 0.0, 25.0, 0.0, 33.0, 8.0],
+        &[0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 31.0, 0.0, 33.0, 2.0],
+    )
+    .unwrap();
+    let err = wide_profile()
+        .sweep(&path, [0.0, 1.0, 0.0])
+        .err()
+        .expect("a self-intersecting sweep must fail");
+    assert!(
+        err.to_string().contains("self-intersects"),
+        "the error explains the cause: {err}"
+    );
+}
