@@ -1,39 +1,6 @@
 // Lit shader for the viewport. Z-up world space; key directional light + a
 // camera "headlight" + ambient. The selected face (by id) is tinted.
-
-struct Globals {
-    view_proj : mat4x4<f32>,
-    camera_pos : vec4<f32>,
-    light_dir : vec4<f32>,
-    // faces = [selected_face_count, 0, hovered_face, has_hov]
-    faces : vec4<u32>,
-    edges : vec4<u32>,
-    // sel_edges is declared so sel_faces lands at the right offset (we don't use it here).
-    sel_edges : array<vec4<u32>, 16>,
-    // up to 64 selected face ids, packed 4 per vec4; faces.x of them valid.
-    sel_faces : array<vec4<u32>, 16>,
-    // theme colors (rgb in .xyz): unlit material base + feature-edge color.
-    face_base : vec4<f32>,
-    edge_base : vec4<f32>,
-};
-
-@group(0) @binding(0) var<uniform> globals : Globals;
-
-fn is_selected_face(id : u32) -> bool {
-    let count = globals.faces.x;
-    for (var i : u32 = 0u; i < count; i = i + 1u) {
-        let v = globals.sel_faces[i / 4u];
-        var f : u32;
-        switch (i % 4u) {
-            case 0u: { f = v.x; }
-            case 1u: { f = v.y; }
-            case 2u: { f = v.z; }
-            default: { f = v.w; }
-        }
-        if (f == id) { return true; }
-    }
-    return false;
-}
+// `Globals`/`is_selected_face` come from globals.wgsl, prepended at build.
 
 struct VsOut {
     @builtin(position) clip : vec4<f32>,
