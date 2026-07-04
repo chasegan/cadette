@@ -1,13 +1,6 @@
 // Transform gizmo: colored axis lines drawn on top of the model. Depth test is
 // disabled in the pipeline so handles stay grabbable even when occluded.
-
-// Only the leading view_proj is read; declaring a prefix of the shared Globals
-// uniform is valid as long as the offsets match.
-struct Globals {
-    view_proj : mat4x4<f32>,
-};
-
-@group(0) @binding(0) var<uniform> globals : Globals;
+// `Globals` comes from globals.wgsl, prepended at build (only view_proj is used).
 
 struct VsOut {
     @builtin(position) clip : vec4<f32>,

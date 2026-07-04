@@ -29,7 +29,13 @@ const SEL_EDGE_VEC4: usize = SEL_EDGE_CAP / 4;
 const SEL_FACE_CAP: usize = 64;
 const SEL_FACE_VEC4: usize = SEL_FACE_CAP / 4;
 
-/// GPU uniform block, mirrored by `Globals` in the shaders.
+/// Prepend the shared `Globals` WGSL (struct + binding + selection helpers) to
+/// a shader body, so the uniform layout is declared in exactly one WGSL file.
+fn with_globals(body: &str) -> wgpu::ShaderSource<'static> {
+    wgpu::ShaderSource::Wgsl(format!("{}\n{}", include_str!("globals.wgsl"), body).into())
+}
+
+/// GPU uniform block, mirrored by `Globals` in globals.wgsl.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(crate) struct Globals {
@@ -227,7 +233,7 @@ impl Scene {
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cdt-shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+            source: with_globals(include_str!("shader.wgsl")),
         });
 
         let bind_group_layout =
@@ -315,7 +321,7 @@ impl Scene {
         // Picking pipeline: same geometry, writes face ids to an R32Uint target.
         let pick_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cdt-pick-shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("pick.wgsl").into()),
+            source: with_globals(include_str!("pick.wgsl")),
         });
         let pick_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("cdt-pick-pipeline"),
@@ -358,7 +364,7 @@ impl Scene {
         // the lines sit crisply on the shaded surface without z-fighting.
         let edge_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cdt-edge-shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("edges.wgsl").into()),
+            source: with_globals(include_str!("edges.wgsl")),
         });
         const EDGE_ATTRS: [wgpu::VertexAttribute; 2] =
             wgpu::vertex_attr_array![0 => Float32x3, 1 => Uint32];
@@ -408,7 +414,7 @@ impl Scene {
         // disabled) so handles stay visible and grabbable through the model.
         let gizmo_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cdt-gizmo-shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("gizmo.wgsl").into()),
+            source: with_globals(include_str!("gizmo.wgsl")),
         });
         const GIZMO_ATTRS: [wgpu::VertexAttribute; 2] =
             wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
