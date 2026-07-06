@@ -90,6 +90,14 @@ impl Modeler {
         document.sanitize();
 
         // Swap in the new document and drop all state tied to the old one.
+        self.reset_to(document);
+        Ok(())
+    }
+
+    /// Replace the document and drop every piece of transient state tied to the
+    /// old one (regen cache, undo/redo, selection, in-flight drags/sketch). Used
+    /// by both Open and New so they reset identically.
+    fn reset_to(&mut self, document: Document) {
         self.doc = document;
         self.regen_cache = RegenCache::new();
         self.undo.clear();
@@ -98,13 +106,53 @@ impl Modeler {
         self.edge_anchors.clear();
         self.transform = None;
         self.manipulation = None;
+        self.resize = None;
         self.sketch_session = None;
         self.ui.selected = None;
-        Ok(())
     }
 
-    /// Prompt for a path and save the project.
-    pub(crate) fn save_project(&mut self) {
+    /// If the document has unsaved changes, ask whether to save them first.
+    /// Returns `true` if it's safe to proceed with a discarding action (New /
+    /// Open / close): the doc was clean, was saved just now, or the user chose to
+    /// discard. Returns `false` if the user cancelled (or a prompted save was
+    /// itself cancelled) — the caller should abort.
+    pub(crate) fn confirm_discard(&mut self) -> bool {
+        if !self.dirty {
+            return true;
+        }
+        match rfd::MessageDialog::new()
+            .set_title("Unsaved changes")
+            .set_description("Save changes to the current project first?")
+            .set_buttons(rfd::MessageButtons::YesNoCancel)
+            .show()
+        {
+            // Save; only proceed if the save actually completed (a cancelled
+            // save dialog must not silently discard the work).
+            rfd::MessageDialogResult::Yes => self.save_project(),
+            // Discard the changes and proceed.
+            rfd::MessageDialogResult::No => true,
+            // Cancel (or the dialog was dismissed): abort the action.
+            _ => false,
+        }
+    }
+
+    /// Reset to a blank project, confirming first if there are unsaved changes.
+    /// Returns true if a new document was started (so the host re-meshes).
+    pub(crate) fn new_document(&mut self) -> bool {
+        if !self.confirm_discard() {
+            return false;
+        }
+        self.reset_to(Document::new("untitled"));
+        self.current_path = None;
+        self.mark_saved(); // a blank doc is its own clean baseline
+        self.status = Some("New project".into());
+        true
+    }
+
+    /// Prompt for a path and save the project. Returns true if it was written
+    /// (false if the user cancelled the dialog or the write failed) — the
+    /// unsaved-changes prompt relies on this to know a save completed.
+    pub(crate) fn save_project(&mut self) -> bool {
         let default_name = self
             .current_path
             .as_ref()
@@ -116,22 +164,29 @@ impl Modeler {
             .set_file_name(default_name)
             .save_file()
         else {
-            return; // cancelled
+            return false; // cancelled
         };
         let path_str = path.to_string_lossy().to_string();
-        self.status = Some(match self.save_project_to(&path_str) {
+        match self.save_project_to(&path_str) {
             Ok(()) => {
                 self.current_path = Some(path);
                 self.mark_saved(); // new clean baseline
-                format!("Saved {path_str}")
+                self.status = Some(format!("Saved {path_str}"));
+                true
             }
-            Err(e) => format!("Save failed: {e}"),
-        });
+            Err(e) => {
+                self.status = Some(format!("Save failed: {e}"));
+                false
+            }
+        }
     }
 
     /// Prompt for a path and open a project. Returns true if a project loaded
-    /// (so the host re-meshes).
+    /// (so the host re-meshes). Confirms first if the current doc is unsaved.
     pub(crate) fn open_project(&mut self) -> bool {
+        if !self.confirm_discard() {
+            return false;
+        }
         let Some(path) = rfd::FileDialog::new()
             .add_filter("Cadette project", &["cdt"])
             .pick_file()

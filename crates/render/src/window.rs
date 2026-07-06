@@ -260,7 +260,12 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
         let nav_ok = !egui_used || over_central;
 
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                // Let the app veto the close (e.g. prompt to save unsaved work).
+                if self.controller.confirm_close() {
+                    event_loop.exit();
+                }
+            }
 
             // Hidden (another Space / minimized / fully covered): stop the
             // continuous redraw; resume — and refresh once — when shown again.

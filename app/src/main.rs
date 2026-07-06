@@ -647,6 +647,9 @@ impl Controller for Modeler {
         if resp.export_stl {
             self.export_stl();
         }
+        if resp.new_project {
+            changed |= self.new_document();
+        }
         if resp.save_project {
             self.save_project();
         }
@@ -804,6 +807,10 @@ impl Controller for Modeler {
             .unwrap_or_else(|| "Untitled".to_string());
         let mark = if self.dirty { "● " } else { "" };
         format!("Cadette — {mark}{name}")
+    }
+
+    fn confirm_close(&mut self) -> bool {
+        self.confirm_discard()
     }
 
     fn start_manipulation(
@@ -1630,6 +1637,27 @@ mod tests {
         assert!(m.undo());
         m.refresh_dirty();
         assert!(m.dirty, "undo away from the saved state is dirty");
+    }
+
+    #[test]
+    fn new_document_resets_to_a_blank_project() {
+        let mut m = Modeler::new();
+        // Content + a bound file, then baseline it clean so New doesn't prompt.
+        let id = m
+            .doc
+            .add_numbered("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        m.ui.selected = Some(id);
+        m.current_path = Some(std::path::PathBuf::from("/tmp/x.cdt"));
+        m.record_undo(m.doc.clone());
+        m.mark_saved();
+        assert!(!m.dirty);
+
+        assert!(m.new_document(), "a blank project starts");
+        assert!(m.doc.history.is_empty(), "history is blank");
+        assert!(m.current_path.is_none(), "unbound to any file");
+        assert!(!m.dirty, "the blank doc is its own clean baseline");
+        assert!(m.ui.selected.is_none(), "selection cleared");
+        assert!(m.undo.is_empty() && m.redo.is_empty(), "undo/redo cleared");
     }
 
     #[test]

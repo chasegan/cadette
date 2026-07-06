@@ -54,6 +54,13 @@ pub trait Controller {
         "Cadette".to_string()
     }
 
+    /// Whether the window may close now. The host calls this on a close request
+    /// so the controller can veto (e.g. prompt to save unsaved changes and abort
+    /// if the user cancels). Default: always allow.
+    fn confirm_close(&mut self) -> bool {
+        true
+    }
+
     /// Begin a push/pull on `pick` if it's manipulable. `point` is the clicked
     /// world point (on the face); the controller captures the anchor (orienting
     /// the normal toward `eye`) and returns the drag axis `(point, outward

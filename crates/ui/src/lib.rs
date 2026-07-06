@@ -94,6 +94,9 @@ pub struct HistoryResponse {
     pub start_sketch: Option<SketchPlane>,
     /// "Export STL" was clicked — the host should write the model to a file.
     pub export_stl: bool,
+    /// "New" was clicked — the host should reset to a blank project (confirming
+    /// first if there are unsaved changes).
+    pub new_project: bool,
     /// "Save" was clicked — the host should write the project to a file.
     pub save_project: bool,
     /// "Open" was clicked — the host should load a project from a file.
@@ -265,6 +268,9 @@ fn command_bar(
         ui.add_space(2.0);
         ui.horizontal_wrapped(|ui| {
             // File.
+            if icon_btn(ui, icon::FILE_PLUS, "New project", true) {
+                resp.new_project = true;
+            }
             if icon_btn(ui, icon::FOLDER_OPEN, "Open project (.cdt)", true) {
                 resp.open_project = true;
             }
