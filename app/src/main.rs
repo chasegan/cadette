@@ -410,6 +410,8 @@ impl Controller for Modeler {
             let mut editor_changed = false;
             // The Properties pane's "Edit…" button for a complex step (sketch/sweep).
             let mut edit_step = false;
+            // A multi-body alignment request (axis + which box edge/center).
+            let mut align: Option<(Axis3, commands::AlignMode)> = None;
 
             // Top-level `Panel::show` is deprecated in favor of `show_inside`,
             // but migrating means restructuring the whole frame layout — done
@@ -455,6 +457,28 @@ impl Controller for Modeler {
                         }
                         if n_bodies >= 2 {
                             group = action_btn(ui, phi::STACK_PLUS, &format!("Group {n_bodies} bodies"), "Combine into one unit that moves/rotates together (⌘G)", true);
+                            // Align the bodies to their combined bounding box: one
+                            // row per axis, with min / center / max on that axis.
+                            ui.add_space(4.0);
+                            ui.label(egui::RichText::new("Align").small().weak());
+                            for (label, axis, lo, hi) in [
+                                ("X", Axis3::X, "Left", "Right"),
+                                ("Y", Axis3::Y, "Front", "Back"),
+                                ("Z", Axis3::Z, "Bottom", "Top"),
+                            ] {
+                                ui.horizontal(|ui| {
+                                    ui.monospace(label);
+                                    if ui.small_button("Min").on_hover_text(lo).clicked() {
+                                        align = Some((axis, commands::AlignMode::Min));
+                                    }
+                                    if ui.small_button("Mid").on_hover_text("Center").clicked() {
+                                        align = Some((axis, commands::AlignMode::Center));
+                                    }
+                                    if ui.small_button("Max").on_hover_text(hi).clicked() {
+                                        align = Some((axis, commands::AlignMode::Max));
+                                    }
+                                });
+                            }
                         }
                         ui.add_space(2.0);
                         ui.weak("⇧/⌘-click to add faces");
@@ -533,6 +557,9 @@ impl Controller for Modeler {
             }
             if group {
                 changed |= self.group_selected();
+            }
+            if let Some((axis, mode)) = align {
+                changed |= self.align_selected(axis, mode);
             }
             if fillet_edges {
                 changed |= if multi_face {
@@ -2314,6 +2341,42 @@ mod tests {
         assert!(m.ungroup_selected());
         let _ = m.mesh();
         assert_eq!(m.ui.visible.len(), 2, "ungroup restores the two bodies");
+    }
+
+    #[test]
+    fn aligning_bodies_shares_a_bounding_box_edge() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("align");
+        m.doc.add("A", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let b0 = m.doc.add("B0", FeatureKind::Box { size: DVec3::splat(10.0) });
+        // Offset B in X (separate body) and in Z (misaligned along Z).
+        m.doc
+            .add("B", FeatureKind::Translate { source: b0, offset: DVec3::new(20.0, 0.0, 5.0) });
+        let _ = m.mesh();
+        assert_eq!(m.ui.visible.len(), 2, "two independent bodies");
+        // They start misaligned along Z.
+        assert!(
+            (m.body_bounds[0].0[2] - m.body_bounds[1].0[2]).abs() > 1.0,
+            "bodies start with different min Z"
+        );
+
+        // Select a face on each body.
+        let fb = m.face_ranges[1];
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        m.on_pick(Some(Pick::Face(fb)), None, true);
+        assert_eq!(m.selected_bodies().len(), 2);
+
+        let undo_before = m.undo.len();
+        assert!(m.align_selected(Axis3::Z, commands::AlignMode::Min), "align moved a body");
+        assert_eq!(m.undo.len(), undo_before + 1, "one undo entry for the whole align");
+
+        let _ = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        // Every body now shares the same low Z edge.
+        let z0 = m.body_bounds[0].0[2];
+        for (min, _max) in &m.body_bounds {
+            assert!((min[2] - z0).abs() < 0.2, "all bodies share min Z: {} vs {z0}", min[2]);
+        }
     }
 
     #[test]

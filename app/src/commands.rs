@@ -11,6 +11,15 @@ use crate::Modeler;
 /// a separate body, ready to be moved.
 pub(crate) const PASTE_OFFSET: f64 = 10.0;
 
+/// Which part of the combined bounding box aligned bodies come to share on an
+/// axis: the low edge, the center, or the high edge.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AlignMode {
+    Min,
+    Center,
+    Max,
+}
+
 impl Modeler {
     /// Apply a boolean with the selected body as the primary operand. Subtract
     /// carves the selected body out of every other visible body (a cut against a
@@ -200,6 +209,64 @@ impl Modeler {
             }
         }
         bodies
+    }
+
+    /// Align every body behind the multi-face selection along one axis, to the
+    /// combined selection's bounding box. `mode` picks which edge/center of the
+    /// box they share. The whole alignment is one undo entry (a Translate per
+    /// body that needs to move). Returns true if anything moved.
+    pub(crate) fn align_selected(&mut self, axis: Axis3, mode: AlignMode) -> bool {
+        let bodies = self.selected_bodies();
+        if bodies.len() < 2 {
+            return false;
+        }
+        let ax = match axis {
+            Axis3::X => 0,
+            Axis3::Y => 1,
+            Axis3::Z => 2,
+        };
+        // Each selected body's extent on the axis, from its world AABB.
+        let mut items: Vec<(FeatureId, f64, f64)> = Vec::new();
+        for &b in &bodies {
+            let Some(idx) = self.ui.visible.iter().position(|&f| f == b) else {
+                continue;
+            };
+            if let Some((min, max)) = self.body_bounds.get(idx).copied() {
+                items.push((b, min[ax], max[ax]));
+            }
+        }
+        if items.len() < 2 {
+            return false;
+        }
+        let overall_min = items.iter().map(|i| i.1).fold(f64::INFINITY, f64::min);
+        let overall_max = items.iter().map(|i| i.2).fold(f64::NEG_INFINITY, f64::max);
+        let overall_center = 0.5 * (overall_min + overall_max);
+
+        // Precompute every body's axis offset before touching the document (each
+        // Translate consumes its body and reorders `visible`, staling the bounds).
+        let mut moves: Vec<(FeatureId, f64)> = Vec::new();
+        for (b, mn, mx) in items {
+            let delta = match mode {
+                AlignMode::Min => overall_min - mn,
+                AlignMode::Center => overall_center - 0.5 * (mn + mx),
+                AlignMode::Max => overall_max - mx,
+            };
+            if delta.abs() >= 1e-6 {
+                moves.push((b, delta));
+            }
+        }
+        if moves.is_empty() {
+            return false; // already aligned
+        }
+        self.record_undo(self.doc.clone());
+        for (b, delta) in moves {
+            let mut offset = DVec3::ZERO;
+            offset[ax] = delta;
+            self.doc
+                .add_numbered("Align", FeatureKind::Translate { source: b, offset });
+        }
+        self.selection.clear();
+        true
     }
 
     /// Group the bodies behind the multi-face selection into one unit (a
