@@ -407,6 +407,7 @@ impl Controller for Modeler {
                 (false, false, false, false, false, false);
             let mut flip: Option<Axis3> = None;
             let (mut group, mut fillet_edges, mut revolve) = (false, false, false);
+            let mut extrude_face = false;
             let mut editor_changed = false;
             // The Properties pane's "Edit…" button for a complex step (sketch/sweep).
             let mut edit_step = false;
@@ -431,6 +432,9 @@ impl Controller for Modeler {
                             sketch = action_btn(ui, phi::PENCIL_SIMPLE, "Sketch on face", "Draw a 2D profile on this face", true);
                         }
                         if sweep_profile_id.is_some() {
+                            // The face's body is a sketch → offer to pull it into a
+                            // solid right here (also available on the top toolbar).
+                            extrude_face = action_btn(ui, phi::ARROW_LINE_UP, "Extrude", "Pull this sketch into a solid (toward you)", true);
                             sweep = action_btn(ui, phi::PATH, "Sweep", "Sweep this profile along a path you draw (toolbar's sketch plane)", true);
                         }
                         fillet_face = action_btn(ui, phi::FRAME_CORNERS, "Fillet face edges", "Round all edges bounding this face", true);
@@ -537,6 +541,11 @@ impl Controller for Modeler {
             }
             if sketch {
                 self.sketch_on_selected_face();
+            }
+            if extrude_face {
+                if let Some(id) = sweep_profile_id {
+                    changed |= self.extrude_sketch(id, view.eye());
+                }
             }
             if sweep {
                 if let Some(p) = sweep_profile_id {
