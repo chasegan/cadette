@@ -695,7 +695,37 @@ std::unique_ptr<Shape> fillet_edges(const Shape& s, rust::Slice<const double> co
         mk.Add(radius, target);
       }
     }
-    return std::make_unique<Shape>(mk.Shape());
+    mk.Build();
+    if (!mk.IsDone()) {
+      throw std::runtime_error("fillet: the rounding failed to build");
+    }
+    TopoDS_Shape result = mk.Shape();
+    // When a fillet radius is too large for the face between two rounded edges,
+    // the rolling surfaces overlap and OCCT leaves a self-intersecting sliver:
+    // MakeFillet reports IsDone, but the solid is INVALID. It renders yet
+    // silently corrupts every downstream boolean and STL. Try to heal it (the
+    // same policy as the swept-solid path) — minor tolerance/pcurve defects
+    // recover into a clean solid.
+    if (!BRepCheck_Analyzer(result).IsValid()) {
+      ShapeFix_Shape fixer(result);
+      fixer.Perform();
+      result = fixer.Shape();
+    }
+    // A genuine radius-too-large overlap can't be made watertight: ShapeFix
+    // strips the tangled faces and leaves an OPEN shell (valid per BRepCheck,
+    // but no solid and not closed). Require a real closed solid, else fail
+    // loudly with an actionable message rather than emit an unprintable body.
+    bool has_solid = false;
+    for (TopExp_Explorer ex(result, TopAbs_SOLID); ex.More(); ex.Next()) {
+      has_solid = true;
+      break;
+    }
+    if (!has_solid || !BRepCheck_Analyzer(result).IsValid()) {
+      throw std::runtime_error(
+          "fillet: the rounded edges overlap (the radius is too large for the "
+          "face between them) — reduce the fillet radius");
+    }
+    return std::make_unique<Shape>(result);
   });
 }
 
