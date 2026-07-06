@@ -90,6 +90,22 @@ impl Modeler {
     /// Fillet all edges bounding the selected face(s), as one feature. Every
     /// selected face must be on the same body (the kernel dedupes shared edges).
     /// Returns true if a feature was added.
+    /// Round EVERY edge of the selected body (the body behind the picked face)
+    /// with a default radius. Distinct from `fillet_selected_face_edges`, which
+    /// only rounds the selected face's own edges.
+    pub(crate) fn fillet_all_selected_body(&mut self) -> bool {
+        let Some(source) = self.selected_body() else {
+            return false;
+        };
+        self.record_undo(self.doc.clone());
+        let id = self
+            .doc
+            .add_numbered("Fillet", FeatureKind::FilletAll { source, radius: 2.0 });
+        self.ui.selected = Some(id);
+        self.selection.clear();
+        true
+    }
+
     pub(crate) fn fillet_selected_face_edges(&mut self) -> bool {
         // All selected faces must belong to one body.
         let bodies = self.selected_bodies();

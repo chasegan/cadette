@@ -331,12 +331,9 @@ fn command_bar(
             if icon_btn(ui, icon::ARROW_LINE_UP, "Extrude the selected/last sketch into a solid", extrude_ok) {
                 resp.extrude = extrude_source;
             }
-            if icon_btn(ui, icon::ARROWS_OUT_CARDINAL, "Move the selected/last body", unary.is_some()) {
-                add(state, "Move", FeatureKind::Translate { source: unary.unwrap(), offset: DVec3::new(10.0, 0.0, 0.0) });
-            }
-            if icon_btn(ui, icon::FRAME_CORNERS, "Fillet every edge of the selected/last body", unary.is_some()) {
-                add(state, "Fillet", FeatureKind::FilletAll { source: unary.unwrap(), radius: 2.0 });
-            }
+            // Move is done directly with the gizmo, and "Fillet every edge" lives
+            // in the Actions pane when a body is selected — neither needs a
+            // persistent toolbar button.
             for (glyph, op, tip) in [
                 (icon::UNITE, BooleanOp::Union, "Union: merge the selected body with the others"),
                 (icon::SUBTRACT, BooleanOp::Subtract, "Subtract: carve the selected body out of the others"),

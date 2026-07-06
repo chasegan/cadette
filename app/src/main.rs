@@ -452,6 +452,8 @@ impl Controller for Modeler {
 
             let (mut sketch, mut edit, mut fillet_face, mut mirror, mut ungroup) =
                 (false, false, false, false, false);
+            // "Fillet every edge" of the selected body (was a toolbar button).
+            let mut fillet_body = false;
             // A sweep request carries the path plane chosen at that moment.
             let mut sweep_plane_choice: Option<SketchPlane> = None;
             let mut flip: Option<Axis3> = None;
@@ -502,6 +504,7 @@ impl Controller for Modeler {
                             .on_hover_text("Sweep this profile along a path you draw — choose the path's plane");
                         }
                         fillet_face = action_btn(ui, phi::FRAME_CORNERS, "Fillet face edges", "Round all edges bounding this face", true);
+                        fillet_body = action_btn(ui, phi::BOUNDING_BOX, "Fillet every edge", "Round every edge of this body", true);
                         if can_mirror {
                             mirror = action_btn(ui, phi::FLIP_HORIZONTAL, "Mirror across face", "Reflect this body across the face — keeps the original", true);
                         }
@@ -618,6 +621,9 @@ impl Controller for Modeler {
             }
             if fillet_face {
                 changed |= self.fillet_selected_face_edges();
+            }
+            if fillet_body {
+                changed |= self.fillet_all_selected_body();
             }
             if mirror {
                 changed |= self.mirror_across_selected_face();
@@ -2377,6 +2383,30 @@ mod tests {
             );
         }
         assert!(m.undo(), "flip is one undo entry");
+    }
+
+    #[test]
+    fn fillet_every_edge_of_the_selected_body() {
+        // The Actions-pane "Fillet every edge" (moved off the toolbar): picking
+        // one face of a body and rounding ALL its edges → one FilletAll feature.
+        let mut m = Modeler::new();
+        m.doc = Document::new("box");
+        m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(20.0) });
+        let _ = m.mesh();
+
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        let n0 = m.doc.history.len();
+        assert!(m.fillet_all_selected_body(), "a body is selected");
+        assert_eq!(m.doc.history.len(), n0 + 1, "one FilletAll feature");
+        assert!(matches!(
+            m.doc.history.get(m.ui.selected.unwrap()).map(|f| &f.kind),
+            Some(FeatureKind::FilletAll { .. })
+        ));
+
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "fillet-all rebuilds: {:?}", m.ui.errors);
+        let faces: std::collections::BTreeSet<u32> = mesh.vertices.iter().map(|v| v.face_id).collect();
+        assert!(faces.len() > 6, "rounding every edge adds faces: {}", faces.len());
     }
 
     #[test]
