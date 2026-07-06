@@ -532,10 +532,20 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
     changed
 }
 
-pub fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
+/// What the Properties editor reported this frame.
+#[derive(Default)]
+pub struct EditorResponse {
+    /// A parameter value changed — the host should regenerate.
+    pub changed: bool,
+    /// The "Edit…" button for a complex step (sketch/sweep) was clicked — the
+    /// host should re-open that step's proper editor.
+    pub edit: bool,
+}
+
+pub fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> EditorResponse {
     let mut changed = false;
     let Some(feature) = doc.history.get_mut(id) else {
-        return false;
+        return EditorResponse::default();
     };
 
     // Name is primary; the operation kind is a dim secondary (it's dropped from
@@ -545,6 +555,11 @@ pub fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
         ui.label(RichText::new(feature.kind.type_name()).weak());
     });
     ui.add_space(2.0);
+
+    // A complex step's full state can't be listed as fields — instead it offers
+    // an "Edit…" button (set here, drawn after the match) that re-opens its
+    // proper editor. `None` = the fields above fully describe the step.
+    let mut edit_label: Option<&str> = None;
 
     match &mut feature.kind {
         FeatureKind::Box { size } => {
@@ -601,6 +616,9 @@ pub fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
                     _ => {}
                 }
             }
+            // Points, lines, curves + geometric constraints are too rich to list;
+            // re-open the sketch canvas to edit them.
+            edit_label = Some("Edit sketch");
         }
         FeatureKind::Extrude { distance, .. } => {
             changed |= drag_signed(ui, "Distance", distance);
@@ -664,10 +682,20 @@ pub fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> bool {
             let cdt_core::SweepPath::Planar { sketch, .. } = path;
             let segs = sketch.lines.len() + sketch.beziers.len();
             ui.label(RichText::new(format!("path: {segs} segments")).small().weak());
+            // The path is a line the user can go back and reshape.
+            edit_label = Some("Edit path");
         }
     }
 
-    changed
+    let mut edit = false;
+    if let Some(label) = edit_label {
+        ui.add_space(4.0);
+        edit = ui
+            .button(RichText::new(format!("{}  {label}", icon::NOTE_PENCIL)))
+            .clicked();
+    }
+
+    EditorResponse { changed, edit }
 }
 
 pub fn error_list(ui: &mut Ui, doc: &Document, state: &HistoryState) {

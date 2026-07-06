@@ -154,6 +154,43 @@ impl Modeler {
         self.selection.clear();
     }
 
+    /// Re-open an existing Sweep's PATH for editing: load its open chain and
+    /// plane into a Select-mode path session bound to the Sweep, so finishing
+    /// overwrites it in place (rather than adding a new Sweep). The path stays a
+    /// first-class line the user can reshape. Returns true if `id` is a Sweep.
+    pub(crate) fn edit_sweep_path(&mut self, id: FeatureId) -> bool {
+        let (profile, plane, sketch) = match self.doc.history.get(id).map(|f| &f.kind) {
+            Some(FeatureKind::Sweep {
+                profile,
+                path: cdt_core::SweepPath::Planar { plane, sketch },
+            }) => (*profile, *plane, sketch.clone()),
+            _ => return false,
+        };
+        self.sketch_session = Some(SketchSession {
+            plane,
+            sketch,
+            tool: SketchTool::Select,
+            start: None,
+            last: None,
+            closed: false, // a path is an OPEN chain
+            selected_points: Vec::new(),
+            selected_lines: Vec::new(),
+            selected_beziers: Vec::new(),
+            dof: 0,
+            conflicted: false,
+            editing: Some(id), // overwrite this Sweep on finish
+            sweep_profile: Some(profile),
+            dragging: None,
+            dragging_handle: None,
+            dragging_smooth: true,
+            pen_out: None,
+            pen_press: None,
+            pen_start_in: None,
+        });
+        self.selection.clear();
+        true
+    }
+
     /// The selected body's feature id if it can be a sweep PROFILE — any sketch
     /// (constraint or simple) that evaluates to a planar face.
     pub(crate) fn sweepable_profile(&self) -> Option<FeatureId> {
@@ -237,16 +274,25 @@ impl Modeler {
                 return false; // not a single open chain — discard
             }
             let before = self.doc.clone();
-            let id = self.doc.add_numbered(
-                "Sweep",
-                FeatureKind::Sweep {
-                    profile,
-                    path: cdt_core::SweepPath::Planar {
-                        plane: session.plane,
-                        sketch: session.sketch,
-                    },
+            let kind = FeatureKind::Sweep {
+                profile,
+                path: cdt_core::SweepPath::Planar {
+                    plane: session.plane,
+                    sketch: session.sketch,
                 },
-            );
+            };
+            let id = match session.editing {
+                // Re-editing an existing Sweep's path: overwrite it in place so
+                // downstream rebuilds against the reshaped path.
+                Some(id) => {
+                    let Some(feature) = self.doc.history.get_mut(id) else {
+                        return false;
+                    };
+                    feature.kind = kind;
+                    id
+                }
+                None => self.doc.add_numbered("Sweep", kind),
+            };
             self.record_undo(before);
             self.ui.selected = Some(id);
             return true;

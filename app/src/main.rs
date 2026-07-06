@@ -408,6 +408,8 @@ impl Controller for Modeler {
             let mut flip: Option<Axis3> = None;
             let (mut group, mut fillet_edges, mut revolve) = (false, false, false);
             let mut editor_changed = false;
+            // The Properties pane's "Edit…" button for a complex step (sketch/sweep).
+            let mut edit_step = false;
 
             // Top-level `Panel::show` is deprecated in favor of `show_inside`,
             // but migrating means restructuring the whole frame layout — done
@@ -476,7 +478,9 @@ impl Controller for Modeler {
                     ui.label(egui::RichText::new("Properties").strong());
                     ui.add_space(2.0);
                     if let Some(id) = self.ui.selected {
-                        editor_changed |= cdt_ui::selected_editor(ui, &mut self.doc, id);
+                        let editor = cdt_ui::selected_editor(ui, &mut self.doc, id);
+                        editor_changed |= editor.changed;
+                        edit_step |= editor.edit;
                     } else {
                         ui.weak("Select a feature to edit its parameters.");
                     }
@@ -490,6 +494,21 @@ impl Controller for Modeler {
             if edit {
                 if let Some(id) = edit_sketch_id {
                     self.edit_sketch(id);
+                }
+            }
+            // The Properties "Edit…" button re-opens the selected complex step in
+            // its proper editor (dispatched by kind).
+            if edit_step {
+                if let Some(id) = self.ui.selected {
+                    match self.doc.history.get(id).map(|f| &f.kind) {
+                        Some(FeatureKind::ConstraintSketch { .. }) => {
+                            self.edit_sketch(id);
+                        }
+                        Some(FeatureKind::Sweep { .. }) => {
+                            self.edit_sweep_path(id);
+                        }
+                        _ => {}
+                    }
                 }
             }
             if sketch {
@@ -1779,6 +1798,47 @@ mod tests {
         assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
         let (min, max) = bounds(&mesh);
         assert!(min[2].abs() < 0.5 && (max[2] - 10.0).abs() < 0.5, "tube spans z 0..10");
+    }
+
+    #[test]
+    fn editing_a_sweep_path_reshapes_it_in_place() {
+        // A Sweep's path is editable: re-open it, lengthen it, and finishing
+        // overwrites the SAME feature (no new step) with a longer tube.
+        let mut m = Modeler::new();
+        m.doc = Document::new("sweepedit");
+        let prof = m.doc.add(
+            "Profile",
+            FeatureKind::Sketch { plane: SketchPlane::Xy, profile: Profile::Circle { radius: 2.0 } },
+        );
+        let mut path = Sketch2d::new();
+        let a = path.add_point(0.0, 0.0);
+        let b = path.add_point(0.0, 10.0);
+        path.add_line(a, b);
+        let sweep = m.doc.add(
+            "Sweep",
+            FeatureKind::Sweep {
+                profile: prof,
+                path: cdt_core::SweepPath::Planar { plane: SketchPlane::Xz, sketch: path },
+            },
+        );
+        let n0 = m.doc.history.len();
+        let _ = m.mesh();
+
+        // Re-open the path and move its far endpoint from z=10 to z=20.
+        assert!(m.edit_sweep_path(sweep), "sweep path re-opens");
+        let s = m.sketch_session.as_mut().expect("path session");
+        assert!(s.sweep_profile.is_some() && s.editing == Some(sweep));
+        if let Some(p) = s.sketch.points.iter_mut().find(|p| p.y > 5.0) {
+            p.y = 20.0;
+        }
+        assert!(m.finish_sketch(), "finishing rewrites the sweep");
+        assert_eq!(m.doc.history.len(), n0, "no new feature — edited in place");
+        assert_eq!(m.ui.selected, Some(sweep), "the same Sweep stays selected");
+
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        let (_, max) = bounds(&mesh);
+        assert!((max[2] - 20.0).abs() < 0.5, "tube now spans to z≈20: {}", max[2]);
     }
 
     #[test]
