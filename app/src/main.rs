@@ -1180,9 +1180,12 @@ impl Controller for Modeler {
         };
         match t.feature {
             None => {
-                // First real drag: one undo entry, then add the feature.
+                // First real drag: one undo entry, then splice the transform in
+                // so moving a body that feeds other steps propagates downstream
+                // (rather than branching off an unused copy). For a free-standing
+                // body this is identical to a plain add.
                 self.record_undo(self.doc.clone());
-                let id = self.doc.add_numbered(name, kind);
+                let id = self.doc.insert_transform_numbered(name, kind);
                 t.feature = Some(id);
                 self.ui.selected = Some(id);
             }
@@ -1213,15 +1216,20 @@ impl Controller for Modeler {
         let Some(id) = t.feature else {
             return; // never dragged far enough to create a feature
         };
-        // Discard a cancelled or no-op transform (and the undo it recorded).
+        // Discard a cancelled or no-op transform. Restore the pre-drag snapshot
+        // rather than `history.remove` — the transform was SPLICED (its source's
+        // consumers were redirected to it, and the rollback bar advanced), and
+        // only a full snapshot restore reliably undoes all of that (removing the
+        // feature alone would leave the bar one step too high).
         let nonzero = match self.doc.history.get(id).map(|f| &f.kind) {
             Some(FeatureKind::Translate { offset, .. }) => offset.length() >= 1e-3,
             Some(FeatureKind::Rotate { angle, .. }) => angle.abs() >= 1e-4,
             _ => true,
         };
         if !commit || !nonzero {
-            self.doc.history.remove(id);
-            self.undo.pop();
+            if let Some(prev) = self.undo.pop() {
+                self.doc = prev;
+            }
         }
     }
 
@@ -1394,7 +1402,9 @@ impl Controller for Modeler {
                     None => {
                         self.record_undo(self.doc.clone());
                         r.changed = true;
-                        let id = self.doc.add_numbered(
+                        // Splice so resizing a body that feeds other steps
+                        // propagates downstream instead of leaving a copy.
+                        let id = self.doc.insert_transform_numbered(
                             "Resize",
                             FeatureKind::Scale { source: r.source, factors, anchor: r.anchor },
                         );
@@ -1495,8 +1505,12 @@ impl Controller for Modeler {
                         _ => true,
                     };
                     if !commit || noop {
-                        self.doc.history.remove(id);
-                        self.undo.pop();
+                        // The Scale was SPLICED (consumers redirected, bar
+                        // advanced) — restore the pre-drag snapshot to undo all
+                        // of it, not just remove the feature.
+                        if let Some(prev) = self.undo.pop() {
+                            self.doc = prev;
+                        }
                     }
                 }
             }
@@ -2581,6 +2595,72 @@ mod tests {
         assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
         let (min, max) = bounds(&mesh);
         assert!((min[0] - 8.0).abs() < 0.1 && (max[0] - 18.0).abs() < 0.1, "x {min:?}..{max:?}");
+    }
+
+    /// Build A ∪ B, then move base A while rolled back. Returns the modeler set
+    /// up with A, B0, B(=B0 offset +5X), Fuse(A,B), rolled back so A and B show.
+    fn fused_pair_rolled_back() -> (Modeler, FeatureId) {
+        let mut m = Modeler::new();
+        m.doc = Document::new("t");
+        let a = m.doc.add("A", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let b0 = m.doc.add("B0", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let b = m.doc
+            .add("B", FeatureKind::Translate { source: b0, offset: DVec3::new(5.0, 0.0, 0.0) });
+        m.doc
+            .add("Fuse", FeatureKind::Boolean { op: BooleanOp::Union, target: a, tool: b });
+        let _ = m.mesh();
+        assert_eq!(m.ui.visible.len(), 1, "at the tip: one fused body");
+        m.doc.set_rollback(3); // A, B0, B active; the Union rolled away
+        let _ = m.mesh();
+        assert_eq!(m.ui.visible.len(), 2, "rolled back: A and B are separate");
+        (m, a)
+    }
+
+    #[test]
+    fn moving_a_base_body_propagates_into_the_boolean_no_orphan() {
+        // The fix: moving a base body that feeds a Boolean must shift the whole
+        // part (the move splices into the chain) — not leave a floating copy.
+        let (mut m, _a) = fused_pair_rolled_back();
+
+        // Gizmo-move base A up +20 in Y.
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        m.start_transform(GizmoHandle::TranslateAxis(Axis3::Y));
+        assert!(m.update_transform(TransformDelta::Translate([0.0, 20.0, 0.0])));
+        m.finish_transform(true);
+
+        m.doc.rollback_to_tip();
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        assert_eq!(m.ui.visible.len(), 1, "still ONE body — the move propagated, no orphan copy");
+        // A (inside the union) moved to y[20,30], so the part now reaches y≈30.
+        let (_, max) = bounds(&mesh);
+        assert!((max[1] - 30.0).abs() < 0.5, "the boolean followed the moved base: max y {}", max[1]);
+    }
+
+    #[test]
+    fn cancelling_a_rolled_back_move_restores_the_bar() {
+        // Reviewer finding #3: a spliced transform advances the rollback bar, so
+        // cancel must restore the bar (via snapshot), not just drop the feature —
+        // else a rolled-away step pops into view after a cancelled drag.
+        let (mut m, _a) = fused_pair_rolled_back();
+        let len0 = m.doc.history.len();
+        let rb0 = m.doc.rollback();
+
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        m.start_transform(GizmoHandle::TranslateAxis(Axis3::Y));
+        assert!(m.update_transform(TransformDelta::Translate([0.0, 20.0, 0.0])));
+        assert_eq!(m.doc.history.len(), len0 + 1, "the drag spliced a transform");
+        assert_eq!(m.doc.rollback(), rb0 + 1, "and advanced the bar");
+
+        m.finish_transform(false); // cancel
+
+        assert_eq!(m.doc.history.len(), len0, "the spliced transform is gone");
+        assert_eq!(m.doc.rollback(), rb0, "the rollback bar is restored");
+        m.doc.history.validate().expect("the graph is intact after cancel");
+        assert!(
+            m.doc.active_features().iter().all(|f| !matches!(f.kind, FeatureKind::Boolean { .. })),
+            "the rolled-away Union did not pop active after a cancelled drag"
+        );
     }
 
     #[test]

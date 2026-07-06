@@ -51,6 +51,30 @@ impl Document {
         self.add(format!("{base} {n}"), kind)
     }
 
+    /// Add an in-place body transform and **splice** it into the chain (see
+    /// [`History::insert_transform`]) so it propagates to everything downstream
+    /// instead of branching off an unused copy. The transform lands right after
+    /// its (active) source — within the active region — so the rollback bar
+    /// advances by one, keeping every previously-active feature active and making
+    /// the moved body active/visible.
+    pub fn insert_transform(&mut self, name: impl Into<String>, kind: FeatureKind) -> FeatureId {
+        let (index, id) = self.history.insert_transform(name, kind);
+        // The transform sits at `index_of(source) + 1`; for the visible (hence
+        // active) bodies these ops target, that's `<= rollback`, so one active
+        // feature was added — advance the bar. (`+=`, not `set`: the source can
+        // be far below the bar, so we must not collapse it.)
+        if index <= self.rollback {
+            self.rollback += 1;
+        }
+        id
+    }
+
+    /// [`Self::insert_transform`] with an auto-numbered name `"{base} {n}"`.
+    pub fn insert_transform_numbered(&mut self, base: &str, kind: FeatureKind) -> FeatureId {
+        let n = self.history.next_name_number(base);
+        self.insert_transform(format!("{base} {n}"), kind)
+    }
+
     /// Duplicate the subtree feeding `id` (fresh ids, see
     /// [`History::clone_subtree`]) and return the new tip, leaving the rollback
     /// bar at the document tip so the clone is active. For copy/paste & mirror.
@@ -164,6 +188,34 @@ mod tests {
         assert_eq!(ids, vec![a, b, d]);
         assert_eq!(doc.rollback(), 3, "bar moves just past the inserted feature");
         doc.history.validate().expect("insertion keeps references backward");
+    }
+
+    #[test]
+    fn insert_transform_while_rolled_back_advances_the_bar_and_propagates() {
+        use crate::features::BooleanOp;
+        let mut doc = Document::new("t");
+        let a = doc.add("A", boxx()); // 0
+        let b = doc.add("B", boxx()); // 1
+        let fuse = doc.add(
+            "Fuse",
+            FeatureKind::Boolean { op: BooleanOp::Union, target: a, tool: b },
+        ); // 2
+        doc.set_rollback(2); // A, B active; the boolean rolled away
+
+        let t = doc.insert_transform("Move", translate(a));
+
+        // T is spliced right after A; the bar advances so it stays active.
+        let ids: Vec<_> = doc.history.features().iter().map(|f| f.id).collect();
+        assert_eq!(ids, vec![a, t, b, fuse], "T lands right after A");
+        assert_eq!(doc.rollback(), 3, "the bar advanced by one");
+        let active: Vec<_> = doc.active_features().iter().map(|f| f.id).collect();
+        assert_eq!(active, vec![a, t, b], "moved A (via T) and B are active");
+        // The rolled-away boolean now consumes the moved A — the move propagates.
+        match &doc.history.get(fuse).unwrap().kind {
+            FeatureKind::Boolean { target, .. } => assert_eq!(*target, t),
+            _ => unreachable!(),
+        }
+        doc.history.validate().expect("splice keeps references backward");
     }
 
     #[test]

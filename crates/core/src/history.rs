@@ -213,6 +213,51 @@ impl History {
         Some(removed)
     }
 
+    /// Add an in-place body transform `kind` (whose primary input is `source`)
+    /// directly after `source` and **splice** it into the chain: every *other*
+    /// feature that consumed `source` is redirected to the new transform, so the
+    /// moved body propagates to everything downstream instead of branching off an
+    /// unused copy. This is the inverse of [`Self::remove`] (which heals
+    /// dependents *back* to a feature's primary input). Returns
+    /// `(landed index, new id)`.
+    ///
+    /// `kind` must be a body transform (Translate/Rotate/Scale/Mirror): a single
+    /// primary input meaning "the same body, moved".
+    pub fn insert_transform(
+        &mut self,
+        name: impl Into<String>,
+        kind: FeatureKind,
+    ) -> (usize, FeatureId) {
+        let source = kind
+            .primary_input()
+            .expect("insert_transform needs a transform with a primary input");
+        debug_assert!(
+            matches!(
+                kind,
+                FeatureKind::Translate { .. }
+                    | FeatureKind::Rotate { .. }
+                    | FeatureKind::Scale { .. }
+                    | FeatureKind::Mirror { .. }
+            ),
+            "insert_transform expects a body transform, got {}",
+            kind.type_name()
+        );
+        // Land the transform immediately after its source. `insert` clamps
+        // forward to `after_inputs = index_of(source) + 1`, so this is exact.
+        let (index, id) = self.insert(self.index_of(source).map_or(0, |s| s + 1), name, kind);
+        // Redirect source's OTHER consumers to the new transform. Skipping the
+        // transform itself is load-bearing — otherwise it would remap its own
+        // `source → id` and reference itself (a cycle). Features at or before
+        // `source` never reference it (the backward invariant), so this is a
+        // no-op for them.
+        for feature in &mut self.features {
+            if feature.id != id {
+                feature.kind.remap_input(source, id);
+            }
+        }
+        (index, id)
+    }
+
     pub fn set_suppressed(&mut self, id: FeatureId, suppressed: bool) {
         if let Some(f) = self.get_mut(id) {
             f.suppressed = suppressed;
@@ -294,6 +339,64 @@ mod tests {
         // A colour on the tip overrides the one below it.
         h.get_mut(moved).unwrap().color = Some([0.0, 1.0, 0.0]);
         assert_eq!(h.resolve_color(moved), Some([0.0, 1.0, 0.0]));
+    }
+
+    #[test]
+    fn insert_transform_splices_into_the_chain() {
+        let mut h = History::new();
+        let a = h.add("A", boxx());
+        // A downstream consumer of A (not the transform).
+        let fillet = h.add("Fillet", FeatureKind::FilletAll { source: a, radius: 1.0 });
+        let (idx, t) =
+            h.insert_transform("Move", FeatureKind::Translate { source: a, offset: DVec3::X });
+
+        assert_eq!(idx, 1, "the transform lands right after A, before the fillet");
+        assert_eq!(
+            h.get(fillet).unwrap().kind.primary_input(),
+            Some(t),
+            "the fillet now consumes the MOVED A (the splice propagated)"
+        );
+        assert_eq!(h.get(t).unwrap().kind.primary_input(), Some(a), "only the transform still moves A");
+        // Nothing except the transform references the original body.
+        let others = h
+            .features()
+            .iter()
+            .filter(|f| f.id != t && f.kind.inputs().contains(&a))
+            .count();
+        assert_eq!(others, 0, "the original body has exactly one consumer: the transform");
+        h.validate().expect("splice keeps every reference backward");
+    }
+
+    #[test]
+    fn insert_transform_redirects_every_slot_of_a_multi_consumer() {
+        use crate::features::BooleanOp;
+        let mut h = History::new();
+        let a = h.add("A", boxx());
+        // A body used in BOTH slots of a boolean (both must redirect).
+        let fuse = h.add(
+            "Fuse",
+            FeatureKind::Boolean { op: BooleanOp::Union, target: a, tool: a },
+        );
+        let (_, t) =
+            h.insert_transform("Move", FeatureKind::Translate { source: a, offset: DVec3::X });
+        match &h.get(fuse).unwrap().kind {
+            FeatureKind::Boolean { target, tool, .. } => {
+                assert_eq!((*target, *tool), (t, t), "both operands follow the move");
+            }
+            _ => unreachable!(),
+        }
+        h.validate().unwrap();
+    }
+
+    #[test]
+    fn insert_transform_on_a_leaf_just_moves_it() {
+        let mut h = History::new();
+        let a = h.add("A", boxx());
+        let (idx, t) =
+            h.insert_transform("Move", FeatureKind::Translate { source: a, offset: DVec3::X });
+        assert_eq!(idx, 1, "no consumers to redirect; T lands after A");
+        assert_eq!(h.get(t).unwrap().kind.primary_input(), Some(a));
+        h.validate().unwrap();
     }
 
     #[test]

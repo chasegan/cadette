@@ -200,7 +200,8 @@ impl Modeler {
             Axis3::Z => DVec3::Z,
         };
         self.record_undo(self.doc.clone());
-        let id = self.doc.add_numbered(
+        // Splice so flipping a body that feeds other steps propagates downstream.
+        let id = self.doc.insert_transform_numbered(
             "Flip",
             FeatureKind::Mirror { source: body, origin: DVec3::from_array(center), normal },
         );
@@ -278,8 +279,11 @@ impl Modeler {
         for (b, delta) in moves {
             let mut offset = DVec3::ZERO;
             offset[ax] = delta;
+            // Splice each move into its body's chain, so aligning bodies that
+            // feed downstream steps repositions the model rather than spawning
+            // floating copies.
             self.doc
-                .add_numbered("Align", FeatureKind::Translate { source: b, offset });
+                .insert_transform_numbered("Align", FeatureKind::Translate { source: b, offset });
         }
         self.selection.clear();
         true
