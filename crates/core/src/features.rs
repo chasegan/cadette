@@ -280,4 +280,10 @@ pub struct Feature {
     /// A suppressed feature is skipped during regeneration but kept in history.
     pub suppressed: bool,
     pub kind: FeatureKind,
+    /// Optional user-chosen display colour (linear RGB). A body's colour is the
+    /// nearest set colour walking down its `primary_input` chain; `None`
+    /// everywhere means the viewport's theme default. `#[serde(default)]` keeps
+    /// older project files (which lack the field) loading.
+    #[serde(default)]
+    pub color: Option<[f32; 3]>,
 }

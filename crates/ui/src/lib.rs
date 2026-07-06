@@ -417,7 +417,8 @@ const LANE_W: f32 = 14.0;
 const GRAPH_ROW_H: f32 = 22.0;
 const NODE_R: f32 = 4.0;
 
-/// A distinct, muted colour per lane so parallel body lines read apart.
+/// A distinct, muted colour per lane so parallel body lines read apart — used
+/// as the fallback when a body has no user colour.
 fn lane_color(lane: usize) -> Color32 {
     const PALETTE: [Color32; 6] = [
         Color32::from_rgb(120, 170, 255), // blue
@@ -428,6 +429,11 @@ fn lane_color(lane: usize) -> Color32 {
         Color32::from_rgb(150, 210, 210), // teal
     ];
     PALETTE[lane % PALETTE.len()]
+}
+
+/// A body's linear-RGB colour as an egui (sRGB) colour for the lane graph.
+fn linear_to_color32(c: [f32; 3]) -> Color32 {
+    Color32::from(egui::Rgba::from_rgb(c[0], c[1], c[2]))
 }
 
 /// The history as a git-style lane graph: a column per body line, a node per
@@ -450,6 +456,18 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
         .map(|(f, gr)| (f.id, f.name.clone(), f.suppressed, gr.clone()))
         .collect();
 
+    // A lane takes its body's user colour if one is set anywhere down its chain
+    // (so the graph is a legend for the coloured 3D bodies), else the palette
+    // fallback. Later rows on a lane overwrite, but colour propagates down the
+    // chain so they resolve to the same value — the visible body's colour wins.
+    let mut lane_colors: std::collections::HashMap<usize, Color32> = std::collections::HashMap::new();
+    for (f, gr) in doc.history.features().iter().zip(graph.rows.iter()) {
+        if let Some(c) = doc.history.resolve_color(f.id) {
+            lane_colors.insert(gr.lane, linear_to_color32(c));
+        }
+    }
+    let lane_col = |lane: usize| lane_colors.get(&lane).copied().unwrap_or_else(|| lane_color(lane));
+
     // Contiguous rows so the lane lines join across rows.
     ui.spacing_mut().item_spacing.y = 0.0;
 
@@ -470,7 +488,7 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
             let node_x = lane_x(gr.lane);
             let dim = rolled_back || suppressed;
             let stroke = |l: usize| {
-                let c = lane_color(l);
+                let c = lane_col(l);
                 egui::Stroke::new(1.5, if dim { c.gamma_multiply(0.4) } else { c })
             };
             // Top half: each incoming lane connects to the node, others pass down.
@@ -492,7 +510,7 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
             } else if dim {
                 Color32::from_gray(120)
             } else {
-                lane_color(gr.lane)
+                lane_col(gr.lane)
             };
             let center = egui::pos2(node_x, mid);
             if gr.is_merge {
@@ -700,6 +718,28 @@ pub fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> Editor
             edit_label = Some("Edit path");
         }
     }
+
+    // Body colour: a swatch overriding the theme's default material for this
+    // body (and, via the shared colour, its Build Graph lane). Resetting returns
+    // it to the theme default. Colour is linear RGB, matching the shader.
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label("Colour");
+        let mut rgb = feature.color.unwrap_or([0.60, 0.60, 0.62]);
+        if ui.color_edit_button_rgb(&mut rgb).changed() {
+            feature.color = Some(rgb);
+            changed = true;
+        }
+        if feature.color.is_some()
+            && ui
+                .small_button("Reset")
+                .on_hover_text("Use the theme's default colour")
+                .clicked()
+        {
+            feature.color = None;
+            changed = true;
+        }
+    });
 
     let mut edit = false;
     if let Some(label) = edit_label {

@@ -42,11 +42,24 @@ pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub face_id: u32,
+    /// Per-body display colour (linear RGB). A negative red channel is a
+    /// sentinel meaning "no colour set" — the shader then uses the theme's
+    /// default material, so un-coloured bodies look exactly as before.
+    pub color: [f32; 3],
 }
 
+/// Sentinel `color` marking a vertex with no user colour (use the theme default).
+pub const NO_COLOR: [f32; 3] = [-1.0, -1.0, -1.0];
+
 /// Interleave the kernel's parallel position/normal/face-id arrays into GPU
-/// vertices.
-pub fn interleave(positions: &[f32], normals: &[f32], face_ids: &[u32]) -> Vec<Vertex> {
+/// vertices, tagging every vertex of this body with `color` (use [`NO_COLOR`]
+/// for the theme default).
+pub fn interleave(
+    positions: &[f32],
+    normals: &[f32],
+    face_ids: &[u32],
+    color: [f32; 3],
+) -> Vec<Vertex> {
     debug_assert_eq!(positions.len(), normals.len());
     debug_assert_eq!(positions.len() / 3, face_ids.len());
     positions
@@ -57,6 +70,7 @@ pub fn interleave(positions: &[f32], normals: &[f32], face_ids: &[u32]) -> Vec<V
             position: [p[0], p[1], p[2]],
             normal: [n[0], n[1], n[2]],
             face_id,
+            color,
         })
         .collect()
 }
@@ -90,4 +104,22 @@ pub fn interleave_edges(positions: &[f32], edge_ids: &[u32]) -> Vec<EdgeVertex> 
             edge_id,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interleave_tags_every_vertex_with_the_body_colour() {
+        let positions = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        let normals = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
+        let ids = [0u32, 0];
+        let verts = interleave(&positions, &normals, &ids, [0.2, 0.4, 0.6]);
+        assert_eq!(verts.len(), 2);
+        assert!(verts.iter().all(|v| v.color == [0.2, 0.4, 0.6]));
+        // The sentinel marks "no user colour" for the theme-default path.
+        let plain = interleave(&positions, &normals, &ids, NO_COLOR);
+        assert!(plain[0].color[0] < 0.0);
+    }
 }

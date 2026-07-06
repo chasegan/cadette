@@ -844,9 +844,17 @@ impl Controller for Modeler {
         self.edge_ranges.clear();
         self.body_centers.clear();
         self.body_bounds.clear();
-        for body in &bodies {
+        for (idx, body) in bodies.iter().enumerate() {
             self.face_ranges.push(face_offset);
             self.edge_ranges.push(edge_offset);
+            // This body's user colour (walking down its input chain), or the
+            // sentinel so the shader falls back to the theme's default material.
+            let color = self
+                .ui
+                .visible
+                .get(idx)
+                .and_then(|&id| self.doc.history.resolve_color(id))
+                .unwrap_or(cdt_render::NO_COLOR);
             match body.tessellate(DEFLECTION_MM) {
                 Ok(part) => {
                     self.body_centers.push(positions_center(&part.positions));
@@ -858,6 +866,7 @@ impl Controller for Modeler {
                         &part.positions,
                         &part.normals,
                         &face_ids,
+                        color,
                     ));
                     mesh.indices.extend(part.indices.iter().map(|i| i + base));
                     face_offset += part.face_ids.iter().copied().max().unwrap_or(0) + 1;

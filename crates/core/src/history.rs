@@ -72,6 +72,7 @@ impl History {
                 name: name.into(),
                 suppressed: false,
                 kind,
+                color: None,
             },
         );
         (index, id)
@@ -144,6 +145,7 @@ impl History {
                 name: f.name.clone(),
                 suppressed: f.suppressed,
                 kind,
+                color: f.color,
             });
         }
         Some(map[&id])
@@ -169,6 +171,23 @@ impl History {
 
     pub fn get(&self, id: FeatureId) -> Option<&Feature> {
         self.features.iter().find(|f| f.id == id)
+    }
+
+    /// The display colour of the body produced at `tip`: the nearest set colour
+    /// walking down the primary-input chain (so a colour set on a primitive
+    /// survives moves/booleans above it), or `None` for the theme default.
+    pub fn resolve_color(&self, tip: FeatureId) -> Option<[f32; 3]> {
+        let mut cur = tip;
+        // The chain follows backward references, so it can't cycle; the cap is
+        // just a belt-and-braces guard against a corrupt history.
+        for _ in 0..4096 {
+            let f = self.get(cur)?;
+            if let Some(c) = f.color {
+                return Some(c);
+            }
+            cur = f.kind.primary_input()?;
+        }
+        None
     }
 
     /// Mutable access to a feature for editing its parameters. The caller is
@@ -260,6 +279,21 @@ mod tests {
 
     fn boxx() -> FeatureKind {
         FeatureKind::Box { size: DVec3::splat(1.0) }
+    }
+
+    #[test]
+    fn resolve_color_walks_down_to_the_nearest_set_colour() {
+        let mut h = History::new();
+        let base = h.add("Box", boxx());
+        let moved = h.add("Move", FeatureKind::Translate { source: base, offset: DVec3::ZERO });
+        // Nothing coloured yet → theme default.
+        assert_eq!(h.resolve_color(moved), None);
+        // Colour the primitive; the transform above inherits it (walks down).
+        h.get_mut(base).unwrap().color = Some([1.0, 0.0, 0.0]);
+        assert_eq!(h.resolve_color(moved), Some([1.0, 0.0, 0.0]));
+        // A colour on the tip overrides the one below it.
+        h.get_mut(moved).unwrap().color = Some([0.0, 1.0, 0.0]);
+        assert_eq!(h.resolve_color(moved), Some([0.0, 1.0, 0.0]));
     }
 
     #[test]

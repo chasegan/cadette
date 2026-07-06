@@ -273,8 +273,10 @@ impl Scene {
             immediate_size: 0,
         });
 
-        const ATTRS: [wgpu::VertexAttribute; 3] =
-            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Uint32];
+        // Location 3 (per-body colour) is read by the lit shader; the pick shader
+        // shares this layout and simply ignores it.
+        const ATTRS: [wgpu::VertexAttribute; 4] =
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Uint32, 3 => Float32x3];
         let vertex_layout = || wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,

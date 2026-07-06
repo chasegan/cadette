@@ -341,7 +341,7 @@ mod tests {
     use crate::camera::OrbitCamera;
     use crate::controller::MeshData;
     use crate::scene::request_device;
-    use crate::{EdgeVertex, Vertex};
+    use crate::{EdgeVertex, Vertex, NO_COLOR};
 
     /// Build a device, render a single +Z-facing quad (face id 0), and confirm
     /// the picker resolves the center pixel to that face — the GPU pick path.
@@ -354,6 +354,7 @@ mod tests {
             position: [x, y, 0.0],
             normal: [0.0, 0.0, 1.0],
             face_id: 0,
+            color: NO_COLOR,
         };
         let mesh = MeshData {
             vertices: vec![v(-10.0, -10.0), v(10.0, -10.0), v(10.0, 10.0), v(-10.0, 10.0)],
@@ -379,6 +380,7 @@ mod tests {
             position: [x, y, 0.0],
             normal: [0.0, 0.0, 1.0],
             face_id: 0,
+            color: NO_COLOR,
         };
         let mesh = MeshData {
             vertices: vec![v(-10.0, -10.0), v(10.0, -10.0), v(10.0, 10.0), v(-10.0, 10.0)],
@@ -406,6 +408,7 @@ mod tests {
             position: [x, y, 0.0],
             normal: [0.0, 0.0, 1.0],
             face_id: 0,
+            color: NO_COLOR,
         };
         let mesh = MeshData {
             vertices: vec![v(-10.0, -10.0), v(10.0, -10.0), v(10.0, 10.0), v(-10.0, 10.0)],
