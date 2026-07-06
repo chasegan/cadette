@@ -175,6 +175,9 @@ struct Modeler {
     /// World-space AABB `(min, max)` of each visible body (aligned with
     /// `ui.visible`) — drives the resize grips' placement and extents.
     body_bounds: Vec<([f64; 3], [f64; 3])>,
+    /// Memoized OCCT volumes by visible-body id, so the selection read-out
+    /// doesn't call GProp every frame. Cleared whenever geometry regenerates.
+    volume_cache: HashMap<FeatureId, f64>,
     /// World-space anchor point for each selected edge (keyed by its global pick
     /// id), captured at click time so each edge in a multi-selection keeps its
     /// own durable fillet anchor.
@@ -232,6 +235,7 @@ impl Modeler {
             edge_ranges: Vec::new(),
             body_centers: Vec::new(),
             body_bounds: Vec::new(),
+            volume_cache: HashMap::new(),
             edge_anchors: HashMap::new(),
             manipulation: None,
             transform: None,
@@ -253,6 +257,49 @@ impl Modeler {
     fn locate_edge(&self, global: u32) -> Option<(usize, u32)> {
         let i = self.edge_ranges.iter().rposition(|&start| start <= global)?;
         Some((i, global - self.edge_ranges[i]))
+    }
+
+    /// A one-line measurement of the current selection for the status bar: the
+    /// bounding-box W×H×D (and volume) of the single body behind a selected face
+    /// or a body picked in the Build Graph. `None` if the selection isn't a
+    /// single body. Volume is memoized so this stays cheap per frame.
+    fn selection_measurement(&mut self) -> Option<String> {
+        // Resolve a single target body index from the selection.
+        let idx = match self.selection.selected() {
+            [Pick::Face(g)] => self.locate_face(*g).map(|(i, _)| i)?,
+            _ => {
+                // Nothing picked in the viewport — fall back to a body selected in
+                // the Build Graph (if it's currently visible).
+                let sel = self.ui.selected?;
+                self.ui.visible.iter().position(|&f| f == sel)?
+            }
+        };
+        let (min, max) = self.body_bounds.get(idx).copied()?;
+        let (w, h, d) = (max[0] - min[0], max[1] - min[1], max[2] - min[2]);
+        // Ignore a truly empty body (a sketch's flat face still has useful W×H).
+        if w.max(h).max(d) < 1e-6 {
+            return None;
+        }
+        let mut s = format!("{}  {w:.2} × {h:.2} × {d:.2} mm", phi::RULER);
+        // Volume, only for real solids (a sketch face encloses none).
+        if let Some(&id) = self.ui.visible.get(idx) {
+            let vol = match self.volume_cache.get(&id) {
+                Some(&v) => Some(v),
+                None => {
+                    let v = self.bodies.get(idx).and_then(|b| b.volume().ok());
+                    if let Some(v) = v {
+                        self.volume_cache.insert(id, v);
+                    }
+                    v
+                }
+            };
+            if let Some(v) = vol {
+                if v > 1e-6 {
+                    s.push_str(&format!("     vol {v:.0} mm³"));
+                }
+            }
+        }
+        Some(s)
     }
 
     /// The body feature id behind the current viewport selection, if any.
@@ -718,12 +765,24 @@ impl Controller for Modeler {
             changed |= self.extrude_sketch(source, view.eye());
         }
 
-        // --- Status line (export result, etc.) at the bottom of the viewport ---
-        if let Some(status) = &self.status {
+        // --- Status line at the bottom: a live measurement of the selection on
+        // the left, plus any transient status (export result, etc.) on the right.
+        let measurement = self.selection_measurement();
+        if measurement.is_some() || self.status.is_some() {
             #[allow(deprecated)]
             egui::Panel::bottom("status_bar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(status);
+                    if let Some(m) = &measurement {
+                        ui.monospace(m).on_hover_text(
+                            "Bounding-box width × height × depth (and volume) of the selection",
+                        );
+                    }
+                    if let Some(status) = &self.status {
+                        if measurement.is_some() {
+                            ui.separator();
+                        }
+                        ui.label(status);
+                    }
                 });
             });
         }
@@ -806,6 +865,7 @@ impl Controller for Modeler {
             }
         }
         self.bodies = bodies;
+        self.volume_cache.clear(); // geometry changed — stale volumes
         mesh
     }
 
@@ -1574,6 +1634,7 @@ mod tests {
             edge_ranges: Vec::new(),
             body_centers: Vec::new(),
             body_bounds: Vec::new(),
+            volume_cache: HashMap::new(),
             edge_anchors: HashMap::new(),
             manipulation: None,
             transform: None,
@@ -2353,6 +2414,19 @@ mod tests {
     }
 
     #[test]
+    fn selection_measurement_reports_bbox_and_volume() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("meas");
+        m.doc
+            .add("Box", FeatureKind::Box { size: DVec3::new(10.0, 20.0, 30.0) });
+        let _ = m.mesh();
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        let s = m.selection_measurement().expect("a body is selected");
+        assert!(s.contains("10.00 × 20.00 × 30.00"), "bbox W×H×D: {s}");
+        assert!(s.contains("6000") && s.contains("mm³"), "volume 6000 mm³: {s}");
+    }
+
+    #[test]
     fn aligning_bodies_shares_a_bounding_box_edge() {
         let mut m = Modeler::new();
         m.doc = Document::new("align");
@@ -3096,6 +3170,7 @@ mod tests {
             edge_ranges: Vec::new(),
             body_centers: Vec::new(),
             body_bounds: Vec::new(),
+            volume_cache: HashMap::new(),
             edge_anchors: HashMap::new(),
             manipulation: None,
             transform: None,
