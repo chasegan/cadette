@@ -307,10 +307,24 @@ fn command_bar(
             if icon_btn(ui, icon::SPHERE, "Sphere", true) {
                 add(state, "Sphere", FeatureKind::Sphere { radius: 10.0 });
             }
-            if icon_btn(ui, icon::PENCIL_SIMPLE, "Sketch a 2D profile on the chosen plane", true) {
-                resp.start_sketch = Some(state.sketch_plane);
-            }
-            plane_picker(ui, &mut state.sketch_plane);
+            // Sketch: the plane is chosen at the moment of starting (a menu), not
+            // from a persistent global picker — each sketch names its own plane.
+            ui.menu_button(icon::PENCIL_SIMPLE, |ui| {
+                ui.label("Sketch on plane:");
+                for (p, item) in [
+                    (SketchPlane::Xy, "XY — top"),
+                    (SketchPlane::Xz, "XZ — front"),
+                    (SketchPlane::Yz, "YZ — side"),
+                ] {
+                    if ui.button(item).clicked() {
+                        resp.start_sketch = Some(p);
+                        state.sketch_plane = p; // remember as the default elsewhere
+                        ui.close_menu();
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Sketch a 2D profile — choose the plane");
             ui.separator();
 
             let extrude_ok = extrude_source.is_some();
@@ -746,19 +760,6 @@ fn drag_ranged(
 }
 
 /// Compact origin-plane chooser (no label) for the Sketch toolbar button.
-fn plane_picker(ui: &mut Ui, plane: &mut SketchPlane) {
-    egui::ComboBox::from_id_salt("sketch-plane")
-        .selected_text(plane.label())
-        .width(46.0)
-        .show_ui(ui, |ui| {
-            for option in [SketchPlane::Xy, SketchPlane::Xz, SketchPlane::Yz] {
-                ui.selectable_value(plane, option, option.label());
-            }
-        })
-        .response
-        .on_hover_text("Plane the next sketch starts on");
-}
-
 fn plane_combo(ui: &mut Ui, plane: &mut SketchPlane) -> bool {
     let mut changed = false;
     egui::ComboBox::from_label("Plane")

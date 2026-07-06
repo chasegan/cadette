@@ -450,8 +450,10 @@ impl Controller for Modeler {
             let n_bodies = if multi_face { self.selected_bodies().len() } else { 0 };
             let can_revolve = edges && self.revolvable_profile().is_some();
 
-            let (mut sketch, mut edit, mut sweep, mut fillet_face, mut mirror, mut ungroup) =
-                (false, false, false, false, false, false);
+            let (mut sketch, mut edit, mut fillet_face, mut mirror, mut ungroup) =
+                (false, false, false, false, false);
+            // A sweep request carries the path plane chosen at that moment.
+            let mut sweep_plane_choice: Option<SketchPlane> = None;
             let mut flip: Option<Axis3> = None;
             let (mut group, mut fillet_edges, mut revolve) = (false, false, false);
             let mut extrude_face = false;
@@ -482,7 +484,22 @@ impl Controller for Modeler {
                             // The face's body is a sketch → offer to pull it into a
                             // solid right here (also available on the top toolbar).
                             extrude_face = action_btn(ui, phi::ARROW_LINE_UP, "Extrude", "Pull this sketch into a solid (toward you)", true);
-                            sweep = action_btn(ui, phi::PATH, "Sweep", "Sweep this profile along a path you draw (toolbar's sketch plane)", true);
+                            // Sweep: choose the path's plane at this moment (menu).
+                            ui.menu_button(format!("{}  Sweep", phi::PATH), |ui| {
+                                ui.label("Path plane:");
+                                for (p, item) in [
+                                    (SketchPlane::Xy, "XY — top"),
+                                    (SketchPlane::Xz, "XZ — front"),
+                                    (SketchPlane::Yz, "YZ — side"),
+                                ] {
+                                    if ui.button(item).clicked() {
+                                        sweep_plane_choice = Some(p);
+                                        ui.close_menu();
+                                    }
+                                }
+                            })
+                            .response
+                            .on_hover_text("Sweep this profile along a path you draw — choose the path's plane");
                         }
                         fillet_face = action_btn(ui, phi::FRAME_CORNERS, "Fillet face edges", "Round all edges bounding this face", true);
                         if can_mirror {
@@ -594,9 +611,9 @@ impl Controller for Modeler {
                     changed |= self.extrude_sketch(id, view.eye());
                 }
             }
-            if sweep {
+            if let Some(plane) = sweep_plane_choice {
                 if let Some(p) = sweep_profile_id {
-                    self.start_sweep_path(p, self.ui.sketch_plane);
+                    self.start_sweep_path(p, plane);
                 }
             }
             if fillet_face {
