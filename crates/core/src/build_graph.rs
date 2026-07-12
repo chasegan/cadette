@@ -203,6 +203,39 @@ mod tests {
     }
 
     #[test]
+    fn a_tool_carving_two_bodies_flows_until_its_last_cut() {
+        // One carver A subtracted from B and then C: A's lane must stay open
+        // through the first Subtract (the renderer forks it there) and close
+        // only after the second — no gap, no floating stub.
+        let mut doc = Document::new("fork");
+        let a = doc.add("A", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let b = doc.add("B", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let c = doc.add("C", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let s1 = doc.add(
+            "S1",
+            FeatureKind::Boolean { op: BooleanOp::Subtract, target: b, tool: a },
+        );
+        let s2 = doc.add(
+            "S2",
+            FeatureKind::Boolean { op: BooleanOp::Subtract, target: c, tool: a },
+        );
+
+        let g = doc.history.build_graph();
+        let row = |id| g.rows.iter().find(|r| r.id == id).unwrap();
+        let la = row(a).lane;
+        assert!(row(s1).input_lanes.contains(&la), "A feeds the first cut");
+        assert!(
+            row(s1).open.contains(&la),
+            "A's lane still flows below the first cut (the fork's through-branch)"
+        );
+        assert!(row(s2).input_lanes.contains(&la), "A feeds the second cut");
+        assert!(
+            !row(s2).open.contains(&la),
+            "A's lane terminates at its last consumer"
+        );
+    }
+
+    #[test]
     fn independent_chains_keep_separate_lanes() {
         // Two unrelated bodies (a swept part, then a new box) must not share a
         // line: the first chain's tip is a live body, so its lane stays

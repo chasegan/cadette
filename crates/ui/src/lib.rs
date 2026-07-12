@@ -527,11 +527,18 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
                 let c = lane_col(l);
                 egui::Stroke::new(1.5, if dim { c.gamma_multiply(0.4) } else { c })
             };
-            // Top half: each incoming lane connects to the node, others pass down.
+            // Top half: each incoming lane connects to the node, others pass
+            // down. An input lane that STAYS OPEN below (a body feeding more
+            // consumers further down, e.g. one carver subtracted from several
+            // bodies) FORKS: one branch dives into the node, one continues
+            // straight down its own column — not either/or, which left a gap
+            // and a floating stub where the body's line should flow through.
             for &l in &gr.top_open {
-                if l == gr.lane || gr.input_lanes.contains(&l) {
+                let feeds_node = l == gr.lane || gr.input_lanes.contains(&l);
+                if feeds_node {
                     p.line_segment([egui::pos2(lane_x(l), top), egui::pos2(node_x, mid)], stroke(l));
-                } else {
+                }
+                if !feeds_node || (l != gr.lane && gr.open.contains(&l)) {
                     p.line_segment([egui::pos2(lane_x(l), top), egui::pos2(lane_x(l), mid)], stroke(l));
                 }
             }
