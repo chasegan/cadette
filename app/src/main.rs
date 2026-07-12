@@ -886,6 +886,24 @@ impl Controller for Modeler {
         if let Some(op) = resp.boolean {
             changed |= self.apply_boolean(op);
         }
+        if resp.tidy {
+            let before = self.doc.clone();
+            let merged = self.doc.tidy();
+            if merged > 0 {
+                self.record_undo(before);
+                // The merged-away Moves may include the panel selection.
+                if self.ui.selected.is_some_and(|id| self.doc.history.get(id).is_none()) {
+                    self.ui.selected = None;
+                }
+                changed = true;
+                self.status = Some(format!(
+                    "Tidied: merged {merged} stacked move{}",
+                    if merged == 1 { "" } else { "s" }
+                ));
+            } else {
+                self.status = Some("History already tidy".into());
+            }
+        }
         if let Some(source) = resp.extrude {
             changed |= self.extrude_sketch(source, view.eye());
         }
@@ -2725,6 +2743,32 @@ mod tests {
         assert!(s.contains("10.00 mm"), "re-pinned distance: {s}");
         m.tape = None;
         assert!(m.tape_measurement().is_none(), "read-out gone once exited");
+    }
+
+    #[test]
+    fn tidy_merges_an_old_projects_stacked_moves_without_moving_anything() {
+        // Mimic a pre-coalescing project: a box under two stacked Moves.
+        let mut m = Modeler::new();
+        m.doc = Document::new("old");
+        let b = m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let t1 = m
+            .doc
+            .add("Move 1", FeatureKind::Translate { source: b, offset: DVec3::new(5.0, 0.0, 0.0) });
+        m.doc
+            .add("Move 2", FeatureKind::Translate { source: t1, offset: DVec3::new(3.0, 4.0, 0.0) });
+        let (min0, max0) = bounds(&m.mesh());
+        let n0 = m.doc.history.len();
+
+        assert_eq!(m.doc.tidy(), 1, "one stacked Move merged away");
+        assert_eq!(m.doc.history.len(), n0 - 1);
+        let (min1, max1) = bounds(&m.mesh());
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        for k in 0..3 {
+            assert!(
+                (min0[k] - min1[k]).abs() < 1e-4 && (max0[k] - max1[k]).abs() < 1e-4,
+                "geometry unchanged: {min0:?}..{max0:?} vs {min1:?}..{max1:?}"
+            );
+        }
     }
 
     #[test]

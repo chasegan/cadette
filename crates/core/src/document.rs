@@ -84,6 +84,77 @@ impl Document {
         Some(new_tip)
     }
 
+    /// Fold every chain of stacked `Translate`s — each consumed only by the
+    /// next — into one feature carrying the summed offset. Heals histories from
+    /// before translate-coalescing, when every drag/paste/align stacked another
+    /// Move. Geometry is unchanged (translation composition is exact). Pairs
+    /// involving a suppressed feature, or straddling the rollback bar, are left
+    /// alone — merging those would change what the current view shows. Returns
+    /// the number of features merged away.
+    pub fn tidy(&mut self) -> usize {
+        let mut merged = 0;
+        loop {
+            // One candidate per pass: the scan's borrow must end before the
+            // merge mutates the history. Each merge shrinks the feature list,
+            // so the loop terminates.
+            let mut candidate = None;
+            for f in self.history.features() {
+                // `f` is the outer Translate, `inner` the Translate it consumes.
+                let FeatureKind::Translate { source: inner_id, .. } = f.kind else {
+                    continue;
+                };
+                let Some(inner) = self.history.get(inner_id) else {
+                    continue;
+                };
+                let FeatureKind::Translate { source: base, offset: inner_off } = inner.kind
+                else {
+                    continue;
+                };
+                if f.suppressed || inner.suppressed {
+                    continue;
+                }
+                // The inner Translate must feed ONLY the outer one.
+                let consumers = self
+                    .history
+                    .features()
+                    .iter()
+                    .filter(|c| c.kind.inputs().contains(&inner_id))
+                    .count();
+                if consumers != 1 {
+                    continue;
+                }
+                // Both on the same side of the rollback bar.
+                let (Some(oi), Some(ii)) =
+                    (self.history.index_of(f.id), self.history.index_of(inner_id))
+                else {
+                    continue;
+                };
+                if (oi < self.rollback) != (ii < self.rollback) {
+                    continue;
+                }
+                candidate = Some((f.id, inner_id, ii, base, inner_off));
+                break;
+            }
+            let Some((outer_id, inner_id, inner_index, base, inner_off)) = candidate else {
+                break;
+            };
+            // Fold the inner offset into the outer feature, rewire it to the
+            // inner's own source, then drop the (now unconsumed) inner feature.
+            if let Some(FeatureKind::Translate { source, offset }) =
+                self.history.get_mut(outer_id).map(|f| &mut f.kind)
+            {
+                *source = base;
+                *offset += inner_off;
+            }
+            self.history.remove(inner_id);
+            if inner_index < self.rollback {
+                self.rollback -= 1;
+            }
+            merged += 1;
+        }
+        merged
+    }
+
     /// The active features: those before the rollback bar.
     pub fn active_features(&self) -> &[Feature] {
         let n = self.rollback.min(self.history.len());
@@ -143,6 +214,66 @@ mod tests {
 
     fn translate(source: FeatureId) -> FeatureKind {
         FeatureKind::Translate { source, offset: DVec3::X }
+    }
+
+    fn translate_by(source: FeatureId, offset: DVec3) -> FeatureKind {
+        FeatureKind::Translate { source, offset }
+    }
+
+    #[test]
+    fn tidy_folds_stacked_translates_keeping_the_total_offset() {
+        let mut doc = Document::new("t");
+        let a = doc.add("A", boxx());
+        let t1 = doc.add("Move 1", translate_by(a, DVec3::new(5.0, 0.0, 0.0)));
+        let t2 = doc.add("Move 2", translate_by(t1, DVec3::new(3.0, 0.0, 0.0)));
+        let t3 = doc.add("Move 3", translate_by(t2, DVec3::new(0.0, 2.0, 0.0)));
+
+        assert_eq!(doc.tidy(), 2, "two inner Moves merged away");
+        assert_eq!(doc.history.len(), 2, "Box + one Move remain");
+        assert!(doc.is_at_tip(), "bar followed the removals");
+        // The surviving Move consumes the box directly with the summed offset.
+        match &doc.history.get(t3).expect("outer Move survives").kind {
+            FeatureKind::Translate { source, offset } => {
+                assert_eq!(*source, a);
+                assert_eq!(*offset, DVec3::new(8.0, 2.0, 0.0));
+            }
+            k => panic!("expected a Translate, got {k:?}"),
+        }
+        // Idempotent: a second tidy finds nothing.
+        assert_eq!(doc.tidy(), 0);
+    }
+
+    #[test]
+    fn tidy_skips_a_translate_with_a_second_consumer() {
+        let mut doc = Document::new("t");
+        let a = doc.add("A", boxx());
+        let t1 = doc.add("Move 1", translate_by(a, DVec3::X));
+        let _t2 = doc.add("Move 2", translate_by(t1, DVec3::X));
+        // A second consumer of t1 (a boolean tool) pins it in place.
+        let b = doc.add("B", boxx());
+        doc.add(
+            "Cut",
+            FeatureKind::Boolean { op: crate::BooleanOp::Subtract, target: b, tool: t1 },
+        );
+        assert_eq!(doc.tidy(), 0, "a shared Move must not be merged");
+        assert_eq!(doc.history.len(), 5);
+    }
+
+    #[test]
+    fn tidy_skips_pairs_straddling_the_rollback_bar_or_suppressed() {
+        let mut doc = Document::new("t");
+        let a = doc.add("A", boxx());
+        let t1 = doc.add("Move 1", translate_by(a, DVec3::X));
+        let t2 = doc.add("Move 2", translate_by(t1, DVec3::X));
+        // Bar between the two Moves: what's shown must not change.
+        doc.set_rollback(2);
+        assert_eq!(doc.tidy(), 0, "straddling pair left alone");
+
+        doc.rollback_to_tip();
+        doc.history.set_suppressed(t2, true);
+        assert_eq!(doc.tidy(), 0, "suppressed pair left alone");
+        doc.history.set_suppressed(t2, false);
+        assert_eq!(doc.tidy(), 1, "same pair merges once eligible");
     }
 
     #[test]

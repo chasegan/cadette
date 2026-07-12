@@ -116,6 +116,9 @@ pub struct HistoryResponse {
     pub theme_changed: bool,
     /// The tape-measure button was clicked — the host toggles the tool.
     pub tape_toggle: bool,
+    /// "Tidy history" was clicked — the host merges stacked Translates (one
+    /// undo entry) and reports the result in the status bar.
+    pub tidy: bool,
 }
 
 impl HistoryState {
@@ -212,6 +215,16 @@ pub fn history_panel(
                     .on_hover_text("Each body is a lane; lanes merge at a boolean or group.");
                 // Reorder the SELECTED step (backward-only refs may reject a move).
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(egui::Button::new(icon::BROOM).small())
+                        .on_hover_text(
+                            "Tidy history: merge stacked Moves (from older versions) \
+                             into one per body — geometry is unchanged",
+                        )
+                        .clicked()
+                    {
+                        resp.tidy = true;
+                    }
                     let sel_idx = state
                         .selected
                         .and_then(|id| doc.history.features().iter().position(|f| f.id == id));
