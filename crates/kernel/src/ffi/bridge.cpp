@@ -661,11 +661,14 @@ double edge_length(const Shape& s, uint32_t index) {
   return guard("edge_length", [&] {
     TopTools_IndexedMapOfShape edges;
     TopExp::MapShapes(s.shape, TopAbs_EDGE, edges);
-    if (static_cast<int>(index) + 1 > edges.Extent()) {
+    // A plain int index: the map's 1-based operator() takes Standard_Integer,
+    // and MSVC finds the call ambiguous for an unsigned argument (C3066).
+    const int i = static_cast<int>(index) + 1;
+    if (i < 1 || i > edges.Extent()) {
       throw std::runtime_error("edge_length: no edge at index");
     }
     GProp_GProps props;
-    BRepGProp::LinearProperties(TopoDS::Edge(edges(index + 1)), props);
+    BRepGProp::LinearProperties(TopoDS::Edge(edges(i)), props);
     return props.Mass();
   });
 }
