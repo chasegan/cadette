@@ -10,6 +10,8 @@
 use egui::{Pos2, Vec2};
 use glam::{Mat4, Vec3, Vec4};
 
+use crate::camera::{CameraPose, OrbitCamera};
+
 /// A snapshot of the camera for one frame's UI.
 pub struct ViewContext {
     view_proj: Mat4,
@@ -18,21 +20,32 @@ pub struct ViewContext {
     size: Vec2,
     /// World-space camera position.
     eye: Vec3,
+    /// The camera's orbit parameters this frame (for persistence).
+    pose: CameraPose,
 }
 
 impl ViewContext {
-    pub(crate) fn new(view_proj: Mat4, size: Vec2, eye: Vec3) -> Self {
+    /// Snapshot `camera` for a viewport of `size` egui points (the aspect
+    /// ratio comes from the size).
+    pub(crate) fn new(camera: &OrbitCamera, size: Vec2) -> Self {
+        let view_proj = camera.view_proj(size.x / size.y.max(1e-3));
         Self {
             view_proj,
             inv_view_proj: view_proj.inverse(),
             size,
-            eye,
+            eye: camera.eye(),
+            pose: camera.pose(),
         }
     }
 
     /// World-space camera position — e.g. to extrude toward the viewer.
     pub fn eye(&self) -> [f64; 3] {
         [self.eye.x as f64, self.eye.y as f64, self.eye.z as f64]
+    }
+
+    /// The camera's orbit parameters this frame — what a project save persists.
+    pub fn camera_pose(&self) -> CameraPose {
+        self.pose
     }
 
     /// Project a world point to a screen position (egui points), or `None` if it
@@ -122,7 +135,7 @@ mod tests {
         // back onto the same plane coordinates — the invariant the interactive
         // sketcher relies on for both drawing and picking.
         let cam = OrbitCamera::framing(Vec3::ZERO, 50.0);
-        let view = ViewContext::new(cam.view_proj(1280.0 / 820.0), Vec2::new(1280.0, 820.0), cam.eye());
+        let view = ViewContext::new(&cam, Vec2::new(1280.0, 820.0));
 
         let (origin, x_dir, y_dir, normal) =
             ([0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]);

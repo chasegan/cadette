@@ -21,7 +21,37 @@ pub struct OrbitCamera {
     pub zfar: f32,
 }
 
+/// The orbit parameters that define a view — the persistable part of the
+/// camera (projection params like fov stay app-defined). Saved into `.cdt`
+/// projects so reopening one restores where you were looking.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CameraPose {
+    pub target: [f32; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub distance: f32,
+}
+
 impl OrbitCamera {
+    /// The current orbit parameters, for persistence.
+    pub fn pose(&self) -> CameraPose {
+        CameraPose {
+            target: self.target.to_array(),
+            yaw: self.yaw,
+            pitch: self.pitch,
+            distance: self.distance,
+        }
+    }
+
+    /// Restore a saved pose, keeping the projection parameters and clamping
+    /// pitch/distance so a hand-edited file can't produce a degenerate view.
+    pub fn set_pose(&mut self, p: CameraPose) {
+        self.target = Vec3::from_array(p.target);
+        self.yaw = p.yaw;
+        self.pitch = p.pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        self.distance = p.distance.max(1e-3);
+    }
+
     /// Frame a model given its bounding sphere (`center`, `radius`) from a
     /// pleasant three-quarter view.
     pub fn framing(center: Vec3, radius: f32) -> Self {

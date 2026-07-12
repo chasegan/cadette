@@ -3,6 +3,7 @@
 
 use cdt_core::{Document, RegenCache};
 use cdt_kernel::Solid;
+use cdt_render::CameraPose;
 
 use crate::Modeler;
 
@@ -10,6 +11,40 @@ use crate::Modeler;
 const EXPORT_DEFLECTION_MM: f64 = 0.05;
 /// Version stamped into `.cdt` project files (a zip holding `document.json`).
 const PROJECT_FORMAT_VERSION: u64 = 1;
+
+/// The `view.json` zip entry: viewport state that travels with the project —
+/// camera pose + grid settings. Deliberately SEPARATE from `document.json` so
+/// the model document (and its dirty/undo tracking) stays pure: orbiting the
+/// camera must never mark the file unsaved. Read leniently — an absent or
+/// malformed entry never fails a load (pre-view files have none), and old
+/// builds simply ignore the extra entry.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ViewFile {
+    #[serde(default)]
+    camera: Option<CameraJson>,
+    #[serde(default)]
+    grid: Option<GridJson>,
+}
+
+/// Serialized form of [`CameraPose`] (kept here so the render crate stays
+/// serde-free).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CameraJson {
+    target: [f32; 3],
+    yaw: f32,
+    pitch: f32,
+    distance: f32,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct GridJson {
+    spacing: f64,
+    extent: f64,
+    show_xy: bool,
+    show_xz: bool,
+    show_yz: bool,
+    snap: bool,
+}
 
 impl Modeler {
     /// Combine the visible bodies into one shape (a compound) for export.
@@ -63,6 +98,27 @@ impl Modeler {
         });
         let bytes = serde_json::to_vec_pretty(&wrapped).map_err(|e| e.to_string())?;
         zip.write_all(&bytes).map_err(|e| e.to_string())?;
+
+        // The viewport state rides along in its own entry (see [`ViewFile`]).
+        let view = ViewFile {
+            camera: self.camera_pose.map(|p| CameraJson {
+                target: p.target,
+                yaw: p.yaw,
+                pitch: p.pitch,
+                distance: p.distance,
+            }),
+            grid: Some(GridJson {
+                spacing: self.ui.grid_spacing,
+                extent: self.ui.grid_extent,
+                show_xy: self.ui.show_grid,
+                show_xz: self.ui.show_xz,
+                show_yz: self.ui.show_yz,
+                snap: self.ui.snap_to_grid,
+            }),
+        };
+        zip.start_file("view.json", opts).map_err(|e| e.to_string())?;
+        let bytes = serde_json::to_vec_pretty(&view).map_err(|e| e.to_string())?;
+        zip.write_all(&bytes).map_err(|e| e.to_string())?;
         zip.finish().map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -89,8 +145,38 @@ impl Modeler {
         // Repair is safe, so a repaired document just loads.
         document.sanitize();
 
+        // Viewport state, if the file carries it (lenient: never fails a load).
+        let view: Option<ViewFile> = archive
+            .by_name("view.json")
+            .ok()
+            .and_then(|e| serde_json::from_reader(e).ok());
+
         // Swap in the new document and drop all state tied to the old one.
         self.reset_to(document);
+        if let Some(view) = view {
+            if let Some(g) = view.grid {
+                // Take only sane finite values (matching the panel's ranges) so
+                // a hand-edited file can't wedge the grid controls.
+                if g.spacing.is_finite() && (0.05..=1000.0).contains(&g.spacing) {
+                    self.ui.grid_spacing = g.spacing;
+                }
+                if g.extent.is_finite() && (10.0..=5000.0).contains(&g.extent) {
+                    self.ui.grid_extent = g.extent;
+                }
+                self.ui.show_grid = g.show_xy;
+                self.ui.show_xz = g.show_xz;
+                self.ui.show_yz = g.show_yz;
+                self.ui.snap_to_grid = g.snap;
+            }
+            // Hand the saved camera to the viewport (applied next frame;
+            // set_pose clamps, so a hand-edited pose can't go degenerate).
+            self.camera_request = view.camera.map(|c| CameraPose {
+                target: c.target,
+                yaw: c.yaw,
+                pitch: c.pitch,
+                distance: c.distance,
+            });
+        }
         Ok(())
     }
 

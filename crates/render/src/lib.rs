@@ -21,7 +21,7 @@ mod window;
 // Re-export egui so `cdt-ui` and the app share exactly this version.
 pub use egui;
 
-pub use camera::OrbitCamera;
+pub use camera::{CameraPose, OrbitCamera};
 pub use controller::{
     Axis3, Controller, Gizmo, GizmoHandle, GridSpec, Highlights, MeshData, Pick, Plane3,
     ResizeBox, TransformDelta,

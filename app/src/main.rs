@@ -20,8 +20,8 @@ use cdt_kernel::{KernelBackend, Solid};
 use cdt_render::egui;
 use egui_phosphor::regular as phi;
 use cdt_render::{
-    Axis3, Controller, Gizmo, GizmoHandle, Highlights, MeshData, Pick, ResizeBox, TransformDelta,
-    ViewContext, ViewportTheme,
+    Axis3, CameraPose, Controller, Gizmo, GizmoHandle, Highlights, MeshData, Pick, ResizeBox,
+    TransformDelta, ViewContext, ViewportTheme,
 };
 use cdt_ui::{history_panel, HistoryState};
 
@@ -194,6 +194,12 @@ struct Modeler {
     edge_anchors: HashMap<u32, DVec3>,
     /// Tape-measure mode, when engaged (toolbar toggle / Esc to exit).
     tape: Option<TapeState>,
+    /// The camera pose seen this frame (from `ViewContext`), captured so a
+    /// project save can persist the view into `view.json`.
+    camera_pose: Option<CameraPose>,
+    /// A pose for the viewport to apply (a loaded project's saved view);
+    /// drained one-shot by `requested_camera`.
+    camera_request: Option<CameraPose>,
     /// Active push/pull drag, if any.
     manipulation: Option<Manipulation>,
     /// Active gizmo move drag, if any.
@@ -250,6 +256,8 @@ impl Modeler {
             volume_cache: HashMap::new(),
             edge_anchors: HashMap::new(),
             tape: None,
+            camera_pose: None,
+            camera_request: None,
             manipulation: None,
             transform: None,
             resize: None,
@@ -502,6 +510,8 @@ impl Controller for Modeler {
         // The 3D viewport renders behind a transparent CentralPanel, so this
         // never touches the scene.
         ctx.set_visuals(self.ui.theme.visuals());
+        // Keep the latest camera pose at hand so a Save can persist the view.
+        self.camera_pose = Some(view.camera_pose());
         let mut changed = false;
         let mut sketch_actions: Vec<SketchAction> = Vec::new();
 
@@ -1076,6 +1086,10 @@ impl Controller for Modeler {
             tape.hover = point.map(DVec3::from_array);
         }
         self.selection.hover(pick);
+    }
+
+    fn requested_camera(&mut self) -> Option<CameraPose> {
+        self.camera_request.take()
     }
 
     fn wants_picking(&self) -> bool {
@@ -1851,6 +1865,8 @@ mod tests {
             volume_cache: HashMap::new(),
             edge_anchors: HashMap::new(),
             tape: None,
+            camera_pose: None,
+            camera_request: None,
             manipulation: None,
             transform: None,
             resize: None,
@@ -3593,6 +3609,51 @@ mod tests {
     }
 
     #[test]
+    fn view_state_round_trips_through_the_project_file() {
+        let path = std::env::temp_dir().join("cdt-view-roundtrip-test.cdt");
+        let path = path.to_str().unwrap();
+        let mut m = Modeler::new();
+        m.ui.grid_spacing = 2.5;
+        m.ui.grid_extent = 300.0;
+        m.ui.show_xz = true;
+        m.ui.snap_to_grid = false;
+        let pose = CameraPose { target: [1.0, 2.0, 3.0], yaw: 0.5, pitch: -0.25, distance: 77.0 };
+        m.camera_pose = Some(pose);
+        m.save_project_to(path).unwrap();
+
+        let mut m2 = Modeler::new();
+        m2.load_project_from(path).unwrap();
+        assert_eq!(m2.ui.grid_spacing, 2.5);
+        assert_eq!(m2.ui.grid_extent, 300.0);
+        assert!(m2.ui.show_xz && !m2.ui.snap_to_grid, "grid toggles restored");
+        assert_eq!(m2.requested_camera(), Some(pose), "saved camera handed to the viewport");
+        assert_eq!(m2.requested_camera(), None, "the request is one-shot");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_project_without_view_state_still_loads() {
+        // Mimic a pre-view .cdt: a zip holding only document.json.
+        use std::io::Write;
+        let path = std::env::temp_dir().join("cdt-no-view-test.cdt");
+        let m = Modeler::new();
+        let file = std::fs::File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        zip.start_file("document.json", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        let wrapped = serde_json::json!({ "format_version": 1u64, "document": &m.doc });
+        zip.write_all(&serde_json::to_vec(&wrapped).unwrap()).unwrap();
+        zip.finish().unwrap();
+
+        let mut m2 = Modeler::new();
+        let (spacing, extent) = (m2.ui.grid_spacing, m2.ui.grid_extent);
+        m2.load_project_from(path.to_str().unwrap()).unwrap();
+        assert_eq!(m2.requested_camera(), None, "no saved view: camera untouched");
+        assert_eq!((m2.ui.grid_spacing, m2.ui.grid_extent), (spacing, extent), "grid defaults kept");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn undo_and_redo_restore_document_state() {
         let mut m = Modeler::new();
         let n0 = m.doc.history.len();
@@ -3678,6 +3739,8 @@ mod tests {
             volume_cache: HashMap::new(),
             edge_anchors: HashMap::new(),
             tape: None,
+            camera_pose: None,
+            camera_request: None,
             manipulation: None,
             transform: None,
             resize: None,

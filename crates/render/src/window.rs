@@ -680,12 +680,17 @@ impl<C: Controller> WindowApp<C> {
             state.config.width as f32 / ppp,
             state.config.height as f32 / ppp,
         );
-        let aspect = state.config.width as f32 / state.config.height.max(1) as f32;
-        let view = ViewContext::new(self.camera.view_proj(aspect), size, self.camera.eye());
+        let view = ViewContext::new(&self.camera, size);
 
         let raw_input = state.egui_state.take_egui_input(&state.window);
         state.egui_ctx.begin_pass(raw_input);
         let changed = self.controller.ui(&state.egui_ctx, &view);
+        // Apply a view the controller wants restored (a just-loaded project's
+        // saved camera) — takes effect from the next frame's ViewContext.
+        if let Some(pose) = self.controller.requested_camera() {
+            self.camera.set_pose(pose);
+            state.window.request_redraw();
+        }
         // Capture the central viewport rect now that the panels are laid out, for
         // next frame's out-of-pass nav routing in `window_event`.
         #[allow(deprecated)]

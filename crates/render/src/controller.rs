@@ -126,6 +126,13 @@ pub trait Controller {
     fn viewport_theme(&self) -> ViewportTheme {
         ViewportTheme::DARK
     }
+
+    /// A camera pose the controller wants applied — e.g. the view restored
+    /// from a just-loaded project. Polled once per frame after `ui`; returning
+    /// `Some` replaces the camera's orbit parameters. Default: never.
+    fn requested_camera(&mut self) -> Option<crate::camera::CameraPose> {
+        None
+    }
 }
 
 /// The construction-grid configuration: spacing/extent shared by the three
