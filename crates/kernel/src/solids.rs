@@ -227,6 +227,18 @@ impl Solid {
         Ok(ffi::volume(&self.0)?)
     }
 
+    /// Exact area (model units²) of the face at `index` (TopExp order,
+    /// matching tessellation face ids).
+    pub fn face_area(&self, index: u32) -> Result<f64> {
+        Ok(ffi::face_area(&self.0, index)?)
+    }
+
+    /// Exact length (model units) of the edge at `index` (unique-edge order,
+    /// matching tessellation edge ids).
+    pub fn edge_length(&self, index: u32) -> Result<f64> {
+        Ok(ffi::edge_length(&self.0, index)?)
+    }
+
     // --- Edge treatments ----------------------------------------------------
 
     /// Fillet every edge with a constant `radius`. Returns an error if the

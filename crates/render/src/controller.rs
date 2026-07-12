@@ -41,7 +41,9 @@ pub trait Controller {
     /// `additive` is true when ⇧/⌘ is held — add/remove from a multi-selection.
     fn on_pick(&mut self, _pick: Option<Pick>, _point: Option<[f64; 3]>, _additive: bool) {}
     /// The entity currently under the cursor (or `None`), updated as it moves.
-    fn on_hover(&mut self, _pick: Option<Pick>) {}
+    /// The entity (and, when a surface is hit, the world point) under the
+    /// cursor this frame — for pre-highlight and hover-driven read-outs.
+    fn on_hover(&mut self, _pick: Option<Pick>, _point: Option<[f64; 3]>) {}
     /// Whether the viewport should resolve picks right now. (Disabled e.g.
     /// while drawing a sketch, where clicks mean something else.)
     fn wants_picking(&self) -> bool {

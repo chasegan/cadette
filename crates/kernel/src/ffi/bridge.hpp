@@ -81,6 +81,8 @@ std::unique_ptr<Shape> unify(const Shape& s);
 rust::String describe(const Shape& s);
 std::size_t count_faces(const Shape& s);
 double volume(const Shape& s);
+double face_area(const Shape& s, uint32_t index);
+double edge_length(const Shape& s, uint32_t index);
 
 // --- Edge treatments --------------------------------------------------------
 std::unique_ptr<Shape> rotate(const Shape& s, double cx, double cy, double cz,

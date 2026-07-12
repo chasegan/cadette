@@ -54,6 +54,9 @@ pub struct HistoryState {
     pub sketch_plane: SketchPlane,
     /// Whether the About window is open.
     pub about_open: bool,
+    /// Whether the tape-measure tool is engaged (set by the host; the toolbar
+    /// button reflects and toggles it).
+    pub tape_active: bool,
     /// The active look-and-feel (light/dark). The host applies it as egui
     /// visuals each frame and persists it when it changes.
     pub theme: Theme,
@@ -75,6 +78,7 @@ impl Default for HistoryState {
             snap_to_grid: true,
             sketch_plane: SketchPlane::Xy,
             about_open: false,
+            tape_active: false,
             theme: Theme::default(),
         }
     }
@@ -110,6 +114,8 @@ pub struct HistoryResponse {
     /// The theme toggle was clicked — `state.theme` changed and the host should
     /// persist it.
     pub theme_changed: bool,
+    /// The tape-measure button was clicked — the host toggles the tool.
+    pub tape_toggle: bool,
 }
 
 impl HistoryState {
@@ -348,6 +354,20 @@ fn command_bar(
                 if icon_btn(ui, glyph, tip, can_bool) {
                     resp.boolean = Some(op);
                 }
+            }
+            ui.separator();
+            // Tape measure: a mode toggle, so it renders pressed while active.
+            let tape_tip = if state.tape_active {
+                "Tape measure (active) — click a surface to pin, hover to read; Esc or click here to exit"
+            } else {
+                "Tape measure: pin a point on a surface, hover to read the distance"
+            };
+            if ui
+                .selectable_label(state.tape_active, RichText::new(icon::RULER).size(18.0))
+                .on_hover_text(tape_tip)
+                .clicked()
+            {
+                resp.tape_toggle = true;
             }
             resp.changed |= changed;
 

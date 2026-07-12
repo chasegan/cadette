@@ -640,6 +640,36 @@ double volume(const Shape& s) {
   });
 }
 
+// Exact area (model units²) of the face at `index` (TopExp order, matching
+// tessellate's face ids / face_plane) — for the measurement read-out.
+double face_area(const Shape& s, uint32_t index) {
+  return guard("face_area", [&] {
+    uint32_t i = 0;
+    for (TopExp_Explorer ex(s.shape, TopAbs_FACE); ex.More(); ex.Next(), ++i) {
+      if (i != index) continue;
+      GProp_GProps props;
+      BRepGProp::SurfaceProperties(TopoDS::Face(ex.Current()), props);
+      return props.Mass();
+    }
+    throw std::runtime_error("face_area: no face at index");
+  });
+}
+
+// Exact length (model units) of the edge at `index` (unique-edge map order,
+// matching tessellate's edge ids) — for the measurement read-out.
+double edge_length(const Shape& s, uint32_t index) {
+  return guard("edge_length", [&] {
+    TopTools_IndexedMapOfShape edges;
+    TopExp::MapShapes(s.shape, TopAbs_EDGE, edges);
+    if (static_cast<int>(index) + 1 > edges.Extent()) {
+      throw std::runtime_error("edge_length: no edge at index");
+    }
+    GProp_GProps props;
+    BRepGProp::LinearProperties(TopoDS::Edge(edges(index + 1)), props);
+    return props.Mass();
+  });
+}
+
 // --- Edge treatments --------------------------------------------------------
 
 std::unique_ptr<Shape> fillet_all_edges(const Shape& s, double radius) {

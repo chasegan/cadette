@@ -140,6 +140,16 @@ fn build_document() -> Document {
 /// Maximum number of undo snapshots retained.
 const UNDO_LIMIT: usize = 200;
 
+/// Tape-measure mode: the distance from a surface point pinned by a click to
+/// the surface point currently under the cursor, read out live.
+#[derive(Clone, Copy, Default)]
+struct TapeState {
+    /// The pinned start point (first click on a surface; a later click re-pins).
+    pin: Option<DVec3>,
+    /// The surface point under the cursor this frame, if any.
+    hover: Option<DVec3>,
+}
+
 /// Ties the document, the OCCT backend, and the history panel together as a
 /// [`Controller`] the viewport drives.
 struct Modeler {
@@ -182,6 +192,8 @@ struct Modeler {
     /// id), captured at click time so each edge in a multi-selection keeps its
     /// own durable fillet anchor.
     edge_anchors: HashMap<u32, DVec3>,
+    /// Tape-measure mode, when engaged (toolbar toggle / Esc to exit).
+    tape: Option<TapeState>,
     /// Active push/pull drag, if any.
     manipulation: Option<Manipulation>,
     /// Active gizmo move drag, if any.
@@ -237,6 +249,7 @@ impl Modeler {
             body_bounds: Vec::new(),
             volume_cache: HashMap::new(),
             edge_anchors: HashMap::new(),
+            tape: None,
             manipulation: None,
             transform: None,
             resize: None,
@@ -261,17 +274,28 @@ impl Modeler {
 
     /// A one-line measurement of the current selection for the status bar: the
     /// bounding-box W×H×D (and volume) of the single body behind a selected face
-    /// or a body picked in the Build Graph. `None` if the selection isn't a
-    /// single body. Volume is memoized so this stays cheap per frame.
+    /// — plus that face's exact area — or a body picked in the Build Graph; a
+    /// single selected edge shows its exact length instead. `None` if the
+    /// selection isn't a single face/edge/body. Volume is memoized so this
+    /// stays cheap per frame (a single face/edge GProp query already is).
     fn selection_measurement(&mut self) -> Option<String> {
-        // Resolve a single target body index from the selection.
-        let idx = match self.selection.selected() {
-            [Pick::Face(g)] => self.locate_face(*g).map(|(i, _)| i)?,
+        // A single selected edge: its exact length.
+        if let [Pick::Edge(g)] = self.selection.selected() {
+            let (i, local) = self.locate_edge(*g)?;
+            let len = self.bodies.get(i)?.edge_length(local).ok()?;
+            return Some(format!("{}  edge {len:.2} mm", phi::RULER));
+        }
+        // Resolve a single target body index (and picked face) from the selection.
+        let (idx, face) = match self.selection.selected() {
+            [Pick::Face(g)] => {
+                let (i, local) = self.locate_face(*g)?;
+                (i, Some(local))
+            }
             _ => {
                 // Nothing picked in the viewport — fall back to a body selected in
                 // the Build Graph (if it's currently visible).
                 let sel = self.ui.selected?;
-                self.ui.visible.iter().position(|&f| f == sel)?
+                (self.ui.visible.iter().position(|&f| f == sel)?, None)
             }
         };
         let (min, max) = self.body_bounds.get(idx).copied()?;
@@ -299,7 +323,68 @@ impl Modeler {
                 }
             }
         }
+        // The picked face's exact area (not just its bbox footprint).
+        if let Some(local) = face {
+            if let Some(a) = self.bodies.get(idx).and_then(|b| b.face_area(local).ok()) {
+                if a > 1e-9 {
+                    s.push_str(&format!("     face {a:.1} mm²"));
+                }
+            }
+        }
         Some(s)
+    }
+
+    /// The tape-measure read-out: pin→cursor distance with per-axis deltas, or
+    /// a prompt for the next step. `None` when the tool isn't engaged.
+    fn tape_measurement(&self) -> Option<String> {
+        let tape = self.tape.as_ref()?;
+        Some(match (tape.pin, tape.hover) {
+            (Some(a), Some(b)) => {
+                let d = b - a;
+                format!(
+                    "{}  tape {:.2} mm     Δ {:+.2}, {:+.2}, {:+.2}",
+                    phi::RULER,
+                    d.length(),
+                    d.x,
+                    d.y,
+                    d.z
+                )
+            }
+            (Some(_), None) => format!("{}  tape: hover a surface to measure", phi::RULER),
+            _ => format!("{}  tape: click a surface to pin the start point", phi::RULER),
+        })
+    }
+
+    /// Viewport overlay for tape-measure mode: the pinned point, a line to the
+    /// hovered surface point, and the distance at the line's midpoint.
+    fn tape_overlay(&self, ctx: &egui::Context, view: &ViewContext, tape: TapeState) {
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("tape_overlay"),
+        ));
+        // One saturated hue that reads on both themes and matches no axis color.
+        let color = egui::Color32::from_rgb(0xff, 0x9f, 0x1c);
+        let Some(pin) = tape.pin else {
+            return;
+        };
+        let Some(a) = view.project(pin.to_array()) else {
+            return;
+        };
+        painter.circle_filled(a, 4.0, color);
+        let Some(hover) = tape.hover else {
+            return;
+        };
+        let Some(b) = view.project(hover.to_array()) else {
+            return;
+        };
+        painter.line_segment([a, b], egui::Stroke::new(2.0, color));
+        painter.text(
+            egui::pos2((a.x + b.x) * 0.5, (a.y + b.y) * 0.5) + egui::vec2(10.0, -10.0),
+            egui::Align2::LEFT_BOTTOM,
+            format!("{:.2} mm", (hover - pin).length()),
+            egui::FontId::monospace(13.0),
+            color,
+        );
     }
 
     /// The body feature id behind the current viewport selection, if any.
@@ -692,6 +777,13 @@ impl Controller for Modeler {
         if self.ui.grid_spacing < min_spacing {
             self.ui.grid_spacing = min_spacing;
         }
+        // Tape measure: toolbar toggle or Esc while engaged. Not while sketching
+        // (viewport clicks belong to the sketch there).
+        let tape_esc = self.tape.is_some() && ctx.input(|i| i.key_pressed(Key::Escape));
+        if (resp.tape_toggle && self.sketch_session.is_none()) || tape_esc {
+            self.tape = if self.tape.is_some() { None } else { Some(TapeState::default()) };
+            self.ui.tape_active = self.tape.is_some();
+        }
         if resp.theme_changed {
             prefs::save(&Prefs { theme: self.ui.theme });
         }
@@ -798,16 +890,20 @@ impl Controller for Modeler {
             changed |= self.extrude_sketch(source, view.eye());
         }
 
-        // --- Status line at the bottom: a live measurement of the selection on
-        // the left, plus any transient status (export result, etc.) on the right.
-        let measurement = self.selection_measurement();
+        // --- Status line at the bottom: the tape read-out while measuring
+        // (else a live measurement of the selection) on the left, plus any
+        // transient status (export result, etc.) on the right.
+        let measurement = self
+            .tape_measurement()
+            .or_else(|| self.selection_measurement());
         if measurement.is_some() || self.status.is_some() {
             #[allow(deprecated)]
             egui::Panel::bottom("status_bar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     if let Some(m) = &measurement {
                         ui.monospace(m).on_hover_text(
-                            "Bounding-box width × height × depth (and volume) of the selection",
+                            "Bounding-box width × height × depth, volume, and exact \
+                             face area of the selection; a selected edge shows its length",
                         );
                     }
                     if let Some(status) = &self.status {
@@ -818,6 +914,11 @@ impl Controller for Modeler {
                     }
                 });
             });
+        }
+
+        // --- Tape-measure overlay: pin marker, line, and distance label ---
+        if let Some(tape) = self.tape {
+            self.tape_overlay(ctx, view, tape);
         }
 
         // --- Sketch canvas overlay (after the side panel) ---
@@ -919,6 +1020,14 @@ impl Controller for Modeler {
     }
 
     fn on_pick(&mut self, pick: Option<Pick>, point: Option<[f64; 3]>, additive: bool) {
+        // Tape mode swallows clicks: a surface hit pins (or re-pins) the start
+        // point, and the selection is left untouched.
+        if let Some(tape) = &mut self.tape {
+            if let Some(p) = point {
+                tape.pin = Some(DVec3::from_array(p));
+            }
+            return;
+        }
         let face_plane = match pick {
             Some(Pick::Face(global)) => self.face_plane(global),
             _ => None,
@@ -944,7 +1053,10 @@ impl Controller for Modeler {
         self.ui.selected = self.selected_body();
     }
 
-    fn on_hover(&mut self, pick: Option<Pick>) {
+    fn on_hover(&mut self, pick: Option<Pick>, point: Option<[f64; 3]>) {
+        if let Some(tape) = &mut self.tape {
+            tape.hover = point.map(DVec3::from_array);
+        }
         self.selection.hover(pick);
     }
 
@@ -1720,6 +1832,7 @@ mod tests {
             body_bounds: Vec::new(),
             volume_cache: HashMap::new(),
             edge_anchors: HashMap::new(),
+            tape: None,
             manipulation: None,
             transform: None,
             resize: None,
@@ -2562,6 +2675,56 @@ mod tests {
         let s = m.selection_measurement().expect("a body is selected");
         assert!(s.contains("10.00 × 20.00 × 30.00"), "bbox W×H×D: {s}");
         assert!(s.contains("6000") && s.contains("mm³"), "volume 6000 mm³: {s}");
+        // The picked face's exact area: one of the box's 200/300/600 faces.
+        assert!(s.contains("mm²"), "face area shown: {s}");
+        assert!(
+            ["200.0", "300.0", "600.0"].iter().any(|a| s.contains(a)),
+            "a box face area: {s}"
+        );
+    }
+
+    #[test]
+    fn selection_measurement_reports_an_edge_length() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("meas");
+        m.doc
+            .add("Box", FeatureKind::Box { size: DVec3::new(10.0, 20.0, 30.0) });
+        let _ = m.mesh();
+        // Any single box edge measures exactly 10, 20, or 30 mm.
+        m.on_pick(Some(Pick::Edge(0)), Some([0.0, 0.0, 0.0]), false);
+        let s = m.selection_measurement().expect("an edge is selected");
+        assert!(s.contains("edge"), "edge readout: {s}");
+        assert!(
+            ["10.00 mm", "20.00 mm", "30.00 mm"].iter().any(|l| s.contains(l)),
+            "an exact box edge length: {s}"
+        );
+    }
+
+    #[test]
+    fn tape_mode_pins_and_measures_without_touching_the_selection() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("t");
+        m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let _ = m.mesh();
+
+        m.tape = Some(TapeState::default());
+        // A click in tape mode pins the start point instead of selecting.
+        m.on_pick(Some(Pick::Face(0)), Some([0.0, 0.0, 10.0]), false);
+        assert!(m.selection.selected().is_empty(), "tape click doesn't select");
+        assert!(m.tape.unwrap().pin.is_some(), "the click pinned a point");
+
+        // Hovering another surface point reads the exact distance.
+        m.on_hover(Some(Pick::Face(1)), Some([10.0, 0.0, 10.0]));
+        let s = m.tape_measurement().expect("tape engaged");
+        assert!(s.contains("10.00 mm"), "distance: {s}");
+
+        // A second click re-pins; leaving the mode ends the read-out.
+        m.on_pick(Some(Pick::Face(1)), Some([10.0, 0.0, 10.0]), false);
+        m.on_hover(Some(Pick::Face(0)), Some([10.0, 10.0, 10.0]));
+        let s = m.tape_measurement().expect("tape engaged");
+        assert!(s.contains("10.00 mm"), "re-pinned distance: {s}");
+        m.tape = None;
+        assert!(m.tape_measurement().is_none(), "read-out gone once exited");
     }
 
     #[test]
@@ -3470,6 +3633,7 @@ mod tests {
             body_bounds: Vec::new(),
             volume_cache: HashMap::new(),
             edge_anchors: HashMap::new(),
+            tape: None,
             manipulation: None,
             transform: None,
             resize: None,

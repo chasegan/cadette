@@ -201,6 +201,14 @@ mod bridge {
         /// Enclosed volume of a solid (model units³), for validating builds.
         fn volume(s: &Shape) -> Result<f64>;
 
+        /// Exact area of the face at `index` (TopExp order, matching
+        /// tessellation face ids), for measurement.
+        fn face_area(s: &Shape, index: u32) -> Result<f64>;
+
+        /// Exact length of the edge at `index` (unique-edge order, matching
+        /// tessellation edge ids), for measurement.
+        fn edge_length(s: &Shape, index: u32) -> Result<f64>;
+
         // --- Edge treatments ----------------------------------------------
         /// Fillet every edge of `shape` with a constant `radius`.
         fn fillet_all_edges(shape: &Shape, radius: f64) -> Result<UniquePtr<Shape>>;

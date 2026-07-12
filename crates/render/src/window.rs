@@ -720,18 +720,23 @@ impl<C: Controller> WindowApp<C> {
         // the mapped result a frame or two later) to remove the stall.
         if self.mouse.hover_dirty {
             self.mouse.hover_dirty = false;
-            let hovered = if self.controller.wants_picking()
+            let (hovered, hover_point) = if self.controller.wants_picking()
                 && !self.mouse.dragged
                 && !state.egui_ctx.is_pointer_over_egui()
             {
                 let (w, h) = (state.config.width, state.config.height);
                 let px = (self.mouse.cursor.x as i64).clamp(0, w as i64 - 1) as u32;
                 let py = (self.mouse.cursor.y as i64).clamp(0, h as i64 - 1) as u32;
-                state.scene.pick_at(px, py, &self.camera, w, h)
+                // Same single GPU pass as a plain id pick, so carrying the
+                // surface point costs hover nothing extra.
+                state.scene.pick_with_point(px, py, &self.camera, w, h)
             } else {
-                None
+                (None, None)
             };
-            self.controller.on_hover(hovered);
+            self.controller.on_hover(
+                hovered,
+                hover_point.map(|p| [p.x as f64, p.y as f64, p.z as f64]),
+            );
         }
 
         // Build the transform gizmo for this frame, highlighting the axis under
