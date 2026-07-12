@@ -238,24 +238,15 @@ impl Scene {
         (clip.z / clip.w) > face_depth + PICK_DEPTH_TOL
     }
 
-    /// Pick the entity under pixel `(px, py)`: a nearby *unoccluded* edge takes
-    /// priority over the face; otherwise the face (or nothing). The occlusion
-    /// check stops back-of-the-body edges that merely project near the cursor
-    /// from stealing the hover off the face it's over.
-    pub(crate) fn pick_at(&mut self, px: u32, py: u32, camera: &OrbitCamera, w: u32, h: u32) -> Option<Pick> {
-        let (face, face_depth) = self.pick_face(px, py, camera, w, h);
-        if let Some(edge) = self.pick_edge(px as f32, py as f32, camera, w, h) {
-            if !self.edge_occluded(edge, face, face_depth, px, py, camera, w, h) {
-                return Some(Pick::Edge(edge));
-            }
-        }
-        face.map(Pick::Face)
-    }
-
-    /// Like [`Self::pick_at`], plus the world-space point under the cursor
-    /// (unprojected from the pick pass's depth target) when a face is hit —
-    /// used as a push/pull anchor that's guaranteed to lie on the face (avoids
-    /// holes/odd shapes). One GPU pass serves both the id and the point.
+    /// Pick the entity under pixel `(px, py)` — a nearby *unoccluded* edge
+    /// takes priority over the face; otherwise the face (or nothing) — plus
+    /// the world-space point under the cursor (unprojected from the pick
+    /// pass's depth target) when a surface is hit. The occlusion check stops
+    /// back-of-the-body edges that merely project near the cursor from
+    /// stealing the hover off the face it's over. The point serves as a
+    /// push/pull anchor guaranteed to lie on the face (avoids holes/odd
+    /// shapes) and as the tape measure's pin/hover point. One GPU pass serves
+    /// both the id and the point.
     pub(crate) fn pick_with_point(
         &mut self,
         px: u32,
@@ -395,7 +386,8 @@ mod tests {
         let mut scene = Scene::new(device, queue, wgpu::TextureFormat::Rgba8Unorm, &mesh);
         let camera = OrbitCamera::framing(Vec3::ZERO, 15.0);
 
-        assert_eq!(scene.pick_at(32, 32, &camera, 64, 64), Some(Pick::Edge(0)));
+        let (pick, _) = scene.pick_with_point(32, 32, &camera, 64, 64);
+        assert_eq!(pick, Some(Pick::Edge(0)));
     }
 
     /// The depth-reconstructed world point under the cursor lands on the surface.
