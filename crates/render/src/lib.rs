@@ -26,6 +26,7 @@ pub use controller::{
     Axis3, Controller, Gizmo, GizmoHandle, GridSpec, Highlights, MeshData, Pick, Plane3,
     ResizeBox, TransformDelta,
 };
+pub use grid::min_grid_spacing;
 pub use theme::ViewportTheme;
 pub use view::ViewContext;
 pub use screenshot::screenshot;

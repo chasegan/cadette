@@ -172,7 +172,10 @@ pub fn history_panel(
                         .range(0.05..=1000.0)
                         .suffix(" mm"),
                 )
-                .on_hover_text("Cell spacing (snap increment)");
+                .on_hover_text(
+                    "Cell spacing (snap increment). The finest drawable spacing \
+                     depends on the grid size — shrink the grid to go finer.",
+                );
                 ui.add(
                     egui::DragValue::new(&mut state.grid_extent)
                         .speed(5.0)

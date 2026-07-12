@@ -10,10 +10,20 @@ use crate::GizmoVertex;
 
 /// Drop the grid just below z=0 so it doesn't z-fight a model base sitting there.
 const GRID_Z: f32 = -0.05;
-/// Don't draw minor lines once they'd be denser than this (keeps it readable).
-const GRID_MAX_LINES: f32 = 240.0;
+/// Don't draw minor lines once they'd be denser than this. The ceiling is the
+/// vertex budget: `GRID_MAX_LINES/2` steps per side × 2 directions × 2 verts
+/// is ~2400 verts per plane, ~7200 with all three planes — under
+/// [`GRID_MAX_VERTS`]. Raising this further needs a bigger buffer.
+const GRID_MAX_LINES: f32 = 600.0;
 /// Capacity of the persistent grid vertex buffer (sized for all three planes).
 pub(crate) const GRID_MAX_VERTS: u64 = 12288;
+
+/// The finest grid spacing that will actually draw at `half_extent` — anything
+/// finer hits the line-density cap. Hosts should clamp the user's spacing to
+/// this so the setting never silently under-delivers.
+pub fn min_grid_spacing(half_extent: f32) -> f32 {
+    2.0 * half_extent / GRID_MAX_LINES
+}
 
 pub(crate) fn make_grid_buffer(device: &wgpu::Device) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {

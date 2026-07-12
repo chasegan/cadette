@@ -685,6 +685,13 @@ impl Controller for Modeler {
         self.ui.can_redo = !self.redo.is_empty();
         let resp = history_panel(ctx, &mut self.doc, &mut self.ui);
         ui_edited |= resp.changed;
+        // Snap the grid spacing up to the finest value the renderer will draw
+        // at this extent, so the field never shows a spacing the grid ignores
+        // (shrink the grid size to go finer).
+        let min_spacing = cdt_render::min_grid_spacing((self.ui.grid_extent / 2.0) as f32) as f64;
+        if self.ui.grid_spacing < min_spacing {
+            self.ui.grid_spacing = min_spacing;
+        }
         if resp.theme_changed {
             prefs::save(&Prefs { theme: self.ui.theme });
         }
