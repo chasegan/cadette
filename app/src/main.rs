@@ -696,7 +696,10 @@ impl Controller for Modeler {
             }
             self.editing = true;
             changed = true;
-        } else {
+        } else if !ctx.input(|i| i.pointer.any_down()) {
+            // Only end the edit session once the mouse is released: a drag frame
+            // where the value didn't change (the pointer paused or moved
+            // off-axis) must not split one drag into several undo entries.
             self.editing = false;
         }
 
@@ -1114,10 +1117,25 @@ impl Controller for Modeler {
         // A sketch moves in place (transform its plane); everything else adds a
         // Translate/Rotate feature.
         let orig_plane = self.sketch_plane_of(source);
+        // A translate drag on a body already ending in a Translate edits that
+        // feature (the delta adds onto its offset) instead of stacking a second
+        // one — a body keeps at most one trailing Move.
+        let reuse = match (handle, self.doc.history.get(source).map(|f| &f.kind)) {
+            (
+                GizmoHandle::TranslateAxis(_) | GizmoHandle::TranslatePlane(_),
+                Some(&FeatureKind::Translate { source: input, offset }),
+            ) => Some((input, offset)),
+            _ => None,
+        };
+        let (source, feature, base_offset) = match reuse {
+            Some((input, offset)) => (input, Some(source), offset),
+            None => (source, None, DVec3::ZERO),
+        };
         self.transform = Some(TransformDrag {
             source,
-            feature: None,
+            feature,
             pivot,
+            base_offset,
             orig_plane,
             started: false,
         });
@@ -1165,7 +1183,7 @@ impl Controller for Modeler {
                 "Move",
                 FeatureKind::Translate {
                     source: t.source,
-                    offset: DVec3::from_array(offset),
+                    offset: t.base_offset + DVec3::from_array(offset),
                 },
             ),
             TransformDelta::Rotate { axis, angle } => (
@@ -1187,9 +1205,16 @@ impl Controller for Modeler {
                 self.record_undo(self.doc.clone());
                 let id = self.doc.insert_transform_numbered(name, kind);
                 t.feature = Some(id);
+                t.started = true;
                 self.ui.selected = Some(id);
             }
             Some(id) => {
+                // The first edit of a REUSED tip Translate records the drag's
+                // one undo (the spliced path records it on creation above).
+                if !t.started {
+                    self.record_undo(self.doc.clone());
+                    t.started = true;
+                }
                 if let Some(k) = self.doc.history.get_mut(id).map(|f| &mut f.kind) {
                     *k = kind;
                 }
@@ -1213,16 +1238,22 @@ impl Controller for Modeler {
             }
             return;
         }
+        if !t.started {
+            return; // never dragged: nothing recorded, nothing to discard
+        }
         let Some(id) = t.feature else {
-            return; // never dragged far enough to create a feature
+            return;
         };
         // Discard a cancelled or no-op transform. Restore the pre-drag snapshot
         // rather than `history.remove` — the transform was SPLICED (its source's
         // consumers were redirected to it, and the rollback bar advanced), and
         // only a full snapshot restore reliably undoes all of that (removing the
-        // feature alone would leave the bar one step too high).
+        // feature alone would leave the bar one step too high). A reused tip
+        // Translate is a no-op when its offset is back at the grab value.
         let nonzero = match self.doc.history.get(id).map(|f| &f.kind) {
-            Some(FeatureKind::Translate { offset, .. }) => offset.length() >= 1e-3,
+            Some(FeatureKind::Translate { offset, .. }) => {
+                (*offset - t.base_offset).length() >= 1e-3
+            }
             Some(FeatureKind::Rotate { angle, .. }) => angle.abs() >= 1e-4,
             _ => true,
         };
@@ -1859,6 +1890,7 @@ mod tests {
             source: sk,
             feature: None,
             pivot: None,
+            base_offset: DVec3::ZERO,
             orig_plane: Some(SketchPlane::Xy),
             started: false,
         });
@@ -2327,6 +2359,35 @@ mod tests {
     }
 
     #[test]
+    fn pasting_a_moved_body_folds_the_offset_into_its_translate() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        let b = m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let mv = m
+            .doc
+            .add("Move", FeatureKind::Translate { source: b, offset: DVec3::new(30.0, 0.0, 0.0) });
+        let _ = m.mesh();
+
+        m.ui.selected = Some(mv);
+        m.copy_selected();
+        let n0 = m.doc.history.len();
+        assert!(m.paste());
+        // The clone's own Translate absorbed the paste offset: only the two
+        // cloned features were added, no extra "Paste" step on top.
+        assert_eq!(m.doc.history.len(), n0 + 2, "clone only: Box + its Move");
+
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        assert_eq!(m.ui.visible.len(), 2, "original + paste");
+        let (_, max) = bounds(&mesh);
+        assert!(
+            (max[0] - (40.0 + PASTE_OFFSET as f32)).abs() < 0.2,
+            "paste offset folded into the clone's Move: max x {}",
+            max[0]
+        );
+    }
+
+    #[test]
     fn mirror_across_a_face_reflects_a_copy_keeping_the_original() {
         let mut m = Modeler::new();
         m.doc = Document::new("one");
@@ -2595,6 +2656,52 @@ mod tests {
         assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
         let (min, max) = bounds(&mesh);
         assert!((min[0] - 8.0).abs() < 0.1 && (max[0] - 18.0).abs() < 0.1, "x {min:?}..{max:?}");
+    }
+
+    #[test]
+    fn a_second_move_drag_edits_the_one_translate_instead_of_stacking() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let _ = m.mesh();
+        m.on_pick(Some(Pick::Face(0)), None, false);
+
+        // First drag: one Move spliced in.
+        let n0 = m.doc.history.len();
+        m.start_transform(GizmoHandle::TranslateAxis(Axis3::X));
+        assert!(m.update_transform(TransformDelta::Translate([5.0, 0.0, 0.0])));
+        m.finish_transform(true);
+        assert_eq!(m.doc.history.len(), n0 + 1);
+        let _ = m.mesh();
+
+        // Second drag: reuses that Move (the offsets sum), no new feature.
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        m.start_transform(GizmoHandle::TranslateAxis(Axis3::X));
+        assert!(m.update_transform(TransformDelta::Translate([3.0, 0.0, 0.0])));
+        m.finish_transform(true);
+        assert_eq!(m.doc.history.len(), n0 + 1, "second move reuses the one Translate");
+
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        let (min, max) = bounds(&mesh);
+        assert!(
+            (min[0] - 8.0).abs() < 0.1 && (max[0] - 18.0).abs() < 0.1,
+            "offsets summed: x {min:?}..{max:?}"
+        );
+
+        // A cancelled third drag restores the committed position, and undoing
+        // once steps back exactly one drag (to x=5), not to some mid-drag state.
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        m.start_transform(GizmoHandle::TranslateAxis(Axis3::X));
+        assert!(m.update_transform(TransformDelta::Translate([4.0, 0.0, 0.0])));
+        m.finish_transform(false);
+        let mesh = m.mesh();
+        let (min, _) = bounds(&mesh);
+        assert!((min[0] - 8.0).abs() < 0.1, "cancel restored x=8: {min:?}");
+        assert!(m.undo());
+        let mesh = m.mesh();
+        let (min, _) = bounds(&mesh);
+        assert!((min[0] - 5.0).abs() < 0.1, "one undo = one drag: {min:?}");
     }
 
     /// Build A ∪ B, then move base A while rolled back. Returns the modeler set

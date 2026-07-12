@@ -288,11 +288,19 @@ impl Modeler {
         for (b, delta) in moves {
             let mut offset = DVec3::ZERO;
             offset[ax] = delta;
-            // Splice each move into its body's chain, so aligning bodies that
-            // feed downstream steps repositions the model rather than spawning
-            // floating copies.
-            self.doc
-                .insert_transform_numbered("Align", FeatureKind::Translate { source: b, offset });
+            // A body already ending in a Translate is aligned by adding to that
+            // feature's offset. Otherwise splice a move into its chain, so
+            // aligning bodies that feed downstream steps repositions the model
+            // rather than spawning floating copies.
+            match self.doc.history.get_mut(b).map(|f| &mut f.kind) {
+                Some(FeatureKind::Translate { offset: o, .. }) => *o += offset,
+                _ => {
+                    self.doc.insert_transform_numbered(
+                        "Align",
+                        FeatureKind::Translate { source: b, offset },
+                    );
+                }
+            }
         }
         self.selection.clear();
         true
@@ -496,13 +504,19 @@ impl Modeler {
             self.undo.pop();
             return false;
         };
-        let pasted = self.doc.add_numbered(
-            "Paste",
-            FeatureKind::Translate {
-                source: clone_tip,
-                offset: DVec3::new(PASTE_OFFSET, PASTE_OFFSET, 0.0),
-            },
-        );
+        let offset = DVec3::new(PASTE_OFFSET, PASTE_OFFSET, 0.0);
+        // The clone of a moved body already ends in its own Translate: fold the
+        // paste offset into it instead of stacking a "Paste" step on top, so a
+        // body keeps at most one trailing Move.
+        let pasted = match self.doc.history.get_mut(clone_tip).map(|f| &mut f.kind) {
+            Some(FeatureKind::Translate { offset: o, .. }) => {
+                *o += offset;
+                clone_tip
+            }
+            _ => self
+                .doc
+                .add_numbered("Move", FeatureKind::Translate { source: clone_tip, offset }),
+        };
         self.ui.selected = Some(pasted);
         self.selection.clear();
         self.status = Some("Pasted a copy".into());

@@ -17,14 +17,20 @@ pub(crate) struct Manipulation {
 }
 
 /// An in-progress gizmo transform: the body being moved/rotated, the feature
-/// once the first drag created it, and (for rotation) the fixed pivot — the
-/// body's AABB center drifts as it turns, so the gizmo and rotation axis stay
-/// pinned at the center captured when the drag began.
+/// once the first drag created it (or the body's own tip `Translate` when the
+/// drag reuses it — see `base_offset`), and (for rotation) the fixed pivot —
+/// the body's AABB center drifts as it turns, so the gizmo and rotation axis
+/// stay pinned at the center captured when the drag began.
 #[derive(Clone, Copy)]
 pub(crate) struct TransformDrag {
     pub(crate) source: FeatureId,
     pub(crate) feature: Option<FeatureId>,
     pub(crate) pivot: Option<[f64; 3]>,
+    /// The tip `Translate`'s offset at grab when this drag REUSES the body's
+    /// own trailing Move (the drag's delta adds onto it, so a body keeps a
+    /// single trailing `Translate` instead of stacking one per drag). `ZERO`
+    /// when the drag splices a fresh feature.
+    pub(crate) base_offset: DVec3,
     /// If the source is a SKETCH, its original plane — the drag moves the sketch
     /// IN PLACE (transforms this plane) instead of wrapping it in a Translate/
     /// Rotate, so it stays an editable, extrudable sketch.

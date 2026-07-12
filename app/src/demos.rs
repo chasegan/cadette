@@ -365,6 +365,7 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
                 source,
                 feature: Some(id),
                 pivot: Some(pivot),
+                base_offset: DVec3::ZERO,
                 orig_plane: None,
                 started: true,
             });
