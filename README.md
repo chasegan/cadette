@@ -6,7 +6,7 @@ Cadette is free, open-source parametric CAD for makers — Tinkercad's simplicit
 Shapr3D's spunk, FreeCAD's kernel, nobody's subscription. Model a part, change
 any step later, and export a clean STL for your printer.
 
-![The Cadette modeler: the Build Graph history on the left, a filleted part in the viewport, the properties panel on the right](docs/modeler-light.png)
+![The Cadette modeler: the Build Graph tracing a 66-step parametric history on the left, a robot gauge bracket in the viewport, the properties panel on the right](docs/modeler-light.png)
 
 More at **[cadette.org](https://cadette.org)**.
 

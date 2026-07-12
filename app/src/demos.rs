@@ -375,8 +375,55 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
     }
 
     if flag("--screenshot") {
-        // Pre-select the constraint sketch so the screenshot shows its editor.
-        modeler.ui.selected = modeler.doc.history.features().first().map(|f| f.id);
+        // An optional .cdt path after the flag loads that project first —
+        // for shots of a real model (e.g. the home-page hero). Default: the
+        // built-in part with its first sketch selected to show the editor.
+        let project = args
+            .iter()
+            .position(|a| a == "--screenshot")
+            .and_then(|i| args.get(i + 1))
+            .filter(|a| !a.starts_with("--"));
+        match project {
+            Some(path) => {
+                modeler
+                    .load_project_from(path)
+                    .map_err(|e| anyhow::anyhow!("load {path}: {e}"))?;
+                // Select the tip so the Properties panel is populated.
+                modeler.ui.selected = modeler.doc.history.features().last().map(|f| f.id);
+                // Frame the whole model with extra margin: the automatic
+                // screenshot framing fits the full window, but the side
+                // panels cover much of its width and crop a wide model.
+                let _ = modeler.mesh();
+                let (mut min, mut max) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+                for (bmin, bmax) in &modeler.body_bounds {
+                    for k in 0..3 {
+                        min[k] = min[k].min(bmin[k]);
+                        max[k] = max[k].max(bmax[k]);
+                    }
+                }
+                if min[0].is_finite() {
+                    let radius = (0..3)
+                        .map(|k| (max[k] - min[k]) * 0.5)
+                        .map(|h| h * h)
+                        .sum::<f64>()
+                        .sqrt()
+                        .max(1e-3);
+                    modeler.camera_request = Some(cdt_render::CameraPose {
+                        target: [
+                            ((min[0] + max[0]) * 0.5) as f32,
+                            ((min[1] + max[1]) * 0.5) as f32,
+                            ((min[2] + max[2]) * 0.5) as f32,
+                        ],
+                        yaw: -0.9,
+                        pitch: 0.6,
+                        distance: (radius * 4.8) as f32,
+                    });
+                }
+            }
+            None => {
+                modeler.ui.selected = modeler.doc.history.features().first().map(|f| f.id);
+            }
+        }
         shoot(modeler, "out/modeler.png")?;
         return Ok(None);
     }

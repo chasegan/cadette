@@ -28,6 +28,11 @@ pub fn screenshot(
 
     let mesh = controller.mesh();
     let mut camera = frame_camera(&mesh.vertices);
+    // A controller-supplied pose (a loaded project's saved view, or a demo's
+    // hand-framed composition) overrides the automatic framing.
+    if let Some(pose) = controller.requested_camera() {
+        camera.set_pose(pose);
+    }
     let mut scene = Scene::new(device.clone(), queue.clone(), format, &mesh);
     let _ = &mut scene;
 
