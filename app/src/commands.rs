@@ -21,29 +21,29 @@ pub(crate) enum AlignMode {
 }
 
 impl Modeler {
-    /// Apply a boolean with the selected body as the primary operand. Subtract
-    /// carves the selected body out of every other visible body (a cut against a
-    /// body it doesn't overlap is a no-op, so this is "removed from any it
-    /// overlaps"); union/intersect fold the selection together with the others
-    /// into one body. Returns true if the document changed.
+    /// Apply a boolean. Subtract carves the selected body out of every other
+    /// visible body (a cut against a body it doesn't overlap is a no-op, so
+    /// this is "removed from any it overlaps"); union/intersect fold exactly
+    /// the bodies behind the multi-face selection into one, in click order,
+    /// and refuse (with a status hint) unless faces on at least two bodies
+    /// are selected. Returns true if the document changed.
     pub(crate) fn apply_boolean(&mut self, op: BooleanOp) -> bool {
-        let Some(tool) = self.ui.selected.filter(|s| self.ui.visible.contains(s)) else {
-            return false;
-        };
-        let others: Vec<FeatureId> = self
-            .ui
-            .visible
-            .iter()
-            .copied()
-            .filter(|&v| v != tool)
-            .collect();
-        if others.is_empty() {
-            return false;
-        }
-
-        self.record_undo(self.doc.clone());
         match op {
             BooleanOp::Subtract => {
+                let Some(tool) = self.ui.selected.filter(|s| self.ui.visible.contains(s)) else {
+                    return false;
+                };
+                let others: Vec<FeatureId> = self
+                    .ui
+                    .visible
+                    .iter()
+                    .copied()
+                    .filter(|&v| v != tool)
+                    .collect();
+                if others.is_empty() {
+                    return false;
+                }
+                self.record_undo(self.doc.clone());
                 // Carve the selected body out of each other body independently.
                 for target in others {
                     self.doc
@@ -52,10 +52,19 @@ impl Modeler {
                 self.ui.selected = None; // the carver is consumed
             }
             BooleanOp::Union | BooleanOp::Intersect => {
-                // Fold the selection together with the others into one body.
-                let name = if matches!(op, BooleanOp::Union) { "Union" } else { "Intersect" };
-                let mut acc = tool;
-                for other in others {
+                let union = matches!(op, BooleanOp::Union);
+                let mut bodies = self.selected_bodies().into_iter();
+                let (Some(first), Some(second)) = (bodies.next(), bodies.next()) else {
+                    self.status = Some(format!(
+                        "Select faces on two or more bodies to {}",
+                        if union { "union" } else { "intersect" }
+                    ));
+                    return false;
+                };
+                self.record_undo(self.doc.clone());
+                let name = if union { "Union" } else { "Intersect" };
+                let mut acc = first;
+                for other in std::iter::once(second).chain(bodies) {
                     acc = self
                         .doc
                         .add_numbered(name, FeatureKind::Boolean { op, target: acc, tool: other });

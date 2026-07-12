@@ -3184,22 +3184,70 @@ mod tests {
     }
 
     #[test]
-    fn union_folds_the_selection_with_the_others_into_one() {
+    fn union_combines_only_the_selected_bodies() {
+        use cdt_core::BooleanOp;
+        // A and B overlap; C sits far away and must NOT be swallowed.
+        let mut m = Modeler::new();
+        m.doc = Document::new("u");
+        m.doc.add("A", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let lb = m.doc.add("Lb", FeatureKind::Box { size: DVec3::splat(10.0) });
+        m.doc.add(
+            "B",
+            FeatureKind::Translate { source: lb, offset: DVec3::new(5.0, 0.0, 0.0) },
+        );
+        let lc = m.doc.add("Lc", FeatureKind::Box { size: DVec3::splat(10.0) });
+        m.doc.add(
+            "C",
+            FeatureKind::Translate { source: lc, offset: DVec3::new(40.0, 0.0, 0.0) },
+        );
+        let _ = m.mesh();
+        assert_eq!(m.ui.visible.len(), 3, "three independent bodies");
+
+        // Shift-select a face on A and a face on B (B's faces start at
+        // face_ranges[1]), then union.
+        let fb = m.face_ranges[1];
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        m.on_pick(Some(Pick::Face(fb)), None, true); // additive
+        assert_eq!(m.selected_bodies().len(), 2, "two distinct bodies selected");
+        assert!(m.apply_boolean(BooleanOp::Union));
+
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        assert_eq!(m.ui.visible.len(), 2, "A∪B is one body; C stays independent");
+        // The scene still spans C: x reaches 50, not just A∪B's 15.
+        let (_, max) = bounds(&mesh);
+        assert!((max[0] - 50.0).abs() < 0.2, "C untouched: max x {}", max[0]);
+    }
+
+    #[test]
+    fn union_refuses_without_a_two_body_selection() {
         use cdt_core::BooleanOp;
         let mut m = Modeler::new();
         m.doc = Document::new("u");
         let a = m.doc.add("A", FeatureKind::Box { size: DVec3::splat(10.0) });
         let lb = m.doc.add("Lb", FeatureKind::Box { size: DVec3::splat(10.0) });
-        let _b = m.doc.add(
+        m.doc.add(
             "B",
             FeatureKind::Translate { source: lb, offset: DVec3::new(5.0, 0.0, 0.0) },
         );
         let _ = m.mesh();
+        let n0 = m.doc.history.len();
+
+        // Only a Build-Graph selection (the old "fold with all others" trigger):
+        // no viewport faces picked, so the union is refused with a hint.
         m.ui.selected = Some(a);
-        assert!(m.apply_boolean(BooleanOp::Union));
-        let _ = m.mesh();
-        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
-        assert_eq!(m.ui.visible.len(), 1, "union leaves one body");
+        assert!(!m.apply_boolean(BooleanOp::Union), "no multi-selection: refused");
+        assert_eq!(m.doc.history.len(), n0, "document unchanged");
+        assert!(
+            m.status.as_deref().is_some_and(|s| s.contains("two or more bodies")),
+            "a hint explains what to select: {:?}",
+            m.status
+        );
+
+        // A single body's face selected in the viewport is refused too.
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        assert!(!m.apply_boolean(BooleanOp::Union), "one body selected: refused");
+        assert_eq!(m.doc.history.len(), n0, "document unchanged");
     }
 
     #[test]
@@ -3405,3 +3453,4 @@ mod resize_cache {
         }
     }
 }
+

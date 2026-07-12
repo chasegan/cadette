@@ -101,8 +101,9 @@ pub struct HistoryResponse {
     pub save_project: bool,
     /// "Open" was clicked — the host should load a project from a file.
     pub open_project: bool,
-    /// A boolean op was clicked — the host combines the selected body with the
-    /// other visible bodies (subtract carves the selection out of them).
+    /// A boolean op was clicked. Subtract carves the selected body out of the
+    /// other visible bodies; union/intersect combine exactly the bodies behind
+    /// the viewport multi-selection (the host refuses with a hint otherwise).
     pub boolean: Option<BooleanOp>,
     /// "Extrude" was clicked — the host extrudes this sketch (toward the camera).
     pub extrude: Option<FeatureId>,
@@ -131,8 +132,10 @@ impl HistoryState {
     }
 
     /// Whether a boolean is available: a body is selected, and there's at least
-    /// one other visible body to combine it with. The host uses the selection as
-    /// the primary operand (for subtract, the tool carved out of the others).
+    /// one other visible body to combine it with. For subtract the selection is
+    /// the carver; union/intersect further require faces selected on two or
+    /// more bodies, which only the host can see — it refuses with a status
+    /// hint when the click can't be honoured.
     fn can_boolean(&self) -> bool {
         self.selected.is_some_and(|s| self.visible.contains(&s)) && self.visible.len() >= 2
     }
@@ -335,9 +338,9 @@ fn command_bar(
             // in the Actions pane when a body is selected — neither needs a
             // persistent toolbar button.
             for (glyph, op, tip) in [
-                (icon::UNITE, BooleanOp::Union, "Union: merge the selected body with the others"),
+                (icon::UNITE, BooleanOp::Union, "Union: merge the selected bodies into one (select faces on each)"),
                 (icon::SUBTRACT, BooleanOp::Subtract, "Subtract: carve the selected body out of the others"),
-                (icon::INTERSECT, BooleanOp::Intersect, "Intersect: keep where the selected body meets the others"),
+                (icon::INTERSECT, BooleanOp::Intersect, "Intersect: keep only where the selected bodies overlap (select faces on each)"),
             ] {
                 if icon_btn(ui, glyph, tip, can_bool) {
                     resp.boolean = Some(op);
