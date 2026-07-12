@@ -54,6 +54,10 @@ pub(crate) struct Globals {
     face_base: [f32; 4],
     /// Theme feature-edge color, `rgb + _`. Set by `encode` per frame.
     edge_base: [f32; 4],
+    /// Hover-ghost overlay color `rgb + alpha`. Set by `encode` per frame.
+    ghost_color: [f32; 4],
+    /// Build-Graph hover body tint: `[first_face, end_face, active, 0]`.
+    hover_body: [u32; 4],
 }
 
 /// Uniform for the background gradient pass: top/bottom colors (linear RGB).
@@ -127,6 +131,11 @@ impl Globals {
             // active `ViewportTheme` (pick passes are color-agnostic).
             face_base: rgba(ViewportTheme::DARK.face_base, 1.0),
             edge_base: rgba(ViewportTheme::DARK.edge, 1.0),
+            ghost_color: ViewportTheme::DARK.ghost,
+            hover_body: match highlights.hover_body {
+                Some((start, end)) => [start, end, 1, 0],
+                None => [0; 4],
+            },
         }
     }
 }
@@ -198,6 +207,8 @@ pub(crate) struct Scene {
     gizmo_pipeline: wgpu::RenderPipeline,
     /// Line pipeline for the workplane grid (depth-tested, drawn behind model).
     grid_pipeline: wgpu::RenderPipeline,
+    /// Translucent hover-ghost pipeline (x-ray: depth test off, alpha blend).
+    ghost_pipeline: wgpu::RenderPipeline,
     /// Fullscreen gradient background pipeline (drawn first, no depth write).
     bg_pipeline: wgpu::RenderPipeline,
     bg_buffer: wgpu::Buffer,
@@ -208,6 +219,10 @@ pub(crate) struct Scene {
     edge_vertex_buffer: GrowBuffer,
     edge_index_buffer: GrowBuffer,
     edge_index_count: u32,
+    /// Hover-ghost mesh (a step's own result, drawn translucently).
+    ghost_vertex_buffer: GrowBuffer,
+    ghost_index_buffer: GrowBuffer,
+    ghost_index_count: u32,
     /// Gizmo line vertices (rebuilt each frame; empty when hidden).
     gizmo_vertex_buffer: wgpu::Buffer,
     gizmo_vertex_count: u32,
@@ -464,6 +479,49 @@ impl Scene {
             cache: None,
         });
 
+        // Ghost pipeline: the hover-preview mesh, alpha-blended with the depth
+        // test OFF (x-ray) so consumed geometry — a cylinder that became a
+        // bore — reads through the final body.
+        let ghost_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("cdt-ghost-shader"),
+            source: with_globals(include_str!("ghost.wgsl")),
+        });
+        let ghost_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("cdt-ghost-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &ghost_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[vertex_layout()],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &ghost_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         // Grid pipeline: same colored-vertex shader, but a depth-tested line
         // list so the model occludes the ground-plane grid behind it.
         let grid_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -612,6 +670,10 @@ impl Scene {
             bytemuck::cast_slice(&mesh.edge_indices),
         );
         let edge_index_count = edge_draw_count(mesh);
+        let ghost_vertex_buffer =
+            GrowBuffer::new(&device, "cdt-ghost-vertices", wgpu::BufferUsages::VERTEX, 4);
+        let ghost_index_buffer =
+            GrowBuffer::new(&device, "cdt-ghost-indices", wgpu::BufferUsages::INDEX, 4);
         let gizmo_vertex_buffer = make_gizmo_buffer(&device);
         let gizmo_vertex_count = 0u32;
         let grid_vertex_buffer = make_grid_buffer(&device);
@@ -634,6 +696,10 @@ impl Scene {
             edge_vertex_buffer,
             edge_index_buffer,
             edge_index_count,
+            ghost_pipeline,
+            ghost_vertex_buffer,
+            ghost_index_buffer,
+            ghost_index_count: 0,
             gizmo_vertex_buffer,
             gizmo_vertex_count,
             grid_vertex_buffer,
@@ -661,6 +727,20 @@ impl Scene {
             .write(&self.device, &self.queue, bytemuck::cast_slice(&mesh.edge_indices));
         self.edge_index_count = edge_draw_count(mesh);
         self.edge_segments = edge_segments(mesh);
+    }
+
+    /// Replace the translucent hover-ghost mesh (`None` hides it).
+    pub(crate) fn upload_ghost(&mut self, mesh: Option<&MeshData>) {
+        match mesh {
+            Some(m) if !m.indices.is_empty() => {
+                self.ghost_vertex_buffer
+                    .write(&self.device, &self.queue, bytemuck::cast_slice(&m.vertices));
+                self.ghost_index_buffer
+                    .write(&self.device, &self.queue, bytemuck::cast_slice(&m.indices));
+                self.ghost_index_count = m.indices.len() as u32;
+            }
+            _ => self.ghost_index_count = 0,
+        }
     }
 
     /// Replace the gizmo line geometry (empty `verts` hides it).
@@ -704,6 +784,7 @@ impl Scene {
         let mut globals = Globals::for_view(camera, aspect, highlights);
         globals.face_base = rgba(theme.face_base, 1.0);
         globals.edge_base = rgba(theme.edge, 1.0);
+        globals.ghost_color = theme.ghost;
         self.queue
             .write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
         self.queue.write_buffer(
@@ -769,6 +850,18 @@ impl Scene {
                 wgpu::IndexFormat::Uint32,
             );
             pass.draw_indexed(0..self.edge_index_count, 0, 0..1);
+        }
+        // Hover ghost: a translucent x-ray overlay of the hovered Build-Graph
+        // step's own result, over the whole scene.
+        if self.ghost_index_count > 0 {
+            pass.set_pipeline(&self.ghost_pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_vertex_buffer(0, self.ghost_vertex_buffer.buffer.slice(..));
+            pass.set_index_buffer(
+                self.ghost_index_buffer.buffer.slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
+            pass.draw_indexed(0..self.ghost_index_count, 0, 0..1);
         }
         // The gizmo draws last, on top of everything (its pipeline ignores depth).
         if self.gizmo_vertex_count > 0 {

@@ -18,6 +18,10 @@ struct Globals {
     // theme colors (rgb in .xyz): unlit material base + feature-edge color.
     face_base : vec4<f32>,
     edge_base : vec4<f32>,
+    // Hover-ghost overlay color: rgb + alpha.
+    ghost_color : vec4<f32>,
+    // Build-Graph hover body tint: [first_face, end_face, active, 0].
+    hover_body : vec4<u32>,
 };
 
 @group(0) @binding(0) var<uniform> globals : Globals;

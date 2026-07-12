@@ -57,6 +57,9 @@ pub struct HistoryState {
     /// Whether the tape-measure tool is engaged (set by the host; the toolbar
     /// button reflects and toggles it).
     pub tape_active: bool,
+    /// The Build Graph row under the cursor this frame (recomputed whenever a
+    /// pointer exists), for the host's viewport hover preview.
+    pub hovered_step: Option<FeatureId>,
     /// The active look-and-feel (light/dark). The host applies it as egui
     /// visuals each frame and persists it when it changes.
     pub theme: Theme,
@@ -79,6 +82,7 @@ impl Default for HistoryState {
             sketch_plane: SketchPlane::Xy,
             about_open: false,
             tape_active: false,
+            hovered_step: None,
             theme: Theme::default(),
         }
     }
@@ -478,6 +482,12 @@ fn linear_to_color32(c: [f32; 3]) -> Color32 {
 /// reorder); the gutter on the left is the graph.
 fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> bool {
     let mut changed = false;
+    // Recompute the hovered row from scratch each frame — but only while a
+    // pointer exists, so a headless pass (screenshots) keeps a pre-arranged
+    // hover instead of wiping it.
+    if ui.ctx().pointer_latest_pos().is_some() {
+        state.hovered_step = None;
+    }
     let error_color = state.theme.palette().error;
     let graph = doc.history.build_graph();
     let gutter_w = graph.lane_count.max(1) as f32 * LANE_W;
@@ -512,7 +522,7 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
         let error = state.error_for(id).map(str::to_owned);
         let selected = state.selected == Some(id);
 
-        ui.horizontal(|ui| {
+        let row = ui.horizontal(|ui| {
             // --- Lane gutter -------------------------------------------------
             let (rect, _) = ui.allocate_exact_size(
                 egui::vec2(gutter_w, GRAPH_ROW_H),
@@ -602,6 +612,11 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
                 }
             });
         });
+        // Report the row under the cursor for the host's viewport
+        // hover preview (ghost + fed-body tint).
+        if row.response.contains_pointer() {
+            state.hovered_step = Some(id);
+        }
     }
 
     changed

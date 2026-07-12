@@ -49,6 +49,10 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
         base = vec3<f32>(1.0, 0.62, 0.25); // clicked selection (strong)
     } else if (globals.faces.w == 1u && in.face_id == globals.faces.z) {
         base = vec3<f32>(0.78, 0.85, 1.0); // hover pre-highlight (subtle)
+    } else if (globals.hover_body.z == 1u
+        && in.face_id >= globals.hover_body.x && in.face_id < globals.hover_body.y) {
+        // Build-Graph hover: gently tint the body the hovered step feeds into.
+        base = mix(base, globals.ghost_color.xyz, 0.30);
     }
     let shade = ambient + key * 0.7 + head;
     return vec4<f32>(base * shade, 1.0);

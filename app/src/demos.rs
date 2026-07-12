@@ -25,6 +25,30 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
 
     // Verification aid: draw a closed triangle and finish it, mirroring the
     // interactive flow, so we can confirm the Extrude button enables afterward.
+    // Verification aid: the Build Graph hover ghost — hover the bored-hole
+    // cylinder's row and its ghost materializes in the bore, x-ray through
+    // the final body, with the fed body tinted.
+    if flag("--ghost-demo") {
+        let hole = modeler
+            .doc
+            .history
+            .features()
+            .iter()
+            .find_map(|f| match &f.kind {
+                FeatureKind::Boolean { tool, .. } => Some(*tool),
+                _ => None,
+            })
+            .expect("the default part has a boolean");
+        let _ = modeler.mesh();
+        modeler.ui.hovered_step = Some(hole);
+        // Backdate the hover so the debounce has already elapsed.
+        modeler.graph_hover =
+            Some((hole, std::time::Instant::now() - std::time::Duration::from_secs(1)));
+        modeler.update_graph_hover();
+        shoot(modeler, "out/ghost-demo.png")?;
+        return Ok(None);
+    }
+
     if flag("--sketch-demo") {
         let mut empty = Document::new("draw");
         std::mem::swap(&mut modeler.doc, &mut empty); // start from a clean doc

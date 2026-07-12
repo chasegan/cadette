@@ -132,6 +132,9 @@ struct WindowApp<C: Controller> {
     /// The grid spec + theme colors the uploaded grid geometry was built from;
     /// `redraw` rebuilds the grid only when this changes.
     grid_key: Option<GridKey>,
+    /// The controller's ghost key at the last upload — the ghost mesh is
+    /// re-uploaded only when this changes.
+    ghost_key: Option<u64>,
     /// The central viewport rect (panels excluded), captured from the last
     /// frame's egui pass. Camera-nav routing in `window_event` runs outside a
     /// pass — where `available_rect()` is unavailable — so it hit-tests against
@@ -164,6 +167,7 @@ impl<C: Controller> WindowApp<C> {
             occluded: false,
             last_title: String::new(),
             grid_key: None,
+            ghost_key: None,
             central_rect: egui::Rect::NOTHING,
             state: None,
         }
@@ -711,6 +715,12 @@ impl<C: Controller> WindowApp<C> {
             let mesh = self.controller.mesh();
             state.scene.upload_mesh(&mesh);
             self.mesh_dirty = false;
+        }
+        // Hover-ghost overlay: re-upload only when the controller's key moves.
+        let ghost = self.controller.ghost();
+        if ghost.as_ref().map(|(k, _)| *k) != self.ghost_key {
+            self.ghost_key = ghost.as_ref().map(|(k, _)| *k);
+            state.scene.upload_ghost(ghost.map(|(_, m)| m));
         }
         state
             .egui_state

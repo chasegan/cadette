@@ -169,6 +169,14 @@ impl<B: Clone> RegenCache<B> {
         Self::default()
     }
 
+    /// The cached body of `id`, if one has been built — read-only
+    /// interrogation for previews (e.g. the Build Graph's hover ghost), no
+    /// regeneration. May be stale for a feature that is currently rolled
+    /// back or suppressed: it's whatever was last built for it.
+    pub fn cached_body(&self, id: FeatureId) -> Option<&B> {
+        self.entries.get(&id).map(|e| &e.body)
+    }
+
     /// Replay the document's active history, reusing cached bodies whose `kind`
     /// and inputs are unchanged. Same result as [`regenerate`], only faster on
     /// repeat calls after a small edit.

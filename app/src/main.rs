@@ -194,6 +194,17 @@ struct Modeler {
     edge_anchors: HashMap<u32, DVec3>,
     /// Tape-measure mode, when engaged (toolbar toggle / Esc to exit).
     tape: Option<TapeState>,
+    /// The Build Graph row under the cursor + when that hover began — the
+    /// ghost preview waits out a short debounce so scanning the list doesn't
+    /// churn tessellations.
+    graph_hover: Option<(FeatureId, std::time::Instant)>,
+    /// The step whose ghost is showing (mesh in `ghost_cache`); `ghost_key`
+    /// bumps on every visible change so the viewport re-uploads exactly then.
+    ghost_step: Option<FeatureId>,
+    ghost_key: u64,
+    /// Tessellated hover-ghost meshes by feature id, from the regen cache's
+    /// intermediate solids. Cleared whenever geometry regenerates.
+    ghost_cache: HashMap<FeatureId, MeshData>,
     /// The camera pose seen this frame (from `ViewContext`), captured so a
     /// project save can persist the view into `view.json`.
     camera_pose: Option<CameraPose>,
@@ -256,6 +267,10 @@ impl Modeler {
             volume_cache: HashMap::new(),
             edge_anchors: HashMap::new(),
             tape: None,
+            graph_hover: None,
+            ghost_step: None,
+            ghost_key: 0,
+            ghost_cache: HashMap::new(),
             camera_pose: None,
             camera_request: None,
             manipulation: None,
@@ -393,6 +408,91 @@ impl Modeler {
             egui::FontId::monospace(13.0),
             color,
         );
+    }
+
+    /// Drive the Build Graph hover preview: after a short debounce, ghost the
+    /// hovered step's own (cached) result in the viewport. Runs every frame.
+    fn update_graph_hover(&mut self) {
+        /// Steady hover time before a ghost tessellates, so scanning the list
+        /// stays cheap.
+        const GHOST_DELAY_MS: u128 = 150;
+        let want = match self.ui.hovered_step {
+            Some(id) => {
+                if self.graph_hover.map(|(h, _)| h) != Some(id) {
+                    self.graph_hover = Some((id, std::time::Instant::now()));
+                }
+                let (_, since) = self.graph_hover.unwrap();
+                (since.elapsed().as_millis() >= GHOST_DELAY_MS && self.ensure_ghost_mesh(id))
+                    .then_some(id)
+            }
+            None => {
+                self.graph_hover = None;
+                None
+            }
+        };
+        if self.ghost_step != want {
+            self.ghost_step = want;
+            self.ghost_key += 1;
+        }
+    }
+
+    /// Tessellate (and memoize) the hover ghost for `id` from its cached
+    /// intermediate solid. False when nothing is available — the feature is
+    /// rolled back, suppressed, errored, or was never built.
+    fn ensure_ghost_mesh(&mut self, id: FeatureId) -> bool {
+        if let Some(mesh) = self.ghost_cache.get(&id) {
+            return !mesh.indices.is_empty();
+        }
+        let Some(solid) = self.regen_cache.cached_body(id) else {
+            return false;
+        };
+        let mesh = match solid.tessellate(DEFLECTION_MM) {
+            Ok(part) => MeshData {
+                vertices: cdt_render::interleave(
+                    &part.positions,
+                    &part.normals,
+                    &part.face_ids,
+                    cdt_render::NO_COLOR,
+                ),
+                indices: part.indices,
+                ..Default::default()
+            },
+            // Cache the failure as an empty mesh so it isn't retried per frame.
+            Err(_) => MeshData::default(),
+        };
+        let ok = !mesh.indices.is_empty();
+        self.ghost_cache.insert(id, mesh);
+        ok
+    }
+
+    /// The global face-id range of the visible body the hovered Build Graph
+    /// step feeds into — the viewport tints it while the row is hovered.
+    fn hover_body_range(&self) -> Option<(u32, u32)> {
+        let (id, _) = self.graph_hover?;
+        let vis = self.downstream_visible(id)?;
+        let i = self.ui.visible.iter().position(|&f| f == vis)?;
+        let start = self.face_ranges.get(i).copied()?;
+        let end = self.face_ranges.get(i + 1).copied().unwrap_or(u32::MAX);
+        Some((start, end))
+    }
+
+    /// Walk consumers from `id` down to the visible body it feeds into.
+    /// `None` when the chain dead-ends before a visible body (rolled back).
+    fn downstream_visible(&self, id: FeatureId) -> Option<FeatureId> {
+        let mut cur = id;
+        for _ in 0..self.doc.history.len() {
+            if self.ui.visible.contains(&cur) {
+                return Some(cur);
+            }
+            cur = self
+                .doc
+                .history
+                .features()
+                .iter()
+                .find(|f| f.kind.inputs().contains(&cur))?
+                .id;
+        }
+        None
     }
 
     /// The body feature id behind the current viewport selection, if any.
@@ -794,6 +894,9 @@ impl Controller for Modeler {
             self.tape = if self.tape.is_some() { None } else { Some(TapeState::default()) };
             self.ui.tape_active = self.tape.is_some();
         }
+        // Build Graph hover: ghost the hovered step's own result (debounced)
+        // and tint the visible body it feeds into (via `highlights`).
+        self.update_graph_hover();
         if resp.theme_changed {
             prefs::save(&Prefs { theme: self.ui.theme });
         }
@@ -1037,6 +1140,10 @@ impl Controller for Modeler {
         }
         self.bodies = bodies;
         self.volume_cache.clear(); // geometry changed — stale volumes
+        // Ghost previews are stale too; the key bump clears the viewport now,
+        // and a still-held hover re-tessellates on the next frame.
+        self.ghost_cache.clear();
+        self.ghost_key += 1;
         mesh
     }
 
@@ -1044,7 +1151,13 @@ impl Controller for Modeler {
         Highlights {
             selected: self.selection.selected().to_vec(),
             hovered: self.selection.hovered,
+            hover_body: self.hover_body_range(),
         }
+    }
+
+    fn ghost(&mut self) -> Option<(u64, &MeshData)> {
+        let id = self.ghost_step?;
+        Some((self.ghost_key, self.ghost_cache.get(&id)?))
     }
 
     fn on_pick(&mut self, pick: Option<Pick>, point: Option<[f64; 3]>, additive: bool) {
@@ -1865,6 +1978,10 @@ mod tests {
             volume_cache: HashMap::new(),
             edge_anchors: HashMap::new(),
             tape: None,
+            graph_hover: None,
+            ghost_step: None,
+            ghost_key: 0,
+            ghost_cache: HashMap::new(),
             camera_pose: None,
             camera_request: None,
             manipulation: None,
@@ -3609,6 +3726,46 @@ mod tests {
     }
 
     #[test]
+    fn graph_hover_ghosts_an_intermediate_step_after_the_debounce() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("g");
+        let b = m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        m.doc
+            .add("Move", FeatureKind::Translate { source: b, offset: DVec3::new(30.0, 0.0, 0.0) });
+        let _ = m.mesh();
+
+        // Hovering the consumed Box row: nothing until the debounce elapses.
+        m.ui.hovered_step = Some(b);
+        m.update_graph_hover();
+        assert_eq!(m.ghost_step, None, "debounce holds the ghost back");
+        // Backdate the hover start and run another frame: the ghost appears.
+        m.graph_hover = Some((b, std::time::Instant::now() - std::time::Duration::from_secs(1)));
+        m.update_graph_hover();
+        assert_eq!(m.ghost_step, Some(b), "ghost after the debounce");
+        let (_, ghost) = m.ghost().expect("a ghost mesh");
+        assert!(!ghost.vertices.is_empty() && !ghost.indices.is_empty());
+
+        // The tint targets the visible body the step feeds into (the Move).
+        assert_eq!(m.downstream_visible(b), Some(m.ui.visible[0]));
+        assert!(m.highlights().hover_body.is_some(), "fed body tinted");
+
+        // Regeneration invalidates the cached ghost but a held hover restores
+        // it on the next frame.
+        let _ = m.mesh();
+        assert!(m.ghost().is_none(), "stale ghost cleared by regen");
+        m.update_graph_hover();
+        assert!(m.ghost().is_some(), "held hover re-tessellates");
+
+        // Hover off: the ghost clears and the key bumps so the viewport does too.
+        let k = m.ghost_key;
+        m.ui.hovered_step = None;
+        m.update_graph_hover();
+        assert_eq!(m.ghost_step, None);
+        assert!(m.ghost().is_none());
+        assert_eq!(m.ghost_key, k + 1, "key change tells the viewport to clear");
+    }
+
+    #[test]
     fn view_state_round_trips_through_the_project_file() {
         let path = std::env::temp_dir().join("cdt-view-roundtrip-test.cdt");
         let path = path.to_str().unwrap();
@@ -3739,6 +3896,10 @@ mod tests {
             volume_cache: HashMap::new(),
             edge_anchors: HashMap::new(),
             tape: None,
+            graph_hover: None,
+            ghost_step: None,
+            ghost_key: 0,
+            ghost_cache: HashMap::new(),
             camera_pose: None,
             camera_request: None,
             manipulation: None,

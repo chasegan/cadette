@@ -99,6 +99,12 @@ pub fn screenshot(
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     let egui_cmds = egui_renderer.update_buffers(&device, &queue, &mut encoder, &jobs, &screen);
     let highlights = controller.highlights();
+    // The hover ghost, when a demo pre-arranged one — polled AFTER the ui()
+    // passes above: mesh() invalidates ghost caches, and it's the ui pass
+    // that rebuilds them.
+    if let Some((_, m)) = controller.ghost() {
+        scene.upload_ghost(Some(m));
+    }
     let mut gizmo_verts = match controller.gizmo() {
         Some(g) => {
             let origin = Vec3::new(g.origin[0] as f32, g.origin[1] as f32, g.origin[2] as f32);

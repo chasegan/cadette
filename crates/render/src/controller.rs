@@ -40,7 +40,6 @@ pub trait Controller {
     /// an edge), used to build durable anchors; `None` if unavailable.
     /// `additive` is true when ⇧/⌘ is held — add/remove from a multi-selection.
     fn on_pick(&mut self, _pick: Option<Pick>, _point: Option<[f64; 3]>, _additive: bool) {}
-    /// The entity currently under the cursor (or `None`), updated as it moves.
     /// The entity (and, when a surface is hit, the world point) under the
     /// cursor this frame — for pre-highlight and hover-driven read-outs.
     fn on_hover(&mut self, _pick: Option<Pick>, _point: Option<[f64; 3]>) {}
@@ -131,6 +130,14 @@ pub trait Controller {
     /// from a just-loaded project. Polled once per frame after `ui`; returning
     /// `Some` replaces the camera's orbit parameters. Default: never.
     fn requested_camera(&mut self) -> Option<crate::camera::CameraPose> {
+        None
+    }
+
+    /// A translucent overlay mesh — the Build Graph hover preview of a step's
+    /// own result — or `None` for no ghost. The `u64` keys re-uploads: an
+    /// unchanged key means an unchanged mesh, so the host skips the upload.
+    /// Default: never.
+    fn ghost(&mut self) -> Option<(u64, &MeshData)> {
         None
     }
 }
@@ -301,4 +308,7 @@ impl Plane3 {
 pub struct Highlights {
     pub selected: Vec<Pick>,
     pub hovered: Option<Pick>,
+    /// Global face-id range `[start, end)` of a whole body to tint — the
+    /// visible body the hovered Build-Graph step feeds into.
+    pub hover_body: Option<(u32, u32)>,
 }
