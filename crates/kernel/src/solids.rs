@@ -7,8 +7,16 @@
 
 use cxx::UniquePtr;
 
-use crate::elements::{ElemKind, Lineage};
+use crate::elements::{ElemKind, GenRecord, Lineage};
 use crate::{ffi, Result};
+
+/// Parse the kernel's flat `[tag, in, out]` generative-lineage triples.
+fn gen_records(records: Vec<i32>) -> Vec<GenRecord> {
+    records
+        .chunks_exact(3)
+        .filter_map(|r| GenRecord::parse(r[0], r[1] as u32, r[2] as u32))
+        .collect()
+}
 
 /// Re-export the tessellated mesh produced by [`Solid::tessellate`].
 pub use crate::ffi::Mesh;
@@ -162,6 +170,14 @@ impl Solid {
         Ok(Self::wrap(ffi::extrude(&self.0, distance)?))
     }
 
+    /// [`Self::extrude`] with its lineage report — which result face/edge
+    /// each profile element became (element-map composition input).
+    pub fn extrude_tracked(&self, distance: f64) -> Result<(Self, Vec<GenRecord>)> {
+        let mut records: Vec<i32> = Vec::new();
+        let shape = ffi::extrude_tracked(&self.0, distance, &mut records)?;
+        Ok((Self::wrap(shape), gen_records(records)))
+    }
+
     /// An OPEN planar wire (a sweep path) on the frame `origin + u*x_dir +
     /// v*y_dir`. `points` is the flat 2D polyline, `segs` 5 doubles per segment.
     pub fn path_wire(
@@ -185,6 +201,20 @@ impl Solid {
         )?))
     }
 
+    /// [`Self::sweep`] with its lineage report. The records are EMPTY when
+    /// the swept solid needed healing (ShapeFix discards history).
+    pub fn sweep_tracked(
+        &self,
+        spine: &Solid,
+        binormal: [f64; 3],
+    ) -> Result<(Self, Vec<GenRecord>)> {
+        let mut records: Vec<i32> = Vec::new();
+        let shape = ffi::sweep_tracked(
+            &self.0, &spine.0, binormal[0], binormal[1], binormal[2], &mut records,
+        )?;
+        Ok((Self::wrap(shape), gen_records(records)))
+    }
+
     /// Revolve this planar profile by `angle` radians about the straight edge
     /// nearest `axis_point` (a full turn is `2π`). The axis edge is one of the
     /// profile's own segments or an adjacent model edge.
@@ -192,6 +222,26 @@ impl Solid {
         Ok(Self::wrap(ffi::revolve(
             &self.0, axis_point[0], axis_point[1], axis_point[2], angle,
         )?))
+    }
+
+    /// [`Self::revolve`] with its lineage report.
+    pub fn revolve_tracked(
+        &self,
+        axis_point: [f64; 3],
+        angle: f64,
+    ) -> Result<(Self, Vec<GenRecord>)> {
+        let mut records: Vec<i32> = Vec::new();
+        let shape = ffi::revolve_tracked(
+            &self.0, axis_point[0], axis_point[1], axis_point[2], angle, &mut records,
+        )?;
+        Ok((Self::wrap(shape), gen_records(records)))
+    }
+
+    /// Which faces bound each edge, as `(edge_index, face_index)` pairs
+    /// (TopExp map order) — names a generative op's lateral edges.
+    pub fn edge_face_adjacency(&self) -> Result<Vec<(u32, u32)>> {
+        let flat = ffi::edge_face_adjacency(&self.0)?;
+        Ok(flat.chunks_exact(2).map(|p| (p[0], p[1])).collect())
     }
 
     /// Push/pull the planar face anchored at `point` with `normal` along that

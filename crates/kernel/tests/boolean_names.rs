@@ -216,9 +216,8 @@ fn section_edges_are_intersections_of_both_parent_faces() {
 
 #[test]
 fn an_untracked_operand_still_names_the_tracked_side() {
-    use cdt_core::{Profile, SketchPlane};
-    // Fuse a tracked box with an (untracked, pre-slice-3) extruded cylinder:
-    // the box's faces stay named, the extrusion's faces are honestly None.
+    // Fuse a tracked box with an untracked body (a fillet result, pre-slice-4):
+    // the box's faces stay named, the filleted side's faces are honestly None.
     let mut backend = KernelBackend::default();
     let a = tracked_box(&mut backend, 1);
     let top_name = a.elements
@@ -227,15 +226,13 @@ fn an_untracked_operand_still_names_the_tracked_side() {
         .clone();
 
     backend.begin_feature(FeatureId(2));
-    let profile = backend
-        .sketch(SketchPlane::Xy, Profile::Circle { radius: 4.0 })
-        .unwrap();
+    let post = backend.make_box(DVec3::new(8.0, 8.0, 30.0)).unwrap();
     backend.begin_feature(FeatureId(3));
-    let post = backend.extrude(&profile, 30.0).unwrap();
-    assert!(post.elements.is_empty(), "extrude is untracked (slice 3)");
+    let post = backend.fillet_all(&post, 1.0).unwrap();
+    assert!(post.elements.is_empty(), "fillet is untracked (slice 4)");
     // Plant the post overlapping the box so the fuse is one body.
     backend.begin_feature(FeatureId(4));
-    let post = backend.translate(&post, DVec3::new(10.0, 10.0, 0.0)).unwrap();
+    let post = backend.translate(&post, DVec3::new(6.0, 6.0, 0.0)).unwrap();
 
     backend.begin_feature(FeatureId(5));
     let fused = backend.boolean(BooleanOp::Union, &a, &post).unwrap();

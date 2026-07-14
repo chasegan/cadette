@@ -14,7 +14,7 @@ use cdt_core::{
     SketchPlane,
 };
 
-use crate::elements::ElementMap;
+use crate::elements::{ElementMap, GenRecord};
 use crate::solids::TrackedBoolOp;
 use crate::{KernelError, Solid};
 
@@ -59,6 +59,27 @@ impl Body {
             solid,
             elements: self.elements.clone(),
         }
+    }
+
+    /// Compose a generative op's result: the profile's map plus the kernel's
+    /// lineage report become the swept solid's map (see
+    /// [`ElementMap::compose_generated`]).
+    fn generated(profile: &Body, solid: Solid, records: &[GenRecord]) -> Result<Body, KernelError> {
+        let out_faces = solid.face_count()?;
+        let out_edges = solid.edge_count()?;
+        let adjacency = solid.edge_face_adjacency()?;
+        let elements = ElementMap::compose_generated(
+            &profile.elements,
+            records,
+            out_faces,
+            out_edges,
+            &adjacency,
+            &mut |kind, index| solid.elem_centroid(kind, index).unwrap_or([f64::NAN; 3]),
+        );
+        Ok(Body {
+            solid,
+            elements: Arc::new(elements),
+        })
     }
 }
 
@@ -154,7 +175,8 @@ impl GeometryBackend for KernelBackend {
     }
 
     fn extrude(&mut self, profile: &Body, distance: f64) -> Result<Body, KernelError> {
-        Ok(Body::untracked(profile.solid.extrude(distance)?))
+        let (solid, records) = profile.solid.extrude_tracked(distance)?;
+        Body::generated(profile, solid, &records)
     }
 
     fn sweep(
@@ -191,9 +213,10 @@ impl GeometryBackend for KernelBackend {
         )?;
         // Lock the section's roll to the path plane's normal so an asymmetric
         // profile keeps a predictable orientation through bends.
-        Ok(Body::untracked(
-            profile.solid.sweep(&spine, path_plane.normal().to_array())?,
-        ))
+        let (solid, records) = profile
+            .solid
+            .sweep_tracked(&spine, path_plane.normal().to_array())?;
+        Body::generated(profile, solid, &records)
     }
 
     fn translate(&mut self, body: &Body, offset: DVec3) -> Result<Body, KernelError> {
@@ -285,9 +308,10 @@ impl GeometryBackend for KernelBackend {
         axis_point: DVec3,
         angle: f64,
     ) -> Result<Body, KernelError> {
-        Ok(Body::untracked(
-            profile.solid.revolve(axis_point.to_array(), angle)?,
-        ))
+        let (solid, records) = profile
+            .solid
+            .revolve_tracked(axis_point.to_array(), angle)?;
+        Body::generated(profile, solid, &records)
     }
 
     fn mirror(

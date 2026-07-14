@@ -100,6 +100,16 @@ mod bridge {
         // --- Extrude ------------------------------------------------------
         /// Extrude a planar face along its normal by `distance` into a solid.
         fn extrude(shape: &Shape, distance: f64) -> Result<UniquePtr<Shape>>;
+        /// Extrude with lineage: `records` receives flat `[tag, in, out]`
+        /// triples — 0 = the profile FACE's image at the sweep start (the
+        /// profile-side cap), 1 = its image at the end (the far cap), 2 =
+        /// side face swept from profile edge `in`, 3/4 = profile edge `in`'s
+        /// start/end rim image. Indices are TopExp map order.
+        fn extrude_tracked(
+            shape: &Shape,
+            distance: f64,
+            records: &mut Vec<i32>,
+        ) -> Result<UniquePtr<Shape>>;
 
         // --- Sweep --------------------------------------------------------
         /// An OPEN planar wire (a sweep path) on the frame `origin + u*xdir +
@@ -123,6 +133,17 @@ mod bridge {
             bny: f64,
             bnz: f64,
         ) -> Result<UniquePtr<Shape>>;
+        /// Sweep with lineage (same record scheme as `extrude_tracked`).
+        /// `records` stays EMPTY when the swept solid needed healing —
+        /// ShapeFix rebuilds sub-shapes without history.
+        fn sweep_tracked(
+            profile: &Shape,
+            spine: &Shape,
+            bnx: f64,
+            bny: f64,
+            bnz: f64,
+            records: &mut Vec<i32>,
+        ) -> Result<UniquePtr<Shape>>;
 
         // --- Revolve ------------------------------------------------------
         /// Revolve the planar profile `shape` by `angle` radians about the
@@ -132,6 +153,17 @@ mod bridge {
             ax: f64, ay: f64, az: f64,
             angle: f64,
         ) -> Result<UniquePtr<Shape>>;
+        /// Revolve with lineage (same record scheme as `extrude_tracked`).
+        fn revolve_tracked(
+            shape: &Shape,
+            ax: f64, ay: f64, az: f64,
+            angle: f64,
+            records: &mut Vec<i32>,
+        ) -> Result<UniquePtr<Shape>>;
+
+        /// Which faces bound each edge: flat `(edge_index, face_index)` pairs
+        /// in TopExp map order — names a generative op's lateral edges.
+        fn edge_face_adjacency(s: &Shape) -> Result<Vec<u32>>;
 
         // --- Push/pull -----------------------------------------------------
         /// Offset the planar face of `shape` anchored at `(px,py,pz)` with

@@ -52,6 +52,8 @@ std::unique_ptr<Shape> profile_face(double ox, double oy, double oz,
 
 // --- Extrude ----------------------------------------------------------------
 std::unique_ptr<Shape> extrude(const Shape& s, double distance);
+std::unique_ptr<Shape> extrude_tracked(const Shape& s, double distance,
+                                       rust::Vec<int32_t>& records);
 
 // --- Sweep ------------------------------------------------------------------
 std::unique_ptr<Shape> path_wire(double ox, double oy, double oz,
@@ -61,10 +63,17 @@ std::unique_ptr<Shape> path_wire(double ox, double oy, double oz,
                                  rust::Slice<const double> segs);
 std::unique_ptr<Shape> sweep(const Shape& profile, const Shape& spine,
                              double bnx, double bny, double bnz);
+std::unique_ptr<Shape> sweep_tracked(const Shape& profile, const Shape& spine,
+                                     double bnx, double bny, double bnz,
+                                     rust::Vec<int32_t>& records);
 
 // --- Revolve ----------------------------------------------------------------
 std::unique_ptr<Shape> revolve(const Shape& s, double ax, double ay, double az,
                                double angle);
+std::unique_ptr<Shape> revolve_tracked(const Shape& s, double ax, double ay,
+                                       double az, double angle,
+                                       rust::Vec<int32_t>& records);
+rust::Vec<uint32_t> edge_face_adjacency(const Shape& s);
 
 // --- Push/pull --------------------------------------------------------------
 std::unique_ptr<Shape> push_pull(const Shape& s, double px, double py, double pz,

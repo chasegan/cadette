@@ -58,8 +58,18 @@ pub enum ElementName {
     /// A NEW edge born where faces intersect (the rim circle where a bore
     /// meets a box top). Parents are the intersecting faces' names, sorted;
     /// an untracked parent face is simply absent, so the name may carry one
-    /// parent instead of two.
+    /// parent instead of two. Also names a generative op's lateral edges by
+    /// the (result) faces they separate.
     Intersection { parents: Vec<ElementName> },
+    /// A face a generative op (extrude/revolve/sweep) swept out of profile
+    /// boundary edge `parent` — the side wall an extrude drags out of a
+    /// sketch segment.
+    Swept { parent: Box<ElementName> },
+    /// The far-end image a generative op creates opposite the profile: the
+    /// end cap from the profile FACE, or an end-cap rim edge from a profile
+    /// EDGE. (The profile-side images keep the profile elements' names
+    /// verbatim — they ARE those elements.)
+    Cap { parent: Box<ElementName> },
 }
 
 /// One (input element → result element) lineage pair reported by a tracked
@@ -73,6 +83,37 @@ pub struct Lineage {
     pub index: u32,
     /// Element index in the result, or `None` if deleted.
     pub output: Option<u32>,
+}
+
+/// One lineage record from a generative op (extrude/revolve/sweep) — the
+/// parsed form of the kernel's `[tag, in, out]` triples.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GenRecord {
+    /// The profile face's image at the sweep START (the profile-side cap) —
+    /// it keeps the profile face's name verbatim.
+    StartCapFace { out_face: u32 },
+    /// The profile face's image at the END (the far cap).
+    EndCapFace { out_face: u32 },
+    /// A side face swept from profile edge `edge`.
+    SideFace { edge: u32, out_face: u32 },
+    /// Profile edge `edge`'s image on the start side (name verbatim).
+    StartEdge { edge: u32, out_edge: u32 },
+    /// Profile edge `edge`'s image on the end cap.
+    EndEdge { edge: u32, out_edge: u32 },
+}
+
+impl GenRecord {
+    /// Parse one kernel `[tag, in, out]` triple; `None` for an unknown tag.
+    pub fn parse(tag: i32, input: u32, out: u32) -> Option<GenRecord> {
+        Some(match tag {
+            0 => GenRecord::StartCapFace { out_face: out },
+            1 => GenRecord::EndCapFace { out_face: out },
+            2 => GenRecord::SideFace { edge: input, out_face: out },
+            3 => GenRecord::StartEdge { edge: input, out_edge: out },
+            4 => GenRecord::EndEdge { edge: input, out_edge: out },
+            _ => return None,
+        })
+    }
 }
 
 /// The element map of one body: a name per face and per edge, index-aligned
@@ -162,7 +203,7 @@ impl ElementMap {
         out_edges: usize,
         centroid: &mut dyn FnMut(ElemKind, u32) -> [f64; 3],
     ) -> ElementMap {
-        let faces = compose_kind(a, b, ElemKind::Face, face_lineage, out_faces, centroid);
+        let mut faces = compose_kind(a, b, ElemKind::Face, face_lineage, out_faces, centroid);
         let mut edges = compose_kind(a, b, ElemKind::Edge, edge_lineage, out_edges, centroid);
 
         // Section edges fill the gaps the edge lineage leaves: a genuinely new
@@ -182,7 +223,161 @@ impl ElementMap {
             }
         }
 
+        // Ambiguity is never guessed away (e.g. the same body fed to both
+        // operand slots): clear any name that landed on two elements.
+        clear_duplicates(&mut faces);
+        clear_duplicates(&mut edges);
+
         ElementMap { faces, edges }
+    }
+
+    /// Compose a generative op's map (extrude/revolve/sweep) from the profile
+    /// body's map and the kernel's lineage report.
+    ///
+    /// Rules: the profile face's START image keeps its name verbatim (it IS
+    /// that face); its END image becomes [`ElementName::Cap`]; each profile
+    /// edge sweeps a [`ElementName::Swept`] side face (several pieces — a
+    /// corner-transition sweep — become `Split`s of it by centroid rank);
+    /// start/end rim edges mirror the face rule. Lateral edges (swept from
+    /// vertices, which maps don't track) are then named by ADJACENCY —
+    /// [`ElementName::Intersection`] of the named result faces they separate.
+    /// Finally, any name that ended up on two elements is cleared from both:
+    /// ambiguity is never guessed away.
+    pub fn compose_generated(
+        profile: &ElementMap,
+        records: &[GenRecord],
+        out_faces: usize,
+        out_edges: usize,
+        adjacency: &[(u32, u32)],
+        centroid: &mut dyn FnMut(ElemKind, u32) -> [f64; 3],
+    ) -> ElementMap {
+        let mut faces: Vec<Option<ElementName>> = vec![None; out_faces];
+        let mut edges: Vec<Option<ElementName>> = vec![None; out_edges];
+        // First write wins: a full revolution's start and end images are the
+        // SAME seam element, and the verbatim start name (reported first) is
+        // the truthful one — the seam IS the profile element.
+        let set = |slots: &mut Vec<Option<ElementName>>, i: u32, name: Option<ElementName>| {
+            if let Some(slot @ None) = slots.get_mut(i as usize) {
+                *slot = name;
+            }
+        };
+
+        // Side faces first, grouped per profile edge so multi-piece sweeps
+        // (RoundCorner transitions) get Split ordinals instead of duplicates.
+        let mut sides_of: HashMap<u32, Vec<u32>> = HashMap::new();
+        for r in records {
+            if let GenRecord::SideFace { edge, out_face } = r {
+                sides_of.entry(*edge).or_default().push(*out_face);
+            }
+        }
+        for (edge, mut outs) in sides_of {
+            let Some(parent) = profile.edge(edge) else { continue };
+            let swept = ElementName::Swept {
+                parent: Box::new(parent.clone()),
+            };
+            outs.sort_unstable();
+            outs.dedup();
+            if outs.len() == 1 {
+                set(&mut faces, outs[0], Some(swept));
+            } else {
+                let mut ranked = outs;
+                ranked.sort_by(|&p, &q| {
+                    let (a, b) = (centroid(ElemKind::Face, p), centroid(ElemKind::Face, q));
+                    a[0].total_cmp(&b[0])
+                        .then(a[1].total_cmp(&b[1]))
+                        .then(a[2].total_cmp(&b[2]))
+                });
+                for (ordinal, &out) in ranked.iter().enumerate() {
+                    set(
+                        &mut faces,
+                        out,
+                        Some(ElementName::Split {
+                            parent: Box::new(swept.clone()),
+                            ordinal: ordinal as u32,
+                        }),
+                    );
+                }
+            }
+        }
+        for r in records {
+            match *r {
+                GenRecord::StartCapFace { out_face } => {
+                    set(&mut faces, out_face, profile.face(0).cloned());
+                }
+                GenRecord::EndCapFace { out_face } => {
+                    let name = profile.face(0).map(|p| ElementName::Cap {
+                        parent: Box::new(p.clone()),
+                    });
+                    set(&mut faces, out_face, name);
+                }
+                GenRecord::StartEdge { edge, out_edge } => {
+                    set(&mut edges, out_edge, profile.edge(edge).cloned());
+                }
+                GenRecord::EndEdge { edge, out_edge } => {
+                    let name = profile.edge(edge).map(|p| ElementName::Cap {
+                        parent: Box::new(p.clone()),
+                    });
+                    set(&mut edges, out_edge, name);
+                }
+                GenRecord::SideFace { .. } => {} // handled above
+            }
+        }
+
+        // Lateral edges by adjacency: the Intersection of the named faces the
+        // edge separates — only when EVERY bounding face is named (a partial
+        // parent list could collide with a different edge's).
+        let mut bounds_of: HashMap<u32, Vec<u32>> = HashMap::new();
+        for &(edge, face) in adjacency {
+            bounds_of.entry(edge).or_default().push(face);
+        }
+        for (edge, bounds) in bounds_of {
+            let Some(slot) = edges.get_mut(edge as usize) else { continue };
+            if slot.is_some() {
+                continue;
+            }
+            let mut parents: Vec<ElementName> = Vec::with_capacity(bounds.len());
+            let all_named = bounds.iter().all(|&f| {
+                faces
+                    .get(f as usize)
+                    .and_then(|n| n.as_ref())
+                    .map(|n| parents.push(n.clone()))
+                    .is_some()
+            });
+            if all_named && !parents.is_empty() {
+                parents.sort();
+                parents.dedup();
+                *slot = Some(ElementName::Intersection { parents });
+            }
+        }
+
+        // Ambiguity is never guessed away: clear any name that landed on two
+        // elements of the same kind.
+        clear_duplicates(&mut faces);
+        clear_duplicates(&mut edges);
+
+        ElementMap { faces, edges }
+    }
+}
+
+/// Clear every name that appears on more than one element — an ambiguous name
+/// must not resolve at all rather than resolve arbitrarily.
+fn clear_duplicates(slots: &mut [Option<ElementName>]) {
+    let mut seen: HashMap<&ElementName, usize> = HashMap::new();
+    for name in slots.iter().flatten() {
+        *seen.entry(name).or_default() += 1;
+    }
+    let dups: Vec<ElementName> = seen
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(name, _)| name.clone())
+        .collect();
+    if dups.is_empty() {
+        return;
+    }
+    for slot in slots.iter_mut() {
+        if slot.as_ref().is_some_and(|n| dups.contains(n)) {
+            *slot = None;
+        }
     }
 }
 

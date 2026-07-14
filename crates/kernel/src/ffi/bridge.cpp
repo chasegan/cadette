@@ -64,6 +64,7 @@
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_MapOfShape.hxx>
 #include <Standard_Failure.hxx>
 #include <gp_Pnt.hxx>
@@ -284,7 +285,56 @@ std::unique_ptr<Shape> path_wire(double ox, double oy, double oz,
 
 // --- Extrude ----------------------------------------------------------------
 
-std::unique_ptr<Shape> extrude(const Shape& s, double distance) {
+namespace {
+
+// Report a generative op's lineage (extrude/revolve — anything exposing
+// per-subshape FirstShape/LastShape and Generated). Flat [tag, in, out]
+// triples: 0 = profile FACE's start image (the profile-side cap), 1 = its end
+// image (the far cap), 2 = side FACE swept from profile edge `in`, 3/4 =
+// profile edge `in`'s start/end rim image. Lateral edges (swept from
+// vertices, which element maps don't track) are named later by face
+// adjacency; anything the maker doesn't report simply stays unnamed.
+template <typename Maker>
+void track_generated(Maker& mk, const TopoDS_Shape& profile,
+                     const TopoDS_Shape& result, rust::Vec<int32_t>& records) {
+  TopTools_IndexedMapOfShape out_faces, out_edges;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  TopExp::MapShapes(result, TopAbs_EDGE, out_edges);
+  auto push = [&](int32_t tag, int32_t in_idx, const TopoDS_Shape& out,
+                  const TopTools_IndexedMapOfShape& map) {
+    if (out.IsNull()) return;
+    const int oi = map.FindIndex(out);
+    if (oi > 0) {
+      records.push_back(tag);
+      records.push_back(in_idx);
+      records.push_back(static_cast<int32_t>(oi - 1));
+    }
+  };
+
+  TopExp_Explorer fx(profile, TopAbs_FACE);
+  if (fx.More()) {
+    push(0, 0, mk.FirstShape(fx.Current()), out_faces);
+    push(1, 0, mk.LastShape(fx.Current()), out_faces);
+  }
+  TopTools_IndexedMapOfShape in_edges;
+  TopExp::MapShapes(profile, TopAbs_EDGE, in_edges);
+  for (int i = 1; i <= in_edges.Extent(); ++i) {
+    const TopoDS_Shape& e = in_edges(i);
+    const TopTools_ListOfShape& gen = mk.Generated(e);
+    for (TopTools_ListOfShape::Iterator it(gen); it.More(); it.Next()) {
+      if (it.Value().ShapeType() == TopAbs_FACE) {
+        push(2, i - 1, it.Value(), out_faces);
+      }
+    }
+    push(3, i - 1, mk.FirstShape(e), out_edges);
+    push(4, i - 1, mk.LastShape(e), out_edges);
+  }
+}
+
+}  // namespace
+
+std::unique_ptr<Shape> extrude_tracked(const Shape& s, double distance,
+                                       rust::Vec<int32_t>& records) {
   return guard("extrude", [&] {
     // Find the planar face and extrude along its normal.
     TopExp_Explorer ex(s.shape, TopAbs_FACE);
@@ -301,8 +351,15 @@ std::unique_ptr<Shape> extrude(const Shape& s, double distance) {
     gp_Vec direction(normal);
     direction *= distance;
     BRepPrimAPI_MakePrism prism(s.shape, direction);
-    return std::make_unique<Shape>(prism.Shape());
+    const TopoDS_Shape result = prism.Shape();
+    track_generated(prism, s.shape, result, records);
+    return std::make_unique<Shape>(result);
   });
+}
+
+std::unique_ptr<Shape> extrude(const Shape& s, double distance) {
+  rust::Vec<int32_t> ignored;
+  return extrude_tracked(s, distance, ignored);
 }
 
 // --- Revolve ----------------------------------------------------------------
@@ -312,8 +369,9 @@ std::unique_ptr<Shape> extrude(const Shape& s, double distance) {
 // `(ax,ay,az)`. The axis edge is one of the profile's own segments (a sketch
 // centerline) or an adjacent model edge; either way it resolves the same way as
 // a fillet anchor. A full revolution is `angle = 2π`.
-std::unique_ptr<Shape> revolve(const Shape& s, double ax, double ay, double az,
-                               double angle) {
+std::unique_ptr<Shape> revolve_tracked(const Shape& s, double ax, double ay,
+                                       double az, double angle,
+                                       rust::Vec<int32_t>& records) {
   return guard("revolve", [&] {
     const gp_Pnt anchor(ax, ay, az);
     const TopoDS_Vertex probe_vertex = BRepBuilderAPI_MakeVertex(anchor).Vertex();
@@ -347,17 +405,26 @@ std::unique_ptr<Shape> revolve(const Shape& s, double ax, double ay, double az,
       throw std::runtime_error("revolve: degenerate axis edge");
     }
     const gp_Ax1 axis(p1, gp_Dir(dir));
-    const TopoDS_Shape solid = BRepPrimAPI_MakeRevol(s.shape, axis, angle).Shape();
+    BRepPrimAPI_MakeRevol revol(s.shape, axis, angle);
+    const TopoDS_Shape solid = revol.Shape();
+    track_generated(revol, s.shape, solid, records);
     return std::make_unique<Shape>(solid);
   });
+}
+
+std::unique_ptr<Shape> revolve(const Shape& s, double ax, double ay, double az,
+                               double angle) {
+  rust::Vec<int32_t> ignored;
+  return revolve_tracked(s, ax, ay, az, angle, ignored);
 }
 
 // --- Sweep ------------------------------------------------------------------
 
 // Sweep the planar `profile` face along the `spine` wire into a solid, with the
 // section's roll locked to the constant `binormal` (the path plane's normal).
-std::unique_ptr<Shape> sweep(const Shape& profile, const Shape& spine,
-                             double bnx, double bny, double bnz) {
+std::unique_ptr<Shape> sweep_tracked(const Shape& profile, const Shape& spine,
+                                     double bnx, double bny, double bnz,
+                                     rust::Vec<int32_t>& records) {
   return guard("sweep", [&] {
     TopoDS_Wire spine_wire;
     if (spine.shape.ShapeType() == TopAbs_WIRE) {
@@ -413,10 +480,12 @@ std::unique_ptr<Shape> sweep(const Shape& profile, const Shape& spine,
     // It renders and even measures fine, but booleans silently classify an
     // invalid solid as nothing (empty cut, fuse that drops it). Heal it here
     // so downstream ops see a genuinely valid solid.
+    bool healed = false;
     if (!BRepCheck_Analyzer(result).IsValid()) {
       ShapeFix_Shape fixer(result);
       fixer.Perform();
       result = fixer.Shape();
+      healed = true;
       // A sweep that stays invalid after healing (typically a bend tighter
       // than the profile is wide, self-intersecting at the elbow) must be an
       // error, not a silently broken body: it renders fine but corrupts every
@@ -427,7 +496,73 @@ std::unique_ptr<Shape> sweep(const Shape& profile, const Shape& spine,
             "for this profile size) — widen the bend or shrink the profile");
       }
     }
+    // Lineage — only when the shape was NOT healed: ShapeFix rebuilds
+    // sub-shapes without history, so records against a healed result would
+    // point at stale topology. An unhealed sweep reports side faces via
+    // Generated(profile edge); PipeShell has no per-subshape FirstShape/
+    // LastShape, so caps get lineage only if the no-arg accessors surface a
+    // result face (rim edges stay unnamed — honest gaps).
+    if (!healed) {
+      TopTools_IndexedMapOfShape out_faces;
+      TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+      auto push_face = [&](int32_t tag, int32_t in_idx, const TopoDS_Shape& out) {
+        if (out.IsNull()) return;
+        const int oi = out_faces.FindIndex(out);
+        if (oi > 0) {
+          records.push_back(tag);
+          records.push_back(in_idx);
+          records.push_back(static_cast<int32_t>(oi - 1));
+        }
+      };
+      push_face(0, 0, shell.FirstShape());
+      push_face(1, 0, shell.LastShape());
+      TopTools_IndexedMapOfShape in_edges;
+      TopExp::MapShapes(profile.shape, TopAbs_EDGE, in_edges);
+      for (int i = 1; i <= in_edges.Extent(); ++i) {
+        const TopTools_ListOfShape& gen = shell.Generated(in_edges(i));
+        for (TopTools_ListOfShape::Iterator it(gen); it.More(); it.Next()) {
+          if (it.Value().ShapeType() == TopAbs_FACE) {
+            push_face(2, i - 1, it.Value());
+          }
+        }
+      }
+    }
     return std::make_unique<Shape>(result);
+  });
+}
+
+std::unique_ptr<Shape> sweep(const Shape& profile, const Shape& spine,
+                             double bnx, double bny, double bnz) {
+  rust::Vec<int32_t> ignored;
+  return sweep_tracked(profile, spine, bnx, bny, bnz, ignored);
+}
+
+// Which faces bound each edge — flat (edge_index, face_index) pairs, TopExp
+// map order. Names the lateral edges of a generative op (an edge swept from
+// an untracked vertex is identified by the two named faces it separates).
+rust::Vec<uint32_t> edge_face_adjacency(const Shape& s) {
+  return guard("edge_face_adjacency", [&] {
+    TopTools_IndexedMapOfShape edges, faces;
+    TopExp::MapShapes(s.shape, TopAbs_EDGE, edges);
+    TopExp::MapShapes(s.shape, TopAbs_FACE, faces);
+    TopTools_IndexedDataMapOfShapeListOfShape ancestors;
+    TopExp::MapShapesAndAncestors(s.shape, TopAbs_EDGE, TopAbs_FACE, ancestors);
+
+    rust::Vec<uint32_t> out;
+    for (int i = 1; i <= edges.Extent(); ++i) {
+      const TopTools_ListOfShape* bound = ancestors.Seek(edges(i));
+      if (!bound) continue;
+      std::set<uint32_t> fs;
+      for (TopTools_ListOfShape::Iterator it(*bound); it.More(); it.Next()) {
+        const int fi = faces.FindIndex(it.Value());
+        if (fi > 0) fs.insert(static_cast<uint32_t>(fi - 1));
+      }
+      for (const uint32_t f : fs) {
+        out.push_back(static_cast<uint32_t>(i - 1));
+        out.push_back(f);
+      }
+    }
+    return out;
   });
 }
 
