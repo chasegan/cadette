@@ -78,6 +78,13 @@ rust::Vec<uint32_t> edge_face_adjacency(const Shape& s);
 // --- Push/pull --------------------------------------------------------------
 std::unique_ptr<Shape> push_pull(const Shape& s, double px, double py, double pz,
                                  double nx, double ny, double nz, double distance);
+std::unique_ptr<Shape> push_pull_tracked(const Shape& s, double px, double py,
+                                         double pz, double nx, double ny,
+                                         double nz, double distance,
+                                         rust::Vec<int32_t>& meta,
+                                         rust::Vec<int32_t>& face_records,
+                                         rust::Vec<int32_t>& edge_records,
+                                         rust::Vec<int32_t>& section_records);
 
 // --- Transforms -------------------------------------------------------------
 std::unique_ptr<Shape> translate(const Shape& s, double dx, double dy, double dz);
@@ -116,6 +123,16 @@ std::unique_ptr<Shape> fillet_all_edges(const Shape& s, double radius);
 std::unique_ptr<Shape> fillet_edges(const Shape& s,
                                     rust::Slice<const double> coords,
                                     double radius);
+std::unique_ptr<Shape> fillet_all_tracked(const Shape& s, double radius,
+                                          rust::Vec<int32_t>& face_records,
+                                          rust::Vec<int32_t>& edge_records,
+                                          rust::Vec<int32_t>& rounded_records);
+std::unique_ptr<Shape> fillet_edges_tracked(const Shape& s,
+                                            rust::Slice<const double> coords,
+                                            double radius,
+                                            rust::Vec<int32_t>& face_records,
+                                            rust::Vec<int32_t>& edge_records,
+                                            rust::Vec<int32_t>& rounded_records);
 
 // --- Display / export -------------------------------------------------------
 Mesh tessellate(const Shape& s, double deflection);

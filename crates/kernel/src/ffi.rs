@@ -177,6 +177,23 @@ mod bridge {
             distance: f64,
         ) -> Result<UniquePtr<Shape>>;
 
+        /// Push/pull with lineage. `meta` stays EMPTY for the zero-distance
+        /// no-op; otherwise it receives `[pushed_face_index (in shape),
+        /// prism_far_cap_face_index (in the prism), prism_face_count,
+        /// prism_edge_count]` and the record vecs receive boolean_tracked-style
+        /// lineage with operand 0 = shape, operand 1 = the offset prism.
+        #[allow(clippy::too_many_arguments)]
+        fn push_pull_tracked(
+            shape: &Shape,
+            px: f64, py: f64, pz: f64,
+            nx: f64, ny: f64, nz: f64,
+            distance: f64,
+            meta: &mut Vec<i32>,
+            face_records: &mut Vec<i32>,
+            edge_records: &mut Vec<i32>,
+            section_records: &mut Vec<i32>,
+        ) -> Result<UniquePtr<Shape>>;
+
         /// A cheap shallow copy (shares the underlying ref-counted geometry).
         fn copy_shape(shape: &Shape) -> UniquePtr<Shape>;
 
@@ -277,6 +294,30 @@ mod bridge {
             shape: &Shape,
             coords: &[f64],
             radius: f64,
+        ) -> Result<UniquePtr<Shape>>;
+
+        /// Fillet-every-edge with lineage: `face_records`/`edge_records` carry
+        /// `[0, input_index, output_index|-1]` survival triples;
+        /// `rounded_records` carries `[input_edge, output_face]` pairs — the
+        /// fillet face each rounded edge GENERATED.
+        fn fillet_all_tracked(
+            shape: &Shape,
+            radius: f64,
+            face_records: &mut Vec<i32>,
+            edge_records: &mut Vec<i32>,
+            rounded_records: &mut Vec<i32>,
+        ) -> Result<UniquePtr<Shape>>;
+
+        /// Fillet-by-anchors with lineage (same record scheme as
+        /// `fillet_all_tracked`). Records stay EMPTY when the result needed
+        /// healing — ShapeFix discards history.
+        fn fillet_edges_tracked(
+            shape: &Shape,
+            coords: &[f64],
+            radius: f64,
+            face_records: &mut Vec<i32>,
+            edge_records: &mut Vec<i32>,
+            rounded_records: &mut Vec<i32>,
         ) -> Result<UniquePtr<Shape>>;
 
         // --- Display / export ---------------------------------------------

@@ -18,6 +18,26 @@ fn gen_records(records: Vec<i32>) -> Vec<GenRecord> {
         .collect()
 }
 
+/// Parse the kernel's flat `[which, in, out|-1]` survival triples.
+fn lineage(records: Vec<i32>) -> Vec<Lineage> {
+    records
+        .chunks_exact(3)
+        .map(|r| Lineage {
+            input: r[0] as u8,
+            index: r[1] as u32,
+            output: (r[2] >= 0).then_some(r[2] as u32),
+        })
+        .collect()
+}
+
+/// Parse the kernel's flat `[in, out]` generated-face pairs.
+fn pairs(records: Vec<i32>) -> Vec<(u32, u32)> {
+    records
+        .chunks_exact(2)
+        .map(|r| (r[0] as u32, r[1] as u32))
+        .collect()
+}
+
 /// Re-export the tessellated mesh produced by [`Solid::tessellate`].
 pub use crate::ffi::Mesh;
 
@@ -45,6 +65,40 @@ pub struct TrackedBoolean {
     /// `(which_input, input_face_index, result_edge_index)`: the boolean
     /// generated this new edge where that face crossed the other body.
     pub sections: Vec<(u8, u32, u32)>,
+}
+
+/// A fillet result with its evolution history. Lineage `input` is always 0
+/// (one source body); `rounded` pairs each source edge with the fillet face
+/// it generated. All vecs are EMPTY when the result needed healing.
+pub struct TrackedModify {
+    pub result: Solid,
+    pub faces: Vec<Lineage>,
+    pub edges: Vec<Lineage>,
+    /// `(source_edge_index, result_face_index)` per generated fillet face.
+    pub rounded: Vec<(u32, u32)>,
+}
+
+/// A push/pull result with its evolution history: boolean-style lineage where
+/// operand 0 is the body and operand 1 the offset prism. `info` is `None`
+/// for the zero-distance no-op (the result is the input, identity map).
+pub struct TrackedPushPull {
+    pub result: Solid,
+    pub info: Option<PushPullInfo>,
+    pub faces: Vec<Lineage>,
+    pub edges: Vec<Lineage>,
+    pub sections: Vec<(u8, u32, u32)>,
+}
+
+/// Where the pushed face sits — everything needed to seed the prism operand's
+/// pseudo-map (its far cap IS the pushed face, moved).
+#[derive(Clone, Copy, Debug)]
+pub struct PushPullInfo {
+    /// Face index of the pushed face in the INPUT body.
+    pub pushed_face: u32,
+    /// Face index of the prism's far cap in the PRISM.
+    pub far_cap: u32,
+    pub prism_faces: usize,
+    pub prism_edges: usize,
 }
 
 /// A `TopoDS_Shape` is a handle to shared, ref-counted geometry, so cloning is
@@ -286,16 +340,6 @@ impl Solid {
             &mut edges,
             &mut sections,
         )?;
-        let lineage = |records: Vec<i32>| -> Vec<Lineage> {
-            records
-                .chunks_exact(3)
-                .map(|r| Lineage {
-                    input: r[0] as u8,
-                    index: r[1] as u32,
-                    output: (r[2] >= 0).then_some(r[2] as u32),
-                })
-                .collect()
-        };
         Ok(TrackedBoolean {
             result: Self::wrap(shape),
             faces: lineage(faces),
@@ -378,6 +422,67 @@ impl Solid {
     /// Fillet the single edge nearest `point` with `radius`.
     pub fn fillet_edge(&self, point: [f64; 3], radius: f64) -> Result<Self> {
         self.fillet_edges(&[point], radius)
+    }
+
+    /// [`Self::fillet_all_edges`] with its lineage report.
+    pub fn fillet_all_tracked(&self, radius: f64) -> Result<TrackedModify> {
+        let (mut f, mut e, mut r) = (Vec::new(), Vec::new(), Vec::new());
+        let shape = ffi::fillet_all_tracked(&self.0, radius, &mut f, &mut e, &mut r)?;
+        Ok(TrackedModify {
+            result: Self::wrap(shape),
+            faces: lineage(f),
+            edges: lineage(e),
+            rounded: pairs(r),
+        })
+    }
+
+    /// [`Self::fillet_edges`] with its lineage report (empty when healed).
+    pub fn fillet_edges_tracked(
+        &self,
+        points: &[[f64; 3]],
+        radius: f64,
+    ) -> Result<TrackedModify> {
+        let coords: Vec<f64> = points.iter().flat_map(|p| p.iter().copied()).collect();
+        let (mut f, mut e, mut r) = (Vec::new(), Vec::new(), Vec::new());
+        let shape =
+            ffi::fillet_edges_tracked(&self.0, &coords, radius, &mut f, &mut e, &mut r)?;
+        Ok(TrackedModify {
+            result: Self::wrap(shape),
+            faces: lineage(f),
+            edges: lineage(e),
+            rounded: pairs(r),
+        })
+    }
+
+    /// [`Self::push_pull`] with its lineage report.
+    pub fn push_pull_tracked(
+        &self,
+        point: [f64; 3],
+        normal: [f64; 3],
+        distance: f64,
+    ) -> Result<TrackedPushPull> {
+        let mut meta: Vec<i32> = Vec::new();
+        let (mut f, mut e, mut s) = (Vec::new(), Vec::new(), Vec::new());
+        let shape = ffi::push_pull_tracked(
+            &self.0, point[0], point[1], point[2], normal[0], normal[1], normal[2], distance,
+            &mut meta, &mut f, &mut e, &mut s,
+        )?;
+        let info = (meta.len() == 4).then(|| PushPullInfo {
+            pushed_face: meta[0] as u32,
+            far_cap: meta[1] as u32,
+            prism_faces: meta[2] as usize,
+            prism_edges: meta[3] as usize,
+        });
+        Ok(TrackedPushPull {
+            result: Self::wrap(shape),
+            info,
+            faces: lineage(f),
+            edges: lineage(e),
+            sections: s
+                .chunks_exact(3)
+                .map(|r| (r[0] as u8, r[1] as u32, r[2] as u32))
+                .collect(),
+        })
     }
 
     // --- Display / export ---------------------------------------------------

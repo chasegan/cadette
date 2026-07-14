@@ -26,6 +26,7 @@
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <ShapeFix_Shape.hxx>
 #include <ShapeUpgrade_UnifySameDomain.hxx>
+#include <BRepBuilderAPI_MakeShape.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
@@ -106,6 +107,129 @@ TopoDS_Shape unify_same_domain(const TopoDS_Shape& s) {
                                     /*concatBSplines=*/false);
   tool.Build();
   return tool.Shape();
+}
+
+}  // namespace
+
+namespace {
+
+// Push one shape through the unify pass's history: its merged images, itself
+// if untouched, nothing if removed.
+void through_unify(const Handle(BRepTools_History)& uhist, const TopoDS_Shape& m,
+                   TopTools_ListOfShape& fin) {
+  int mapped = 0;
+  if (!uhist.IsNull()) {
+    const TopTools_ListOfShape& umods = uhist->Modified(m);
+    for (TopTools_ListOfShape::Iterator jt(umods); jt.More(); jt.Next()) {
+      fin.Append(jt.Value());
+      ++mapped;
+    }
+  }
+  if (mapped == 0 && (uhist.IsNull() || !uhist->IsRemoved(m))) {
+    fin.Append(m);
+  }
+}
+
+// Track one element kind (faces or edges) of each input through a modifying
+// operation (+ optional unify), appending flat
+// [which_input, input_index, output_index|-1] triples. Two stages, two
+// histories: the maker reports splits via Modified() and consumption via
+// IsDeleted(); the seam-removing unify pass (when run) reports its merges via
+// a BRepTools_History. An input element's final images are its maker images
+// (itself, if untouched) pushed through the unify history. Coverage of this
+// composition is locked by tests/history_spike.rs.
+void track_elements(BRepBuilderAPI_MakeShape& bop,
+                    const Handle(BRepTools_History)& uhist,
+                    std::initializer_list<const TopoDS_Shape*> inputs,
+                    const TopoDS_Shape& result, TopAbs_ShapeEnum elem,
+                    rust::Vec<int32_t>& records) {
+  TopTools_IndexedMapOfShape out_map;
+  TopExp::MapShapes(result, elem, out_map);
+
+  int which = -1;
+  for (const TopoDS_Shape* input_ptr : inputs) {
+    ++which;
+    const TopoDS_Shape& input = *input_ptr;
+    TopTools_IndexedMapOfShape in_map;
+    TopExp::MapShapes(input, elem, in_map);
+
+    for (int i = 1; i <= in_map.Extent(); ++i) {
+      const TopoDS_Shape& e = in_map(i);
+
+      // Stage 1 — through the boolean: splits, or the element itself.
+      TopTools_ListOfShape mid;
+      const TopTools_ListOfShape& mods = bop.Modified(e);
+      if (!mods.IsEmpty()) {
+        mid = mods;
+      } else if (!bop.IsDeleted(e)) {
+        mid.Append(e);
+      }
+
+      // Stage 2 — each image through the unify pass.
+      TopTools_ListOfShape fin;
+      for (TopTools_ListOfShape::Iterator it(mid); it.More(); it.Next()) {
+        through_unify(uhist, it.Value(), fin);
+      }
+
+      // Emit records, deduping images (several splits can unify back into
+      // one output face; both operands can map to the same fused face).
+      std::set<int32_t> outs;
+      for (TopTools_ListOfShape::Iterator it(fin); it.More(); it.Next()) {
+        const int oi = out_map.FindIndex(it.Value());
+        if (oi > 0) outs.insert(static_cast<int32_t>(oi - 1));
+      }
+      if (outs.empty()) {
+        records.push_back(static_cast<int32_t>(which));
+        records.push_back(static_cast<int32_t>(i - 1));
+        records.push_back(-1);
+      } else {
+        for (const int32_t oi : outs) {
+          records.push_back(static_cast<int32_t>(which));
+          records.push_back(static_cast<int32_t>(i - 1));
+          records.push_back(oi);
+        }
+      }
+    }
+  }
+}
+
+// The NEW edges a boolean creates where faces intersect (e.g. the rim circles
+// where a bore meets a box top): for each input FACE, the edges the boolean
+// GENERATED from it, pushed through unify. Appends flat
+// [which_input, input_face_index, output_edge_index] triples — a section edge
+// typically appears once per parent face (one from each operand).
+void track_sections(BRepAlgoAPI_BooleanOperation& bop,
+                    const Handle(BRepTools_History)& uhist,
+                    const TopoDS_Shape& a, const TopoDS_Shape& b,
+                    const TopoDS_Shape& result,
+                    rust::Vec<int32_t>& records) {
+  TopTools_IndexedMapOfShape out_edges;
+  TopExp::MapShapes(result, TopAbs_EDGE, out_edges);
+
+  for (int which = 0; which < 2; ++which) {
+    const TopoDS_Shape& input = which == 0 ? a : b;
+    TopTools_IndexedMapOfShape in_faces;
+    TopExp::MapShapes(input, TopAbs_FACE, in_faces);
+
+    for (int i = 1; i <= in_faces.Extent(); ++i) {
+      const TopTools_ListOfShape& gen = bop.Generated(in_faces(i));
+      TopTools_ListOfShape fin;
+      for (TopTools_ListOfShape::Iterator it(gen); it.More(); it.Next()) {
+        if (it.Value().ShapeType() != TopAbs_EDGE) continue;
+        through_unify(uhist, it.Value(), fin);
+      }
+      std::set<int32_t> outs;
+      for (TopTools_ListOfShape::Iterator it(fin); it.More(); it.Next()) {
+        const int oi = out_edges.FindIndex(it.Value());
+        if (oi > 0) outs.insert(static_cast<int32_t>(oi - 1));
+      }
+      for (const int32_t oi : outs) {
+        records.push_back(static_cast<int32_t>(which));
+        records.push_back(static_cast<int32_t>(i - 1));
+        records.push_back(oi);
+      }
+    }
+  }
 }
 
 }  // namespace
@@ -588,9 +712,21 @@ static bool face_pln(const TopoDS_Face& face, gp_Pln& out) {
   return false;
 }
 
-std::unique_ptr<Shape> push_pull(const Shape& s, double px, double py, double pz,
-                                 double nx, double ny, double nz,
-                                 double distance) {
+// Push/pull with lineage. `meta` stays EMPTY for the zero-distance no-op
+// (identity — the caller keeps the input's map); otherwise it receives
+// [pushed_face_index (in `s`), prism_far_cap_face_index (in the prism),
+// prism_face_count, prism_edge_count], and the record vecs receive the same
+// boolean + unify lineage as boolean_tracked, with operand 0 = `s` and
+// operand 1 = the offset prism. The far cap matters because it becomes the
+// MOVED face: the caller names it verbatim as the pushed face, so the face's
+// identity survives the push.
+std::unique_ptr<Shape> push_pull_tracked(const Shape& s, double px, double py,
+                                         double pz, double nx, double ny,
+                                         double nz, double distance,
+                                         rust::Vec<int32_t>& meta,
+                                         rust::Vec<int32_t>& face_records,
+                                         rust::Vec<int32_t>& edge_records,
+                                         rust::Vec<int32_t>& section_records) {
   return guard("push_pull", [&] {
     const gp_Pnt anchor(px, py, pz);
     const gp_Dir wanted(nx, ny, nz);
@@ -621,15 +757,57 @@ std::unique_ptr<Shape> push_pull(const Shape& s, double px, double py, double pz
     gp_Vec direction(wanted);
     direction *= distance;
     if (direction.Magnitude() < 1e-9) {
-      return std::make_unique<Shape>(s.shape);  // no-op
+      return std::make_unique<Shape>(s.shape);  // no-op; meta stays empty
     }
-    const TopoDS_Shape prism = BRepPrimAPI_MakePrism(target, direction).Shape();
-    const TopoDS_Shape result =
-        distance >= 0.0 ? BRepAlgoAPI_Fuse(s.shape, prism).Shape()
-                        : BRepAlgoAPI_Cut(s.shape, prism).Shape();
+    BRepPrimAPI_MakePrism prism_mk(target, direction);
+    const TopoDS_Shape prism = prism_mk.Shape();
+
+    std::unique_ptr<BRepAlgoAPI_BooleanOperation> bop;
+    if (distance >= 0.0) {
+      bop = std::make_unique<BRepAlgoAPI_Fuse>(s.shape, prism);
+    } else {
+      bop = std::make_unique<BRepAlgoAPI_Cut>(s.shape, prism);
+    }
+    if (!bop->IsDone()) {
+      throw std::runtime_error("push_pull: the boolean failed");
+    }
     // Pulling a face flush with a neighbour leaves a coplanar seam — merge it.
-    return std::make_unique<Shape>(unify_same_domain(result));
+    ShapeUpgrade_UnifySameDomain usd(bop->Shape(), /*unifyEdges=*/true,
+                                     /*unifyFaces=*/true,
+                                     /*concatBSplines=*/false);
+    usd.Build();
+    const TopoDS_Shape result = usd.Shape();
+    const Handle(BRepTools_History) uhist = usd.History();
+
+    // Lineage: where the pushed face sits in `s`, where its offset image (the
+    // prism's far cap) sits in the prism, and how everything flowed through
+    // the boolean + unify.
+    TopTools_IndexedMapOfShape s_faces, prism_faces, prism_edges;
+    TopExp::MapShapes(s.shape, TopAbs_FACE, s_faces);
+    TopExp::MapShapes(prism, TopAbs_FACE, prism_faces);
+    TopExp::MapShapes(prism, TopAbs_EDGE, prism_edges);
+    const int pushed = s_faces.FindIndex(target);
+    const int far_cap = prism_faces.FindIndex(prism_mk.LastShape());
+    if (pushed > 0 && far_cap > 0) {
+      meta.push_back(static_cast<int32_t>(pushed - 1));
+      meta.push_back(static_cast<int32_t>(far_cap - 1));
+      meta.push_back(static_cast<int32_t>(prism_faces.Extent()));
+      meta.push_back(static_cast<int32_t>(prism_edges.Extent()));
+      track_elements(*bop, uhist, {&s.shape, &prism}, result, TopAbs_FACE,
+                     face_records);
+      track_elements(*bop, uhist, {&s.shape, &prism}, result, TopAbs_EDGE,
+                     edge_records);
+      track_sections(*bop, uhist, s.shape, prism, result, section_records);
+    }
+    return std::make_unique<Shape>(result);
   });
+}
+
+std::unique_ptr<Shape> push_pull(const Shape& s, double px, double py, double pz,
+                                 double nx, double ny, double nz,
+                                 double distance) {
+  rust::Vec<int32_t> meta, f, e, sec;
+  return push_pull_tracked(s, px, py, pz, nx, ny, nz, distance, meta, f, e, sec);
 }
 
 // --- Transforms -------------------------------------------------------------
@@ -721,126 +899,6 @@ std::unique_ptr<Shape> cut(const Shape& a, const Shape& b) {
   });
 }
 
-namespace {
-
-// Push one shape through the unify pass's history: its merged images, itself
-// if untouched, nothing if removed.
-void through_unify(const Handle(BRepTools_History)& uhist, const TopoDS_Shape& m,
-                   TopTools_ListOfShape& fin) {
-  int mapped = 0;
-  if (!uhist.IsNull()) {
-    const TopTools_ListOfShape& umods = uhist->Modified(m);
-    for (TopTools_ListOfShape::Iterator jt(umods); jt.More(); jt.Next()) {
-      fin.Append(jt.Value());
-      ++mapped;
-    }
-  }
-  if (mapped == 0 && (uhist.IsNull() || !uhist->IsRemoved(m))) {
-    fin.Append(m);
-  }
-}
-
-// Track one element kind (faces or edges) of both operands through a boolean
-// + unify, appending flat [which_input, input_index, output_index|-1] triples.
-// Two stages, two histories: the boolean reports splits via Modified() and
-// consumption via IsDeleted(); the seam-removing unify pass reports its merges
-// via a BRepTools_History. An input element's final images are its boolean
-// images (itself, if untouched) pushed through the unify history. Coverage of
-// this composition is locked by tests/history_spike.rs.
-void track_elements(BRepAlgoAPI_BooleanOperation& bop,
-                    const Handle(BRepTools_History)& uhist,
-                    const TopoDS_Shape& a, const TopoDS_Shape& b,
-                    const TopoDS_Shape& result, TopAbs_ShapeEnum elem,
-                    rust::Vec<int32_t>& records) {
-  TopTools_IndexedMapOfShape out_map;
-  TopExp::MapShapes(result, elem, out_map);
-
-  for (int which = 0; which < 2; ++which) {
-    const TopoDS_Shape& input = which == 0 ? a : b;
-    TopTools_IndexedMapOfShape in_map;
-    TopExp::MapShapes(input, elem, in_map);
-
-    for (int i = 1; i <= in_map.Extent(); ++i) {
-      const TopoDS_Shape& e = in_map(i);
-
-      // Stage 1 — through the boolean: splits, or the element itself.
-      TopTools_ListOfShape mid;
-      const TopTools_ListOfShape& mods = bop.Modified(e);
-      if (!mods.IsEmpty()) {
-        mid = mods;
-      } else if (!bop.IsDeleted(e)) {
-        mid.Append(e);
-      }
-
-      // Stage 2 — each image through the unify pass.
-      TopTools_ListOfShape fin;
-      for (TopTools_ListOfShape::Iterator it(mid); it.More(); it.Next()) {
-        through_unify(uhist, it.Value(), fin);
-      }
-
-      // Emit records, deduping images (several splits can unify back into
-      // one output face; both operands can map to the same fused face).
-      std::set<int32_t> outs;
-      for (TopTools_ListOfShape::Iterator it(fin); it.More(); it.Next()) {
-        const int oi = out_map.FindIndex(it.Value());
-        if (oi > 0) outs.insert(static_cast<int32_t>(oi - 1));
-      }
-      if (outs.empty()) {
-        records.push_back(static_cast<int32_t>(which));
-        records.push_back(static_cast<int32_t>(i - 1));
-        records.push_back(-1);
-      } else {
-        for (const int32_t oi : outs) {
-          records.push_back(static_cast<int32_t>(which));
-          records.push_back(static_cast<int32_t>(i - 1));
-          records.push_back(oi);
-        }
-      }
-    }
-  }
-}
-
-// The NEW edges a boolean creates where faces intersect (e.g. the rim circles
-// where a bore meets a box top): for each input FACE, the edges the boolean
-// GENERATED from it, pushed through unify. Appends flat
-// [which_input, input_face_index, output_edge_index] triples — a section edge
-// typically appears once per parent face (one from each operand).
-void track_sections(BRepAlgoAPI_BooleanOperation& bop,
-                    const Handle(BRepTools_History)& uhist,
-                    const TopoDS_Shape& a, const TopoDS_Shape& b,
-                    const TopoDS_Shape& result,
-                    rust::Vec<int32_t>& records) {
-  TopTools_IndexedMapOfShape out_edges;
-  TopExp::MapShapes(result, TopAbs_EDGE, out_edges);
-
-  for (int which = 0; which < 2; ++which) {
-    const TopoDS_Shape& input = which == 0 ? a : b;
-    TopTools_IndexedMapOfShape in_faces;
-    TopExp::MapShapes(input, TopAbs_FACE, in_faces);
-
-    for (int i = 1; i <= in_faces.Extent(); ++i) {
-      const TopTools_ListOfShape& gen = bop.Generated(in_faces(i));
-      TopTools_ListOfShape fin;
-      for (TopTools_ListOfShape::Iterator it(gen); it.More(); it.Next()) {
-        if (it.Value().ShapeType() != TopAbs_EDGE) continue;
-        through_unify(uhist, it.Value(), fin);
-      }
-      std::set<int32_t> outs;
-      for (TopTools_ListOfShape::Iterator it(fin); it.More(); it.Next()) {
-        const int oi = out_edges.FindIndex(it.Value());
-        if (oi > 0) outs.insert(static_cast<int32_t>(oi - 1));
-      }
-      for (const int32_t oi : outs) {
-        records.push_back(static_cast<int32_t>(which));
-        records.push_back(static_cast<int32_t>(i - 1));
-        records.push_back(oi);
-      }
-    }
-  }
-}
-
-}  // namespace
-
 // The production boolean pipeline (BRepAlgoAPI_* then unify-same-domain, the
 // same result as fuse/cut/common) with its evolution history kept instead of
 // discarded — the raw material element maps are composed from. `op`: 0=fuse,
@@ -868,8 +926,8 @@ std::unique_ptr<Shape> boolean_tracked(const Shape& a, const Shape& b, int32_t o
     const TopoDS_Shape result = usd.Shape();
     const Handle(BRepTools_History) uhist = usd.History();
 
-    track_elements(*bop, uhist, a.shape, b.shape, result, TopAbs_FACE, face_records);
-    track_elements(*bop, uhist, a.shape, b.shape, result, TopAbs_EDGE, edge_records);
+    track_elements(*bop, uhist, {&a.shape, &b.shape}, result, TopAbs_FACE, face_records);
+    track_elements(*bop, uhist, {&a.shape, &b.shape}, result, TopAbs_EDGE, edge_records);
     track_sections(*bop, uhist, a.shape, b.shape, result, section_records);
 
     return std::make_unique<Shape>(result);
@@ -1005,7 +1063,43 @@ double edge_length(const Shape& s, uint32_t index) {
 
 // --- Edge treatments --------------------------------------------------------
 
-std::unique_ptr<Shape> fillet_all_edges(const Shape& s, double radius) {
+namespace {
+
+// The lineage of a fillet: how each input face/edge survived, plus which
+// result faces each rounded edge GENERATED ([input_edge, output_face] pairs
+// in `rounded_records`). No unify pass runs in the fillet pipeline, so the
+// history is single-stage (a null unify handle).
+void track_fillet(BRepFilletAPI_MakeFillet& mk, const TopoDS_Shape& input,
+                  const TopoDS_Shape& result,
+                  rust::Vec<int32_t>& face_records,
+                  rust::Vec<int32_t>& edge_records,
+                  rust::Vec<int32_t>& rounded_records) {
+  const Handle(BRepTools_History) no_unify;
+  track_elements(mk, no_unify, {&input}, result, TopAbs_FACE, face_records);
+  track_elements(mk, no_unify, {&input}, result, TopAbs_EDGE, edge_records);
+
+  TopTools_IndexedMapOfShape out_faces, in_edges;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  TopExp::MapShapes(input, TopAbs_EDGE, in_edges);
+  for (int i = 1; i <= in_edges.Extent(); ++i) {
+    const TopTools_ListOfShape& gen = mk.Generated(in_edges(i));
+    for (TopTools_ListOfShape::Iterator it(gen); it.More(); it.Next()) {
+      if (it.Value().ShapeType() != TopAbs_FACE) continue;
+      const int oi = out_faces.FindIndex(it.Value());
+      if (oi > 0) {
+        rounded_records.push_back(static_cast<int32_t>(i - 1));
+        rounded_records.push_back(static_cast<int32_t>(oi - 1));
+      }
+    }
+  }
+}
+
+}  // namespace
+
+std::unique_ptr<Shape> fillet_all_tracked(const Shape& s, double radius,
+                                          rust::Vec<int32_t>& face_records,
+                                          rust::Vec<int32_t>& edge_records,
+                                          rust::Vec<int32_t>& rounded_records) {
   return guard("fillet_all_edges", [&] {
     BRepFilletAPI_MakeFillet mk(s.shape);
     // Use a uniqued edge map: a raw explorer visits shared edges once per
@@ -1015,12 +1109,23 @@ std::unique_ptr<Shape> fillet_all_edges(const Shape& s, double radius) {
     for (int i = 1; i <= edges.Extent(); ++i) {
       mk.Add(radius, TopoDS::Edge(edges(i)));
     }
-    return std::make_unique<Shape>(mk.Shape());
+    const TopoDS_Shape result = mk.Shape();
+    track_fillet(mk, s.shape, result, face_records, edge_records, rounded_records);
+    return std::make_unique<Shape>(result);
   });
 }
 
-std::unique_ptr<Shape> fillet_edges(const Shape& s, rust::Slice<const double> coords,
-                                    double radius) {
+std::unique_ptr<Shape> fillet_all_edges(const Shape& s, double radius) {
+  rust::Vec<int32_t> f, e, r;
+  return fillet_all_tracked(s, radius, f, e, r);
+}
+
+std::unique_ptr<Shape> fillet_edges_tracked(const Shape& s,
+                                            rust::Slice<const double> coords,
+                                            double radius,
+                                            rust::Vec<int32_t>& face_records,
+                                            rust::Vec<int32_t>& edge_records,
+                                            rust::Vec<int32_t>& rounded_records) {
   return guard("fillet_edges", [&] {
     if (coords.size() % 3 != 0) {
       throw std::runtime_error("fillet_edges: coords must be xyz triples");
@@ -1069,10 +1174,12 @@ std::unique_ptr<Shape> fillet_edges(const Shape& s, rust::Slice<const double> co
     // silently corrupts every downstream boolean and STL. Try to heal it (the
     // same policy as the swept-solid path) — minor tolerance/pcurve defects
     // recover into a clean solid.
+    bool healed = false;
     if (!BRepCheck_Analyzer(result).IsValid()) {
       ShapeFix_Shape fixer(result);
       fixer.Perform();
       result = fixer.Shape();
+      healed = true;
     }
     // A genuine radius-too-large overlap can't be made watertight: ShapeFix
     // strips the tangled faces and leaves an OPEN shell (valid per BRepCheck,
@@ -1088,8 +1195,20 @@ std::unique_ptr<Shape> fillet_edges(const Shape& s, rust::Slice<const double> co
           "fillet: the rounded edges overlap (the radius is too large for the "
           "face between them) — reduce the fillet radius");
     }
+    // Lineage — only when the shape was NOT healed: ShapeFix rebuilds
+    // sub-shapes without history, so records against a healed result would
+    // point at stale topology (its elements stay unnamed, anchor fallback).
+    if (!healed) {
+      track_fillet(mk, s.shape, result, face_records, edge_records, rounded_records);
+    }
     return std::make_unique<Shape>(result);
   });
+}
+
+std::unique_ptr<Shape> fillet_edges(const Shape& s, rust::Slice<const double> coords,
+                                    double radius) {
+  rust::Vec<int32_t> f, e, r;
+  return fillet_edges_tracked(s, coords, radius, f, e, r);
 }
 
 // --- Display / export -------------------------------------------------------

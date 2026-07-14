@@ -115,13 +115,16 @@ fn a_sketch_face_is_born_too() {
 
 #[test]
 fn untracked_ops_return_the_empty_map_not_stale_names() {
+    // Group/compound is the one op left outside name tracking (deferred:
+    // member maps need face-index offsetting).
     let mut backend = KernelBackend::default();
-    let body = tracked_cuboid(&mut backend, 1);
-    backend.begin_feature(FeatureId(2));
-    let rounded = backend.fillet_all(&body, 1.0).unwrap();
+    let a = tracked_cuboid(&mut backend, 1);
+    let b = tracked_cuboid(&mut backend, 2);
+    backend.begin_feature(FeatureId(3));
+    let grouped = backend.compound(&[&a, &b]).unwrap();
     assert!(
-        rounded.elements.is_empty(),
-        "fillets don't propagate names yet — the map must say so"
+        grouped.elements.is_empty(),
+        "compounds don't propagate names yet — the map must say so"
     );
 }
 

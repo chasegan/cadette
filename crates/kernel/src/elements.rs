@@ -70,6 +70,9 @@ pub enum ElementName {
     /// EDGE. (The profile-side images keep the profile elements' names
     /// verbatim — they ARE those elements.)
     Cap { parent: Box<ElementName> },
+    /// The face a fillet rolled out of edge `parent` — "the rounding of that
+    /// edge". The trimmed faces around it keep their names verbatim.
+    Rounded { parent: Box<ElementName> },
 }
 
 /// One (input element → result element) lineage pair reported by a tracked
@@ -323,32 +326,7 @@ impl ElementMap {
             }
         }
 
-        // Lateral edges by adjacency: the Intersection of the named faces the
-        // edge separates — only when EVERY bounding face is named (a partial
-        // parent list could collide with a different edge's).
-        let mut bounds_of: HashMap<u32, Vec<u32>> = HashMap::new();
-        for &(edge, face) in adjacency {
-            bounds_of.entry(edge).or_default().push(face);
-        }
-        for (edge, bounds) in bounds_of {
-            let Some(slot) = edges.get_mut(edge as usize) else { continue };
-            if slot.is_some() {
-                continue;
-            }
-            let mut parents: Vec<ElementName> = Vec::with_capacity(bounds.len());
-            let all_named = bounds.iter().all(|&f| {
-                faces
-                    .get(f as usize)
-                    .and_then(|n| n.as_ref())
-                    .map(|n| parents.push(n.clone()))
-                    .is_some()
-            });
-            if all_named && !parents.is_empty() {
-                parents.sort();
-                parents.dedup();
-                *slot = Some(ElementName::Intersection { parents });
-            }
-        }
+        fill_edges_by_adjacency(&faces, &mut edges, adjacency);
 
         // Ambiguity is never guessed away: clear any name that landed on two
         // elements of the same kind.
@@ -356,6 +334,117 @@ impl ElementMap {
         clear_duplicates(&mut edges);
 
         ElementMap { faces, edges }
+    }
+
+    /// Compose a modifying op's map (fillet) from the single source body's
+    /// map and the kernel's lineage: surviving faces/edges keep their names
+    /// (splits/merges as in booleans), each rounded edge's fillet face
+    /// becomes [`ElementName::Rounded`] (several pieces → centroid-ranked
+    /// `Split`s of it), and the fillet's new boundary edges are named by
+    /// adjacency.
+    #[allow(clippy::too_many_arguments)]
+    pub fn compose_modified(
+        source: &ElementMap,
+        face_lineage: &[Lineage],
+        edge_lineage: &[Lineage],
+        rounded: &[(u32, u32)],
+        out_faces: usize,
+        out_edges: usize,
+        adjacency: &[(u32, u32)],
+        centroid: &mut dyn FnMut(ElemKind, u32) -> [f64; 3],
+    ) -> ElementMap {
+        let empty = ElementMap::default();
+        let mut faces =
+            compose_kind(source, &empty, ElemKind::Face, face_lineage, out_faces, centroid);
+        let mut edges =
+            compose_kind(source, &empty, ElemKind::Edge, edge_lineage, out_edges, centroid);
+
+        // Fillet faces, grouped per rounded edge (one edge can round into
+        // several pieces) — the same Split policy as swept side walls.
+        let mut rounded_of: HashMap<u32, Vec<u32>> = HashMap::new();
+        for &(edge, out_face) in rounded {
+            rounded_of.entry(edge).or_default().push(out_face);
+        }
+        for (edge, mut outs) in rounded_of {
+            let Some(parent) = source.edge(edge) else { continue };
+            let name = ElementName::Rounded {
+                parent: Box::new(parent.clone()),
+            };
+            outs.sort_unstable();
+            outs.dedup();
+            let set = |slots: &mut Vec<Option<ElementName>>, i: u32, n: ElementName| {
+                if let Some(slot @ None) = slots.get_mut(i as usize) {
+                    *slot = Some(n);
+                }
+            };
+            if outs.len() == 1 {
+                set(&mut faces, outs[0], name);
+            } else {
+                let mut ranked = outs;
+                ranked.sort_by(|&p, &q| {
+                    let (a, b) = (centroid(ElemKind::Face, p), centroid(ElemKind::Face, q));
+                    a[0].total_cmp(&b[0])
+                        .then(a[1].total_cmp(&b[1]))
+                        .then(a[2].total_cmp(&b[2]))
+                });
+                for (ordinal, &out) in ranked.iter().enumerate() {
+                    set(
+                        &mut faces,
+                        out,
+                        ElementName::Split {
+                            parent: Box::new(name.clone()),
+                            ordinal: ordinal as u32,
+                        },
+                    );
+                }
+            }
+        }
+
+        fill_edges_by_adjacency(&faces, &mut edges, adjacency);
+        clear_duplicates(&mut faces);
+        clear_duplicates(&mut edges);
+        ElementMap { faces, edges }
+    }
+
+    /// Name still-unnamed edges by the (named) faces they separate, then
+    /// re-clear duplicates — the gap-filling pass a composite op (push/pull)
+    /// runs after boolean composition.
+    pub fn name_edges_by_adjacency(&mut self, adjacency: &[(u32, u32)]) {
+        fill_edges_by_adjacency(&self.faces, &mut self.edges, adjacency);
+        clear_duplicates(&mut self.edges);
+    }
+}
+
+/// Fill `None` edge slots with the [`ElementName::Intersection`] of the named
+/// faces bounding them — only when EVERY bounding face is named (a partial
+/// parent list could collide with a different edge's).
+fn fill_edges_by_adjacency(
+    faces: &[Option<ElementName>],
+    edges: &mut [Option<ElementName>],
+    adjacency: &[(u32, u32)],
+) {
+    let mut bounds_of: HashMap<u32, Vec<u32>> = HashMap::new();
+    for &(edge, face) in adjacency {
+        bounds_of.entry(edge).or_default().push(face);
+    }
+    for (edge, bounds) in bounds_of {
+        let Some(slot) = edges.get_mut(edge as usize) else { continue };
+        if slot.is_some() {
+            continue;
+        }
+        let mut parents: Vec<ElementName> = Vec::with_capacity(bounds.len());
+        let all_named = bounds.iter().all(|&f| {
+            faces
+                .get(f as usize)
+                .and_then(|n| n.as_ref())
+                .map(|n| parents.push(n.clone()))
+                .is_some()
+        });
+        if all_named && !parents.is_empty() {
+            parents.sort();
+            parents.dedup();
+            *slot = Some(ElementName::Intersection { parents });
+        }
     }
 }
 

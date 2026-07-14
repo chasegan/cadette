@@ -15,7 +15,7 @@ use cdt_core::{
 };
 
 use crate::elements::{ElementMap, GenRecord};
-use crate::solids::TrackedBoolOp;
+use crate::solids::{TrackedBoolOp, TrackedModify};
 use crate::{KernelError, Solid};
 
 /// A kernel body: the OCCT solid plus the element map naming its faces and
@@ -59,6 +59,29 @@ impl Body {
             solid,
             elements: self.elements.clone(),
         }
+    }
+
+    /// Compose a fillet's result: survivors keep their names, each rounded
+    /// edge's fillet face becomes `Rounded`, new boundary edges by adjacency.
+    fn modified(source: &Body, tracked: TrackedModify) -> Result<Body, KernelError> {
+        let solid = tracked.result;
+        let out_faces = solid.face_count()?;
+        let out_edges = solid.edge_count()?;
+        let adjacency = solid.edge_face_adjacency()?;
+        let elements = ElementMap::compose_modified(
+            &source.elements,
+            &tracked.faces,
+            &tracked.edges,
+            &tracked.rounded,
+            out_faces,
+            out_edges,
+            &adjacency,
+            &mut |kind, index| solid.elem_centroid(kind, index).unwrap_or([f64::NAN; 3]),
+        );
+        Ok(Body {
+            solid,
+            elements: Arc::new(elements),
+        })
     }
 
     /// Compose a generative op's result: the profile's map plus the kernel's
@@ -257,7 +280,7 @@ impl GeometryBackend for KernelBackend {
     }
 
     fn fillet_all(&mut self, body: &Body, radius: f64) -> Result<Body, KernelError> {
-        Ok(Body::untracked(body.solid.fillet_all_edges(radius)?))
+        Body::modified(body, body.solid.fillet_all_tracked(radius)?)
     }
 
     fn fillet_edges(
@@ -267,7 +290,7 @@ impl GeometryBackend for KernelBackend {
         radius: f64,
     ) -> Result<Body, KernelError> {
         let points: Vec<[f64; 3]> = anchors.iter().map(|a| a.point.to_array()).collect();
-        Ok(Body::untracked(body.solid.fillet_edges(&points, radius)?))
+        Body::modified(body, body.solid.fillet_edges_tracked(&points, radius)?)
     }
 
     fn push_pull(
@@ -276,11 +299,46 @@ impl GeometryBackend for KernelBackend {
         anchor: FaceAnchor,
         distance: f64,
     ) -> Result<Body, KernelError> {
-        Ok(Body::untracked(body.solid.push_pull(
+        let tracked = body.solid.push_pull_tracked(
             anchor.point.to_array(),
             anchor.normal.to_array(),
             distance,
-        )?))
+        )?;
+        // The zero-distance no-op: the result IS the input — identity map.
+        let Some(info) = tracked.info else {
+            return Ok(body.transformed(tracked.result));
+        };
+        // Seed the prism operand's pseudo-map: its far cap IS the pushed
+        // face, moved — verbatim name. Its sides stay unnamed, so where they
+        // merge with the body's own walls the survivor rule keeps the body's
+        // names, and the moved face keeps its identity across pushes.
+        let mut prism = ElementMap {
+            faces: vec![None; info.prism_faces],
+            edges: vec![None; info.prism_edges],
+        };
+        if let Some(slot) = prism.faces.get_mut(info.far_cap as usize) {
+            *slot = body.elements.face(info.pushed_face).cloned();
+        }
+        let solid = tracked.result;
+        let out_faces = solid.face_count()?;
+        let out_edges = solid.edge_count()?;
+        let mut elements = ElementMap::compose_boolean(
+            &body.elements,
+            &prism,
+            &tracked.faces,
+            &tracked.edges,
+            &tracked.sections,
+            out_faces,
+            out_edges,
+            &mut |kind, index| solid.elem_centroid(kind, index).unwrap_or([f64::NAN; 3]),
+        );
+        // New lateral walls/rims the prism introduced are unnamed; where their
+        // bounding faces ARE named, adjacency names the edges.
+        elements.name_edges_by_adjacency(&solid.edge_face_adjacency()?);
+        Ok(Body {
+            solid,
+            elements: Arc::new(elements),
+        })
     }
 
     fn rotate(
