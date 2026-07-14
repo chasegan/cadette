@@ -187,20 +187,28 @@ mod bridge {
         fn cut(a: &Shape, b: &Shape) -> Result<UniquePtr<Shape>>;
         fn common(a: &Shape, b: &Shape) -> Result<UniquePtr<Shape>>;
 
-        /// SPIKE (element maps): the same pipeline as fuse/cut/common —
-        /// `BRepAlgoAPI_*` then unify-same-domain — but with both stages'
-        /// evolution histories composed and reported. `op`: 0=fuse, 1=cut,
-        /// 2=common. `kind`: 0=faces, 1=edges. `records` receives flat triples
-        /// `[which_input (0=a, 1=b), input_index, output_index]` — one per
-        /// (input element, surviving image) pair, `output_index` -1 when the
-        /// element was consumed. Indices are TopExp map order per shape.
-        fn boolean_with_history(
+        /// The same pipeline as fuse/cut/common — `BRepAlgoAPI_*` then
+        /// unify-same-domain — but with both stages' evolution histories
+        /// composed and reported (the raw material for element maps). `op`:
+        /// 0=fuse, 1=cut, 2=common. `face_records`/`edge_records` receive flat
+        /// triples `[which_input (0=a, 1=b), input_index, output_index]` — one
+        /// per (input element, surviving image) pair, `output_index` -1 when
+        /// the element was consumed. `section_records` receives
+        /// `[which_input, input_FACE_index, output_EDGE_index]` for the NEW
+        /// edges generated where faces intersect. Indices are TopExp map order
+        /// per shape.
+        fn boolean_tracked(
             a: &Shape,
             b: &Shape,
             op: i32,
-            kind: i32,
-            records: &mut Vec<i32>,
+            face_records: &mut Vec<i32>,
+            edge_records: &mut Vec<i32>,
+            section_records: &mut Vec<i32>,
         ) -> Result<UniquePtr<Shape>>;
+
+        /// Centre of mass (x, y, z) of the face (`kind` 0) or edge (`kind` 1)
+        /// at `index` — ranks the pieces of a split element deterministically.
+        fn elem_centroid(s: &Shape, kind: i32, index: u32) -> Result<Vec<f64>>;
 
         /// Merge same-domain faces/edges (remove seam edges between coplanar
         /// neighbours) — an explicit "refine". Booleans already do this.

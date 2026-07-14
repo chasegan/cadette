@@ -7,7 +7,7 @@
 
 use cxx::UniquePtr;
 
-use crate::elements::ElemKind;
+use crate::elements::{ElemKind, Lineage};
 use crate::{ffi, Result};
 
 /// Re-export the tessellated mesh produced by [`Solid::tessellate`].
@@ -19,7 +19,7 @@ pub type PlaneBasis = ([f64; 3], [f64; 3], [f64; 3]);
 /// An owned B-rep solid (or, generally, any OCCT topology).
 pub struct Solid(UniquePtr<ffi::Shape>);
 
-/// Which boolean a [`Solid::boolean_with_history`] performs (SPIKE).
+/// Which boolean a [`Solid::boolean_tracked`] performs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrackedBoolOp {
     Fuse = 0,
@@ -27,18 +27,16 @@ pub enum TrackedBoolOp {
     Common = 2,
 }
 
-/// One (input element → result element) lineage pair reported by
-/// [`Solid::boolean_with_history`] (SPIKE). A split input yields several pairs;
-/// `output: None` means the element was consumed by the operation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Lineage {
-    /// 0 = the first operand, 1 = the second.
-    pub input: u8,
-    /// Element index in that operand (TopExp map order — the same order as
-    /// tessellation face ids / unique-edge ids).
-    pub index: u32,
-    /// Element index in the result, or `None` if deleted.
-    pub output: Option<u32>,
+/// A boolean result with its evolution history: the lineage of both operands'
+/// faces and edges, plus the NEW section edges generated where faces
+/// intersected — everything element-map composition needs.
+pub struct TrackedBoolean {
+    pub result: Solid,
+    pub faces: Vec<Lineage>,
+    pub edges: Vec<Lineage>,
+    /// `(which_input, input_face_index, result_edge_index)`: the boolean
+    /// generated this new edge where that face crossed the other body.
+    pub sections: Vec<(u8, u32, u32)>,
 }
 
 /// A `TopoDS_Shape` is a handle to shared, ref-counted geometry, so cloning is
@@ -221,33 +219,49 @@ impl Solid {
         Ok(Self::wrap(ffi::common(&self.0, &other.0)?))
     }
 
-    /// SPIKE (element maps): run a boolean through the SAME pipeline as
-    /// [`Self::fuse`]/[`Self::cut`]/[`Self::common`] but keep the composed
-    /// evolution history: which face (or edge) of each operand became which
-    /// face (edge) of the result. Groundwork for persistent element naming.
-    pub fn boolean_with_history(
-        &self,
-        other: &Solid,
-        op: TrackedBoolOp,
-        kind: ElemKind,
-    ) -> Result<(Self, Vec<Lineage>)> {
-        let mut records: Vec<i32> = Vec::new();
-        let shape = ffi::boolean_with_history(
+    /// Run a boolean through the SAME pipeline as [`Self::fuse`]/
+    /// [`Self::cut`]/[`Self::common`] but keep the composed evolution
+    /// history: which face/edge of each operand became which face/edge of the
+    /// result, and which new section edges appeared — the raw material for
+    /// element-map composition.
+    pub fn boolean_tracked(&self, other: &Solid, op: TrackedBoolOp) -> Result<TrackedBoolean> {
+        let mut faces: Vec<i32> = Vec::new();
+        let mut edges: Vec<i32> = Vec::new();
+        let mut sections: Vec<i32> = Vec::new();
+        let shape = ffi::boolean_tracked(
             &self.0,
             &other.0,
             op as i32,
-            kind as i32,
-            &mut records,
+            &mut faces,
+            &mut edges,
+            &mut sections,
         )?;
-        let lineage = records
-            .chunks_exact(3)
-            .map(|r| Lineage {
-                input: r[0] as u8,
-                index: r[1] as u32,
-                output: (r[2] >= 0).then_some(r[2] as u32),
-            })
-            .collect();
-        Ok((Self::wrap(shape), lineage))
+        let lineage = |records: Vec<i32>| -> Vec<Lineage> {
+            records
+                .chunks_exact(3)
+                .map(|r| Lineage {
+                    input: r[0] as u8,
+                    index: r[1] as u32,
+                    output: (r[2] >= 0).then_some(r[2] as u32),
+                })
+                .collect()
+        };
+        Ok(TrackedBoolean {
+            result: Self::wrap(shape),
+            faces: lineage(faces),
+            edges: lineage(edges),
+            sections: sections
+                .chunks_exact(3)
+                .map(|r| (r[0] as u8, r[1] as u32, r[2] as u32))
+                .collect(),
+        })
+    }
+
+    /// Centre of mass of the face/edge at `index` (TopExp map order) — the
+    /// deterministic key ranking a split element's pieces.
+    pub fn elem_centroid(&self, kind: ElemKind, index: u32) -> Result<[f64; 3]> {
+        let v = ffi::elem_centroid(&self.0, kind as i32, index)?;
+        Ok([v[0], v[1], v[2]])
     }
 
     /// Bundle `self` and `other` into one compound shape (no boolean) — for

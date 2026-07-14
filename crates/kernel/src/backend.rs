@@ -15,6 +15,7 @@ use cdt_core::{
 };
 
 use crate::elements::ElementMap;
+use crate::solids::TrackedBoolOp;
 use crate::{KernelError, Solid};
 
 /// A kernel body: the OCCT solid plus the element map naming its faces and
@@ -205,12 +206,31 @@ impl GeometryBackend for KernelBackend {
         target: &Body,
         tool: &Body,
     ) -> Result<Body, KernelError> {
-        let solid = match op {
-            BooleanOp::Union => target.solid.fuse(&tool.solid),
-            BooleanOp::Subtract => target.solid.cut(&tool.solid),
-            BooleanOp::Intersect => target.solid.common(&tool.solid),
-        }?;
-        Ok(Body::untracked(solid))
+        let tracked_op = match op {
+            BooleanOp::Union => TrackedBoolOp::Fuse,
+            BooleanOp::Subtract => TrackedBoolOp::Cut,
+            BooleanOp::Intersect => TrackedBoolOp::Common,
+        };
+        let tracked = target.solid.boolean_tracked(&tool.solid, tracked_op)?;
+        let out_faces = tracked.result.face_count()?;
+        let out_edges = tracked.result.edge_count()?;
+        let result = tracked.result;
+        let elements = ElementMap::compose_boolean(
+            &target.elements,
+            &tool.elements,
+            &tracked.faces,
+            &tracked.edges,
+            &tracked.sections,
+            out_faces,
+            out_edges,
+            // Split-ordinal tie-break key; a failed measure degrades to NaN,
+            // which total_cmp still orders deterministically.
+            &mut |kind, index| result.elem_centroid(kind, index).unwrap_or([f64::NAN; 3]),
+        );
+        Ok(Body {
+            solid: result,
+            elements: Arc::new(elements),
+        })
     }
 
     fn fillet_all(&mut self, body: &Body, radius: f64) -> Result<Body, KernelError> {

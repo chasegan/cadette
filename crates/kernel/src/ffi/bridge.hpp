@@ -77,9 +77,11 @@ std::unique_ptr<Shape> translate(const Shape& s, double dx, double dy, double dz
 std::unique_ptr<Shape> fuse(const Shape& a, const Shape& b);
 std::unique_ptr<Shape> cut(const Shape& a, const Shape& b);
 std::unique_ptr<Shape> common(const Shape& a, const Shape& b);
-std::unique_ptr<Shape> boolean_with_history(const Shape& a, const Shape& b,
-                                            int32_t op, int32_t kind,
-                                            rust::Vec<int32_t>& records);
+std::unique_ptr<Shape> boolean_tracked(const Shape& a, const Shape& b, int32_t op,
+                                       rust::Vec<int32_t>& face_records,
+                                       rust::Vec<int32_t>& edge_records,
+                                       rust::Vec<int32_t>& section_records);
+rust::Vec<double> elem_centroid(const Shape& s, int32_t kind, uint32_t index);
 std::unique_ptr<Shape> unify(const Shape& s);
 rust::String describe(const Shape& s);
 std::size_t count_faces(const Shape& s);

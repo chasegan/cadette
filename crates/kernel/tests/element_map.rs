@@ -115,16 +115,17 @@ fn a_sketch_face_is_born_too() {
 
 #[test]
 fn untracked_ops_return_the_empty_map_not_stale_names() {
+    use cdt_core::{Profile, SketchPlane};
     let mut backend = KernelBackend::default();
-    let a = tracked_cuboid(&mut backend, 1);
-    let b = tracked_cuboid(&mut backend, 2);
-    backend.begin_feature(FeatureId(3));
-    let fused = backend
-        .boolean(cdt_core::BooleanOp::Union, &a, &b)
+    backend.begin_feature(FeatureId(1));
+    let profile = backend
+        .sketch(SketchPlane::Xy, Profile::Circle { radius: 5.0 })
         .unwrap();
+    backend.begin_feature(FeatureId(2));
+    let solid = backend.extrude(&profile, 10.0).unwrap();
     assert!(
-        fused.elements.is_empty(),
-        "booleans don't propagate names yet — the map must say so"
+        solid.elements.is_empty(),
+        "extrude doesn't propagate names yet — the map must say so"
     );
 }
 

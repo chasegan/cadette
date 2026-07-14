@@ -586,30 +586,144 @@ std::unique_ptr<Shape> cut(const Shape& a, const Shape& b) {
   });
 }
 
-// SPIKE (element maps): the production boolean pipeline with its evolution
-// history kept instead of discarded. Two stages, two histories: the boolean
-// reports splits via Modified() and consumption via IsDeleted(); the seam-
-// removing unify pass reports its merges via a BRepTools_History. An input
-// element's final images are its boolean images (itself, if untouched) pushed
-// through the unify history. Untracked elements flow through unchanged — an
-// element whose images all vanish WITHOUT being reported deleted would surface
-// here as a lineage dead-end, which is exactly what this spike exists to
-// detect (see the coverage assertions in tests/history_spike.rs).
-std::unique_ptr<Shape> boolean_with_history(const Shape& a, const Shape& b,
-                                            int32_t op, int32_t kind,
-                                            rust::Vec<int32_t>& records) {
-  return guard("boolean_with_history", [&] {
-    const TopAbs_ShapeEnum elem = kind == 0 ? TopAbs_FACE : TopAbs_EDGE;
+namespace {
 
+// Push one shape through the unify pass's history: its merged images, itself
+// if untouched, nothing if removed.
+void through_unify(const Handle(BRepTools_History)& uhist, const TopoDS_Shape& m,
+                   TopTools_ListOfShape& fin) {
+  int mapped = 0;
+  if (!uhist.IsNull()) {
+    const TopTools_ListOfShape& umods = uhist->Modified(m);
+    for (TopTools_ListOfShape::Iterator jt(umods); jt.More(); jt.Next()) {
+      fin.Append(jt.Value());
+      ++mapped;
+    }
+  }
+  if (mapped == 0 && (uhist.IsNull() || !uhist->IsRemoved(m))) {
+    fin.Append(m);
+  }
+}
+
+// Track one element kind (faces or edges) of both operands through a boolean
+// + unify, appending flat [which_input, input_index, output_index|-1] triples.
+// Two stages, two histories: the boolean reports splits via Modified() and
+// consumption via IsDeleted(); the seam-removing unify pass reports its merges
+// via a BRepTools_History. An input element's final images are its boolean
+// images (itself, if untouched) pushed through the unify history. Coverage of
+// this composition is locked by tests/history_spike.rs.
+void track_elements(BRepAlgoAPI_BooleanOperation& bop,
+                    const Handle(BRepTools_History)& uhist,
+                    const TopoDS_Shape& a, const TopoDS_Shape& b,
+                    const TopoDS_Shape& result, TopAbs_ShapeEnum elem,
+                    rust::Vec<int32_t>& records) {
+  TopTools_IndexedMapOfShape out_map;
+  TopExp::MapShapes(result, elem, out_map);
+
+  for (int which = 0; which < 2; ++which) {
+    const TopoDS_Shape& input = which == 0 ? a : b;
+    TopTools_IndexedMapOfShape in_map;
+    TopExp::MapShapes(input, elem, in_map);
+
+    for (int i = 1; i <= in_map.Extent(); ++i) {
+      const TopoDS_Shape& e = in_map(i);
+
+      // Stage 1 — through the boolean: splits, or the element itself.
+      TopTools_ListOfShape mid;
+      const TopTools_ListOfShape& mods = bop.Modified(e);
+      if (!mods.IsEmpty()) {
+        mid = mods;
+      } else if (!bop.IsDeleted(e)) {
+        mid.Append(e);
+      }
+
+      // Stage 2 — each image through the unify pass.
+      TopTools_ListOfShape fin;
+      for (TopTools_ListOfShape::Iterator it(mid); it.More(); it.Next()) {
+        through_unify(uhist, it.Value(), fin);
+      }
+
+      // Emit records, deduping images (several splits can unify back into
+      // one output face; both operands can map to the same fused face).
+      std::set<int32_t> outs;
+      for (TopTools_ListOfShape::Iterator it(fin); it.More(); it.Next()) {
+        const int oi = out_map.FindIndex(it.Value());
+        if (oi > 0) outs.insert(static_cast<int32_t>(oi - 1));
+      }
+      if (outs.empty()) {
+        records.push_back(static_cast<int32_t>(which));
+        records.push_back(static_cast<int32_t>(i - 1));
+        records.push_back(-1);
+      } else {
+        for (const int32_t oi : outs) {
+          records.push_back(static_cast<int32_t>(which));
+          records.push_back(static_cast<int32_t>(i - 1));
+          records.push_back(oi);
+        }
+      }
+    }
+  }
+}
+
+// The NEW edges a boolean creates where faces intersect (e.g. the rim circles
+// where a bore meets a box top): for each input FACE, the edges the boolean
+// GENERATED from it, pushed through unify. Appends flat
+// [which_input, input_face_index, output_edge_index] triples — a section edge
+// typically appears once per parent face (one from each operand).
+void track_sections(BRepAlgoAPI_BooleanOperation& bop,
+                    const Handle(BRepTools_History)& uhist,
+                    const TopoDS_Shape& a, const TopoDS_Shape& b,
+                    const TopoDS_Shape& result,
+                    rust::Vec<int32_t>& records) {
+  TopTools_IndexedMapOfShape out_edges;
+  TopExp::MapShapes(result, TopAbs_EDGE, out_edges);
+
+  for (int which = 0; which < 2; ++which) {
+    const TopoDS_Shape& input = which == 0 ? a : b;
+    TopTools_IndexedMapOfShape in_faces;
+    TopExp::MapShapes(input, TopAbs_FACE, in_faces);
+
+    for (int i = 1; i <= in_faces.Extent(); ++i) {
+      const TopTools_ListOfShape& gen = bop.Generated(in_faces(i));
+      TopTools_ListOfShape fin;
+      for (TopTools_ListOfShape::Iterator it(gen); it.More(); it.Next()) {
+        if (it.Value().ShapeType() != TopAbs_EDGE) continue;
+        through_unify(uhist, it.Value(), fin);
+      }
+      std::set<int32_t> outs;
+      for (TopTools_ListOfShape::Iterator it(fin); it.More(); it.Next()) {
+        const int oi = out_edges.FindIndex(it.Value());
+        if (oi > 0) outs.insert(static_cast<int32_t>(oi - 1));
+      }
+      for (const int32_t oi : outs) {
+        records.push_back(static_cast<int32_t>(which));
+        records.push_back(static_cast<int32_t>(i - 1));
+        records.push_back(oi);
+      }
+    }
+  }
+}
+
+}  // namespace
+
+// The production boolean pipeline (BRepAlgoAPI_* then unify-same-domain, the
+// same result as fuse/cut/common) with its evolution history kept instead of
+// discarded — the raw material element maps are composed from. `op`: 0=fuse,
+// 1=cut, 2=common.
+std::unique_ptr<Shape> boolean_tracked(const Shape& a, const Shape& b, int32_t op,
+                                       rust::Vec<int32_t>& face_records,
+                                       rust::Vec<int32_t>& edge_records,
+                                       rust::Vec<int32_t>& section_records) {
+  return guard("boolean_tracked", [&] {
     std::unique_ptr<BRepAlgoAPI_BooleanOperation> bop;
     switch (op) {
       case 0: bop = std::make_unique<BRepAlgoAPI_Fuse>(a.shape, b.shape); break;
       case 1: bop = std::make_unique<BRepAlgoAPI_Cut>(a.shape, b.shape); break;
       case 2: bop = std::make_unique<BRepAlgoAPI_Common>(a.shape, b.shape); break;
-      default: throw std::runtime_error("boolean_with_history: bad op code");
+      default: throw std::runtime_error("boolean_tracked: bad op code");
     }
     if (!bop->IsDone()) {
-      throw std::runtime_error("boolean_with_history: boolean failed");
+      throw std::runtime_error("boolean_tracked: boolean failed");
     }
 
     ShapeUpgrade_UnifySameDomain usd(bop->Shape(), /*unifyEdges=*/true,
@@ -619,65 +733,36 @@ std::unique_ptr<Shape> boolean_with_history(const Shape& a, const Shape& b,
     const TopoDS_Shape result = usd.Shape();
     const Handle(BRepTools_History) uhist = usd.History();
 
-    TopTools_IndexedMapOfShape out_map;
-    TopExp::MapShapes(result, elem, out_map);
-
-    for (int which = 0; which < 2; ++which) {
-      const TopoDS_Shape& input = which == 0 ? a.shape : b.shape;
-      TopTools_IndexedMapOfShape in_map;
-      TopExp::MapShapes(input, elem, in_map);
-
-      for (int i = 1; i <= in_map.Extent(); ++i) {
-        const TopoDS_Shape& e = in_map(i);
-
-        // Stage 1 — through the boolean: splits, or the element itself.
-        TopTools_ListOfShape mid;
-        const TopTools_ListOfShape& mods = bop->Modified(e);
-        if (!mods.IsEmpty()) {
-          mid = mods;
-        } else if (!bop->IsDeleted(e)) {
-          mid.Append(e);
-        }
-
-        // Stage 2 — each image through the unify pass.
-        TopTools_ListOfShape fin;
-        for (TopTools_ListOfShape::Iterator it(mid); it.More(); it.Next()) {
-          const TopoDS_Shape& m = it.Value();
-          int mapped = 0;
-          if (!uhist.IsNull()) {
-            const TopTools_ListOfShape& umods = uhist->Modified(m);
-            for (TopTools_ListOfShape::Iterator jt(umods); jt.More(); jt.Next()) {
-              fin.Append(jt.Value());
-              ++mapped;
-            }
-          }
-          if (mapped == 0 && (uhist.IsNull() || !uhist->IsRemoved(m))) {
-            fin.Append(m);
-          }
-        }
-
-        // Emit records, deduping images (several splits can unify back into
-        // one output face; both operands can map to the same fused face).
-        std::set<int32_t> outs;
-        for (TopTools_ListOfShape::Iterator it(fin); it.More(); it.Next()) {
-          const int oi = out_map.FindIndex(it.Value());
-          if (oi > 0) outs.insert(static_cast<int32_t>(oi - 1));
-        }
-        if (outs.empty()) {
-          records.push_back(static_cast<int32_t>(which));
-          records.push_back(static_cast<int32_t>(i - 1));
-          records.push_back(-1);
-        } else {
-          for (const int32_t oi : outs) {
-            records.push_back(static_cast<int32_t>(which));
-            records.push_back(static_cast<int32_t>(i - 1));
-            records.push_back(oi);
-          }
-        }
-      }
-    }
+    track_elements(*bop, uhist, a.shape, b.shape, result, TopAbs_FACE, face_records);
+    track_elements(*bop, uhist, a.shape, b.shape, result, TopAbs_EDGE, edge_records);
+    track_sections(*bop, uhist, a.shape, b.shape, result, section_records);
 
     return std::make_unique<Shape>(result);
+  });
+}
+
+// Centre of mass of the face/edge at `index` (TopExp map order) — the
+// deterministic geometric key that ranks the pieces of a SPLIT element.
+rust::Vec<double> elem_centroid(const Shape& s, int32_t kind, uint32_t index) {
+  return guard("elem_centroid", [&] {
+    TopTools_IndexedMapOfShape map;
+    TopExp::MapShapes(s.shape, kind == 0 ? TopAbs_FACE : TopAbs_EDGE, map);
+    const int i = static_cast<int>(index) + 1;
+    if (i < 1 || i > map.Extent()) {
+      throw std::runtime_error("elem_centroid: no element at index");
+    }
+    GProp_GProps props;
+    if (kind == 0) {
+      BRepGProp::SurfaceProperties(TopoDS::Face(map(i)), props);
+    } else {
+      BRepGProp::LinearProperties(TopoDS::Edge(map(i)), props);
+    }
+    const gp_Pnt c = props.CentreOfMass();
+    rust::Vec<double> out;
+    out.push_back(c.X());
+    out.push_back(c.Y());
+    out.push_back(c.Z());
+    return out;
   });
 }
 
