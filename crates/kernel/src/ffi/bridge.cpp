@@ -731,6 +731,16 @@ std::size_t count_faces(const Shape& s) {
   });
 }
 
+// Number of UNIQUE edges (TopExp map order, matching tessellate's edge ids and
+// edge_length) — a raw explorer would visit shared edges once per adjacent face.
+std::size_t count_edges(const Shape& s) {
+  return guard("count_edges", [&] {
+    TopTools_IndexedMapOfShape edges;
+    TopExp::MapShapes(s.shape, TopAbs_EDGE, edges);
+    return static_cast<std::size_t>(edges.Extent());
+  });
+}
+
 // Enclosed volume of the solid (model units³) — for validating swept/built bodies.
 double volume(const Shape& s) {
   return guard("volume", [&] {

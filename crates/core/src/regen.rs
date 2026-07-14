@@ -106,6 +106,7 @@ where
             continue;
         }
 
+        backend.begin_feature(feature.id);
         match eval(backend, feature.id, &feature.kind, &bodies) {
             Ok(body) => {
                 consume_inputs(&mut visible, &feature.kind.inputs());
@@ -219,6 +220,7 @@ impl<B: Clone> RegenCache<B> {
                 continue;
             }
 
+            backend.begin_feature(feature.id);
             match eval(backend, feature.id, &feature.kind, &bodies) {
                 Ok(body) => {
                     self.next_version += 1;

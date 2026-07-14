@@ -8,7 +8,7 @@
 
 use glam::DVec3;
 
-use crate::features::{BooleanOp, EdgeAnchor, FaceAnchor};
+use crate::features::{BooleanOp, EdgeAnchor, FaceAnchor, FeatureId};
 use crate::sketch::{ProfileElem, Profile, SketchPlane};
 
 /// A geometry engine capable of producing and combining solid bodies.
@@ -21,6 +21,13 @@ pub trait GeometryBackend {
     type Body;
     /// The backend's failure type (e.g. an infeasible fillet radius).
     type Error;
+
+    /// Announce which feature the next operation evaluates. Backends that
+    /// track persistent element identity use the id as the scope ("origin")
+    /// under which a newly born body's face/edge names are minted — it is the
+    /// one key that is stable across regenerations, reorders, and sessions.
+    /// Backends that don't track elements ignore it.
+    fn begin_feature(&mut self, _id: FeatureId) {}
 
     fn make_box(&mut self, size: DVec3) -> Result<Self::Body, Self::Error>;
     fn make_cylinder(&mut self, radius: f64, height: f64) -> Result<Self::Body, Self::Error>;

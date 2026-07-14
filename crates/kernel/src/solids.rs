@@ -7,6 +7,7 @@
 
 use cxx::UniquePtr;
 
+use crate::elements::ElemKind;
 use crate::{ffi, Result};
 
 /// Re-export the tessellated mesh produced by [`Solid::tessellate`].
@@ -24,13 +25,6 @@ pub enum TrackedBoolOp {
     Fuse = 0,
     Cut = 1,
     Common = 2,
-}
-
-/// Which element kind a [`Solid::boolean_with_history`] tracks (SPIKE).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ElemKind {
-    Face = 0,
-    Edge = 1,
 }
 
 /// One (input element → result element) lineage pair reported by
@@ -278,6 +272,12 @@ impl Solid {
     /// The number of faces in this solid (TopExp order).
     pub fn face_count(&self) -> Result<usize> {
         Ok(ffi::count_faces(&self.0)?)
+    }
+
+    /// The number of unique edges in this solid (TopExp map order, matching
+    /// tessellation edge ids).
+    pub fn edge_count(&self) -> Result<usize> {
+        Ok(ffi::count_edges(&self.0)?)
     }
 
     /// The enclosed volume of this solid (model units³).

@@ -83,6 +83,7 @@ std::unique_ptr<Shape> boolean_with_history(const Shape& a, const Shape& b,
 std::unique_ptr<Shape> unify(const Shape& s);
 rust::String describe(const Shape& s);
 std::size_t count_faces(const Shape& s);
+std::size_t count_edges(const Shape& s);
 double volume(const Shape& s);
 double face_area(const Shape& s, uint32_t index);
 double edge_length(const Shape& s, uint32_t index);

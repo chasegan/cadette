@@ -213,6 +213,10 @@ mod bridge {
         /// Count the faces of a shape (for topology assertions/debugging).
         fn count_faces(s: &Shape) -> Result<usize>;
 
+        /// Count the UNIQUE edges of a shape (TopExp map order, matching
+        /// tessellation edge ids) — sizes element maps.
+        fn count_edges(s: &Shape) -> Result<usize>;
+
         /// Enclosed volume of a solid (model units³), for validating builds.
         fn volume(s: &Shape) -> Result<f64>;
 

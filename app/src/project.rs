@@ -50,9 +50,9 @@ impl Modeler {
     /// Combine the visible bodies into one shape (a compound) for export.
     fn combined_body(&self) -> Result<Solid, String> {
         let mut bodies = self.bodies.iter();
-        let first = bodies.next().ok_or("nothing to export")?.clone();
+        let first = bodies.next().ok_or("nothing to export")?.solid.clone();
         bodies
-            .try_fold(first, |acc, b| acc.compound(b))
+            .try_fold(first, |acc, b| acc.compound(&b.solid))
             .map_err(|e| e.to_string())
     }
 

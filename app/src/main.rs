@@ -16,7 +16,7 @@ use cdt_core::{
     Profile, RegenCache, RegenError, Sketch2d, SketchPlane, DVec3,
 };
 use cdt_interaction::Selection;
-use cdt_kernel::{KernelBackend, Solid};
+use cdt_kernel::{Body, KernelBackend};
 use cdt_render::egui;
 use egui_phosphor::regular as phi;
 use cdt_render::{
@@ -157,7 +157,7 @@ struct Modeler {
     backend: KernelBackend,
     /// Incremental-regen cache: only features whose params or inputs changed are
     /// rebuilt, so a push/pull drag recomputes one op instead of the whole tree.
-    regen_cache: RegenCache<Solid>,
+    regen_cache: RegenCache<Body>,
     /// Last transient status message (e.g. an export result), shown in the UI.
     status: Option<String>,
     ui: HistoryState,
@@ -176,7 +176,7 @@ struct Modeler {
     /// Visible bodies from the last regeneration, kept so a picked face's plane
     /// can be queried. `face_ranges[i]` / `edge_ranges[i]` are the global face /
     /// edge id where body `i` starts.
-    bodies: Vec<Solid>,
+    bodies: Vec<Body>,
     face_ranges: Vec<u32>,
     edge_ranges: Vec<u32>,
     /// Bounding-box center of each visible body (aligned with `ui.visible`), the
@@ -250,7 +250,7 @@ impl Modeler {
         let saved_sig = doc_signature(&doc);
         Self {
             doc,
-            backend: KernelBackend,
+            backend: KernelBackend::default(),
             regen_cache: RegenCache::new(),
             status: None,
             ui: HistoryState::default(),
@@ -1961,7 +1961,7 @@ mod tests {
         );
         let mut m = Modeler {
             doc,
-            backend: KernelBackend,
+            backend: KernelBackend::default(),
             regen_cache: RegenCache::new(),
             status: None,
             ui: HistoryState::default(),
@@ -3879,7 +3879,7 @@ mod tests {
 
         let mut m = Modeler {
             doc,
-            backend: KernelBackend,
+            backend: KernelBackend::default(),
             regen_cache: RegenCache::new(),
             status: None,
             ui: HistoryState::default(),
