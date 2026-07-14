@@ -77,6 +77,9 @@ std::unique_ptr<Shape> translate(const Shape& s, double dx, double dy, double dz
 std::unique_ptr<Shape> fuse(const Shape& a, const Shape& b);
 std::unique_ptr<Shape> cut(const Shape& a, const Shape& b);
 std::unique_ptr<Shape> common(const Shape& a, const Shape& b);
+std::unique_ptr<Shape> boolean_with_history(const Shape& a, const Shape& b,
+                                            int32_t op, int32_t kind,
+                                            rust::Vec<int32_t>& records);
 std::unique_ptr<Shape> unify(const Shape& s);
 rust::String describe(const Shape& s);
 std::size_t count_faces(const Shape& s);

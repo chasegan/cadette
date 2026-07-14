@@ -12,7 +12,7 @@ pub(crate) mod ffi;
 pub mod solids;
 
 pub use backend::KernelBackend;
-pub use solids::{Mesh, Solid};
+pub use solids::{ElemKind, Lineage, Mesh, Solid, TrackedBoolOp};
 
 /// Error raised when an OCCT operation fails. Wraps the message OCCT threw
 /// across the FFI boundary (see `guard` in `bridge.cpp`).

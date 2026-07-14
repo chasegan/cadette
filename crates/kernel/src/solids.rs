@@ -18,6 +18,35 @@ pub type PlaneBasis = ([f64; 3], [f64; 3], [f64; 3]);
 /// An owned B-rep solid (or, generally, any OCCT topology).
 pub struct Solid(UniquePtr<ffi::Shape>);
 
+/// Which boolean a [`Solid::boolean_with_history`] performs (SPIKE).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrackedBoolOp {
+    Fuse = 0,
+    Cut = 1,
+    Common = 2,
+}
+
+/// Which element kind a [`Solid::boolean_with_history`] tracks (SPIKE).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ElemKind {
+    Face = 0,
+    Edge = 1,
+}
+
+/// One (input element → result element) lineage pair reported by
+/// [`Solid::boolean_with_history`] (SPIKE). A split input yields several pairs;
+/// `output: None` means the element was consumed by the operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Lineage {
+    /// 0 = the first operand, 1 = the second.
+    pub input: u8,
+    /// Element index in that operand (TopExp map order — the same order as
+    /// tessellation face ids / unique-edge ids).
+    pub index: u32,
+    /// Element index in the result, or `None` if deleted.
+    pub output: Option<u32>,
+}
+
 /// A `TopoDS_Shape` is a handle to shared, ref-counted geometry, so cloning is
 /// cheap (a handle copy, not a deep geometry copy). The regen cache relies on
 /// this to hand out cached bodies each frame without re-running OCCT.
@@ -196,6 +225,35 @@ impl Solid {
     /// Intersection: keep only the volume shared by `self` and `other`.
     pub fn common(&self, other: &Solid) -> Result<Self> {
         Ok(Self::wrap(ffi::common(&self.0, &other.0)?))
+    }
+
+    /// SPIKE (element maps): run a boolean through the SAME pipeline as
+    /// [`Self::fuse`]/[`Self::cut`]/[`Self::common`] but keep the composed
+    /// evolution history: which face (or edge) of each operand became which
+    /// face (edge) of the result. Groundwork for persistent element naming.
+    pub fn boolean_with_history(
+        &self,
+        other: &Solid,
+        op: TrackedBoolOp,
+        kind: ElemKind,
+    ) -> Result<(Self, Vec<Lineage>)> {
+        let mut records: Vec<i32> = Vec::new();
+        let shape = ffi::boolean_with_history(
+            &self.0,
+            &other.0,
+            op as i32,
+            kind as i32,
+            &mut records,
+        )?;
+        let lineage = records
+            .chunks_exact(3)
+            .map(|r| Lineage {
+                input: r[0] as u8,
+                index: r[1] as u32,
+                output: (r[2] >= 0).then_some(r[2] as u32),
+            })
+            .collect();
+        Ok((Self::wrap(shape), lineage))
     }
 
     /// Bundle `self` and `other` into one compound shape (no boolean) — for

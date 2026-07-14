@@ -187,6 +187,21 @@ mod bridge {
         fn cut(a: &Shape, b: &Shape) -> Result<UniquePtr<Shape>>;
         fn common(a: &Shape, b: &Shape) -> Result<UniquePtr<Shape>>;
 
+        /// SPIKE (element maps): the same pipeline as fuse/cut/common —
+        /// `BRepAlgoAPI_*` then unify-same-domain — but with both stages'
+        /// evolution histories composed and reported. `op`: 0=fuse, 1=cut,
+        /// 2=common. `kind`: 0=faces, 1=edges. `records` receives flat triples
+        /// `[which_input (0=a, 1=b), input_index, output_index]` — one per
+        /// (input element, surviving image) pair, `output_index` -1 when the
+        /// element was consumed. Indices are TopExp map order per shape.
+        fn boolean_with_history(
+            a: &Shape,
+            b: &Shape,
+            op: i32,
+            kind: i32,
+            records: &mut Vec<i32>,
+        ) -> Result<UniquePtr<Shape>>;
+
         /// Merge same-domain faces/edges (remove seam edges between coplanar
         /// neighbours) — an explicit "refine". Booleans already do this.
         fn unify(s: &Shape) -> Result<UniquePtr<Shape>>;

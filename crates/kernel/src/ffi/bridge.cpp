@@ -3,6 +3,8 @@
 #include "cdt-kernel/src/ffi.rs.h"
 
 #include <cmath>
+#include <memory>
+#include <set>
 #include <stdexcept>
 #include <string>
 
@@ -18,6 +20,9 @@
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Common.hxx>
+#include <BRepAlgoAPI_BooleanOperation.hxx>
+#include <BRepTools_History.hxx>
+#include <TopTools_ListOfShape.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <ShapeFix_Shape.hxx>
 #include <ShapeUpgrade_UnifySameDomain.hxx>
@@ -578,6 +583,101 @@ std::unique_ptr<Shape> cut(const Shape& a, const Shape& b) {
   return guard("cut", [&] {
     return std::make_unique<Shape>(
         unify_same_domain(BRepAlgoAPI_Cut(a.shape, b.shape).Shape()));
+  });
+}
+
+// SPIKE (element maps): the production boolean pipeline with its evolution
+// history kept instead of discarded. Two stages, two histories: the boolean
+// reports splits via Modified() and consumption via IsDeleted(); the seam-
+// removing unify pass reports its merges via a BRepTools_History. An input
+// element's final images are its boolean images (itself, if untouched) pushed
+// through the unify history. Untracked elements flow through unchanged — an
+// element whose images all vanish WITHOUT being reported deleted would surface
+// here as a lineage dead-end, which is exactly what this spike exists to
+// detect (see the coverage assertions in tests/history_spike.rs).
+std::unique_ptr<Shape> boolean_with_history(const Shape& a, const Shape& b,
+                                            int32_t op, int32_t kind,
+                                            rust::Vec<int32_t>& records) {
+  return guard("boolean_with_history", [&] {
+    const TopAbs_ShapeEnum elem = kind == 0 ? TopAbs_FACE : TopAbs_EDGE;
+
+    std::unique_ptr<BRepAlgoAPI_BooleanOperation> bop;
+    switch (op) {
+      case 0: bop = std::make_unique<BRepAlgoAPI_Fuse>(a.shape, b.shape); break;
+      case 1: bop = std::make_unique<BRepAlgoAPI_Cut>(a.shape, b.shape); break;
+      case 2: bop = std::make_unique<BRepAlgoAPI_Common>(a.shape, b.shape); break;
+      default: throw std::runtime_error("boolean_with_history: bad op code");
+    }
+    if (!bop->IsDone()) {
+      throw std::runtime_error("boolean_with_history: boolean failed");
+    }
+
+    ShapeUpgrade_UnifySameDomain usd(bop->Shape(), /*unifyEdges=*/true,
+                                     /*unifyFaces=*/true,
+                                     /*concatBSplines=*/false);
+    usd.Build();
+    const TopoDS_Shape result = usd.Shape();
+    const Handle(BRepTools_History) uhist = usd.History();
+
+    TopTools_IndexedMapOfShape out_map;
+    TopExp::MapShapes(result, elem, out_map);
+
+    for (int which = 0; which < 2; ++which) {
+      const TopoDS_Shape& input = which == 0 ? a.shape : b.shape;
+      TopTools_IndexedMapOfShape in_map;
+      TopExp::MapShapes(input, elem, in_map);
+
+      for (int i = 1; i <= in_map.Extent(); ++i) {
+        const TopoDS_Shape& e = in_map(i);
+
+        // Stage 1 — through the boolean: splits, or the element itself.
+        TopTools_ListOfShape mid;
+        const TopTools_ListOfShape& mods = bop->Modified(e);
+        if (!mods.IsEmpty()) {
+          mid = mods;
+        } else if (!bop->IsDeleted(e)) {
+          mid.Append(e);
+        }
+
+        // Stage 2 — each image through the unify pass.
+        TopTools_ListOfShape fin;
+        for (TopTools_ListOfShape::Iterator it(mid); it.More(); it.Next()) {
+          const TopoDS_Shape& m = it.Value();
+          int mapped = 0;
+          if (!uhist.IsNull()) {
+            const TopTools_ListOfShape& umods = uhist->Modified(m);
+            for (TopTools_ListOfShape::Iterator jt(umods); jt.More(); jt.Next()) {
+              fin.Append(jt.Value());
+              ++mapped;
+            }
+          }
+          if (mapped == 0 && (uhist.IsNull() || !uhist->IsRemoved(m))) {
+            fin.Append(m);
+          }
+        }
+
+        // Emit records, deduping images (several splits can unify back into
+        // one output face; both operands can map to the same fused face).
+        std::set<int32_t> outs;
+        for (TopTools_ListOfShape::Iterator it(fin); it.More(); it.Next()) {
+          const int oi = out_map.FindIndex(it.Value());
+          if (oi > 0) outs.insert(static_cast<int32_t>(oi - 1));
+        }
+        if (outs.empty()) {
+          records.push_back(static_cast<int32_t>(which));
+          records.push_back(static_cast<int32_t>(i - 1));
+          records.push_back(-1);
+        } else {
+          for (const int32_t oi : outs) {
+            records.push_back(static_cast<int32_t>(which));
+            records.push_back(static_cast<int32_t>(i - 1));
+            records.push_back(oi);
+          }
+        }
+      }
+    }
+
+    return std::make_unique<Shape>(result);
   });
 }
 
