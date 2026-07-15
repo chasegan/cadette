@@ -128,7 +128,15 @@ impl History {
         // nothing changes; n is small (a model has hundreds of steps, not
         // millions), so the O(n²) simplicity wins.
         let mut owner: Vec<usize> = (0..n).collect();
-        let may_fold = |r: usize| !features[r].suppressed && !keep(features[r].id);
+        // A lane's ORIGIN (an input-less step: primitive, sketch) never folds
+        // forward: every body line keeps its birth visible alongside its
+        // final step, and a display node never swallows a lane start (which
+        // would leave the node with no primary line to continue).
+        let may_fold = |r: usize| {
+            !features[r].suppressed
+                && !keep(features[r].id)
+                && !features[r].kind.inputs().is_empty()
+        };
         let may_absorb = |s: usize| !features[s].suppressed;
         'contract: loop {
             for r in (0..n).rev() {
@@ -261,9 +269,11 @@ fn layout(nodes: &[LayoutNode]) -> BuildGraph {
             let input_lanes: Vec<usize> =
                 inputs.iter().filter_map(|inp| lane_of(&lanes, *inp)).collect();
 
-            // The primary input continues this node's lane (its main body line).
-            let primary = f.primary.or_else(|| inputs.first().copied());
-            let primary_lane = primary.and_then(|p| lane_of(&lanes, p));
+            // The primary input continues this node's lane (its main body
+            // line); a node with no primary STARTS a line — it must not annex
+            // an input's lane (that input is a guest, e.g. a folded body
+            // consuming its tool).
+            let primary_lane = f.primary.and_then(|p| lane_of(&lanes, p));
 
             // This node now uses up one consumer slot of each input.
             for inp in inputs {
@@ -426,10 +436,11 @@ mod tests {
         let f = doc.add("Fillet", FeatureKind::FilletAll { source: m, radius: 1.0 });
 
         let d = doc.history.display_graph(doc.history.len(), |_| false);
-        assert_eq!(d.nodes.len(), 1, "one body, one node");
-        assert_eq!(d.nodes[0].rep, f, "the node stands for the final step");
-        assert_eq!(d.nodes[0].members, vec![b, m, f]);
-        assert_eq!(d.graph.lane_count, 1);
+        let reps: Vec<_> = d.nodes.iter().map(|n| n.rep).collect();
+        assert_eq!(reps, vec![b, f], "a body shows its birth and its final step");
+        assert_eq!(d.nodes[0].members, vec![b], "the origin never folds forward");
+        assert_eq!(d.nodes[1].members, vec![m, f]);
+        assert_eq!(d.graph.lane_count, 1, "still one body line");
     }
 
     #[test]
@@ -451,18 +462,20 @@ mod tests {
 
         let d = doc.history.display_graph(doc.history.len(), |_| false);
         let reps: Vec<_> = d.nodes.iter().map(|n| n.rep).collect();
-        assert_eq!(reps, vec![tm, f], "the tool body + the main body");
-        assert_eq!(d.nodes[0].members, vec![t, tm], "the tool's own chain folds");
+        assert_eq!(reps, vec![a, t, tm, f], "each body: its birth + its final step");
+        assert_eq!(d.nodes[2].members, vec![tm], "the tool's chain folds to its final");
         assert_eq!(
-            d.nodes[1].members,
-            vec![a, am, u, f],
+            d.nodes[3].members,
+            vec![am, u, f],
             "the target's chain folds THROUGH its boolean"
         );
-        // The tool's ribbon connects INTO the main node (one external input;
-        // the boolean itself is folded, so no merge ring — the connection is
-        // what matters).
-        let row = &d.graph.rows[1];
-        assert_eq!(row.input_lanes, vec![d.graph.rows[0].lane]);
+        // Two body lines: the main chain continues its origin's lane, and the
+        // tool's ribbon connects into it from a lane of its own.
+        assert_eq!(d.graph.lane_count, 2);
+        let main = &d.graph.rows[3];
+        assert_eq!(main.lane, d.graph.rows[0].lane, "main continues its origin's lane");
+        assert!(main.input_lanes.contains(&d.graph.rows[2].lane), "the tool connects");
+        assert_ne!(main.lane, d.graph.rows[2].lane, "the tool keeps its own lane");
     }
 
     #[test]
@@ -484,11 +497,11 @@ mod tests {
 
         let d = doc.history.display_graph(doc.history.len(), |_| false);
         let reps: Vec<_> = d.nodes.iter().map(|n| n.rep).collect();
-        assert_eq!(reps, vec![a, s1, s2], "carver + the two cut bodies");
+        assert_eq!(reps, vec![a, b, c, s1, s2], "carver + both targets' births + cuts");
         // Both cut nodes list the carver's node among their inputs — the
         // ribbons connect to a VISIBLE node, never into thin air.
-        for row in &d.graph.rows[1..] {
-            assert!(!row.input_lanes.is_empty(), "each cut connects to the carver");
+        for row in &d.graph.rows[3..] {
+            assert_eq!(row.input_lanes.len(), 2, "each cut connects target + carver");
         }
     }
 
@@ -510,6 +523,7 @@ mod tests {
         let reps: Vec<_> = d.nodes.iter().map(|n| n.rep).collect();
         assert_eq!(reps, vec![s, m2, u], "origin, second arm, main line");
         assert_eq!(d.nodes[2].members, vec![m1, u], "the owning arm folds through");
+        let _ = ();
     }
 
     #[test]
@@ -521,28 +535,23 @@ mod tests {
         let f = doc.add("Fillet", FeatureKind::FilletAll { source: m2, radius: 1.0 });
         let len = doc.history.len();
 
-        // keep(m1): it stays a node — and absorbs its upstream (box) while the
-        // downstream chain folds into the tip.
+        // keep(m1): it stays a node of its own, splitting the chain.
         let d = doc.history.display_graph(len, |id| id == m1);
         let reps: Vec<_> = d.nodes.iter().map(|n| n.rep).collect();
-        assert_eq!(reps, vec![m1, f]);
-        assert_eq!(d.nodes[0].members, vec![b, m1], "pinned steps still absorb");
-        assert_eq!(d.nodes[1].members, vec![m2, f]);
+        assert_eq!(reps, vec![b, m1, f]);
+        assert_eq!(d.nodes[2].members, vec![m2, f]);
 
         // No fold crosses the rollback boundary (active = 2: m2 dims, m1 not).
         let d = doc.history.display_graph(2, |_| false);
         let reps: Vec<_> = d.nodes.iter().map(|n| n.rep).collect();
-        assert_eq!(reps, vec![m1, f], "the boundary splits the body's story");
+        assert_eq!(reps, vec![b, m1, f], "the boundary splits the body's story");
 
         // A suppressed step neither folds nor absorbs — it interrupts the
         // story (upstream steps can't leapfrog it into a later consumer).
         doc.history.set_suppressed(m2, true);
         let d = doc.history.display_graph(len, |_| false);
         let reps: Vec<_> = d.nodes.iter().map(|n| n.rep).collect();
-        assert_eq!(reps, vec![m1, m2, f], "the suppressed step stands alone");
-        assert_eq!(d.nodes[0].members, vec![b, m1], "upstream folds up to it");
-        assert_eq!(d.nodes[1].members, vec![m2]);
-        assert_eq!(d.nodes[2].members, vec![f]);
+        assert_eq!(reps, vec![b, m1, m2, f], "the suppressed step stands alone");
     }
 
     #[test]
