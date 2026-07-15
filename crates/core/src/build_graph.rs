@@ -64,12 +64,14 @@ pub struct Condensed {
 }
 
 impl BuildGraph {
-    /// Fold linear runs. A step folds when its whole story continues in one
-    /// successor — exactly ONE consumer, which takes exactly ONE input and
-    /// stays on the SAME lane — and nothing pins it visible: suppressed steps
-    /// and steps whose dim state differs from their consumer's (the rollback
-    /// boundary at `active` runs between them) never fold, and `keep` lets
-    /// the caller pin more (the selected step, errored steps, expanded runs).
+    /// Fold linear runs. A step folds when it is chain-INTERIOR: at most one
+    /// input (a merge row is where lanes CONNECT — folding one leaves its
+    /// tool's lane dead-ending in thin air), exactly ONE consumer, which
+    /// takes exactly ONE input and stays on the SAME lane — and nothing pins
+    /// it visible: suppressed steps and steps whose dim state differs from
+    /// their consumer's (the rollback boundary at `active` runs between them)
+    /// never fold, and `keep` lets the caller pin more (the selected step,
+    /// errored steps, expanded runs).
     pub fn condensed(
         &self,
         history: &History,
@@ -93,6 +95,9 @@ impl BuildGraph {
             .map(|(i, f)| {
                 if f.suppressed || keep(f.id) {
                     return false;
+                }
+                if self.rows[i].is_merge {
+                    return false; // lanes connect HERE — folding breaks them
                 }
                 let Some(cs) = consumers.get(&f.id) else {
                     return false; // a live tip — always a run's visible end
@@ -368,6 +373,30 @@ mod tests {
         assert_eq!(c.hidden, vec![true, false, false, false]);
         assert_eq!(c.runs[&1], vec![b], "box folds into the pre-merge move");
         let _ = u;
+    }
+
+    #[test]
+    fn a_merge_never_folds_even_mid_chain() {
+        // bool → fillet → move: the boolean has ONE consumer in a same-lane
+        // chain, so the naive interior rule would fold it — leaving the
+        // tool's lane dead-ending in thin air (the "gap in the graph" bug).
+        // The merge must stay; the chain AFTER it folds as usual.
+        let mut doc = Document::new("merge-mid-chain");
+        let a = doc.add("A", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let b = doc.add("B", FeatureKind::Cylinder { radius: 2.0, height: 20.0 });
+        let u = doc.add(
+            "Cut",
+            FeatureKind::Boolean { op: BooleanOp::Subtract, target: a, tool: b },
+        );
+        let f = doc.add("Fillet", FeatureKind::FilletAll { source: u, radius: 1.0 });
+        let m = doc.add("Move", FeatureKind::Translate { source: f, offset: DVec3::X });
+
+        let g = doc.history.build_graph();
+        let c = g.condensed(&doc.history, doc.history.len(), |_| false);
+        assert!(!c.hidden[2], "the boolean stays visible — its tool lane connects there");
+        assert_eq!(c.hidden, vec![false, false, false, true, false]);
+        assert_eq!(c.runs[&4], vec![f], "only the post-merge chain folds into the tip");
+        let _ = (u, m);
     }
 
     #[test]
