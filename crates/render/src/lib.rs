@@ -52,6 +52,20 @@ pub struct Vertex {
 /// Sentinel `color` marking a vertex with no user colour (use the theme default).
 pub const NO_COLOR: [f32; 3] = [-1.0, -1.0, -1.0];
 
+/// Convert an sRGB u8 colour (e.g. a Build Graph lane colour) to the linear
+/// RGB floats the shader works in.
+pub fn srgb_to_linear(c: [u8; 3]) -> [f32; 3] {
+    let f = |v: u8| {
+        let s = v as f32 / 255.0;
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    [f(c[0]), f(c[1]), f(c[2])]
+}
+
 /// Interleave the kernel's parallel position/normal/face-id arrays into GPU
 /// vertices, tagging every vertex of this body with `color` (use [`NO_COLOR`]
 /// for the theme default).

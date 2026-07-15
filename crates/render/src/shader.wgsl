@@ -43,7 +43,9 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
     // Per-body colour if set (non-negative), else the theme's default material.
     var base = globals.face_base.xyz;
     if (in.color.r >= 0.0) {
-        base = in.color;
+        // The vertex colour is the body's Build Graph lane colour; the tint
+        // dial decides how strongly the body wears it in the viewport.
+        base = mix(globals.face_base.xyz, in.color, globals.tint.x);
     }
     if (is_selected_face(in.face_id)) {
         base = vec3<f32>(1.0, 0.62, 0.25); // clicked selection (strong)

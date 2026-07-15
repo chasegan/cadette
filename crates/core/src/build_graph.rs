@@ -11,6 +11,19 @@ use std::collections::HashMap;
 use crate::features::FeatureId;
 use crate::history::History;
 
+/// The lane colour palette (sRGB), shared by the Build Graph's ribbons and
+/// the viewport's body tinting so the graph is always a legend for the scene:
+/// a body with no user colour takes `LANE_PALETTE[lane % LANE_PALETTE.len()]`,
+/// and the viewport shows that colour at the user's tint strength.
+pub const LANE_PALETTE: [[u8; 3]; 6] = [
+    [120, 170, 255], // blue
+    [140, 210, 140], // green
+    [230, 170, 110], // orange
+    [200, 140, 220], // purple
+    [220, 200, 120], // yellow
+    [150, 210, 210], // teal
+];
+
 /// One feature's placement in the graph.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BuildGraphRow {

@@ -22,6 +22,8 @@ struct Globals {
     ghost_color : vec4<f32>,
     // Build-Graph hover body tint: [first_face, end_face, active, 0].
     hover_body : vec4<u32>,
+    // [body_tint, 0, 0, 0]: vertex-colour strength (0 = face_base, 1 = full).
+    tint : vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> globals : Globals;

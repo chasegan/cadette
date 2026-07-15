@@ -50,6 +50,9 @@ pub struct HistoryState {
     pub show_yz: bool,
     /// Whether moves/resizes snap to the grid.
     pub snap_to_grid: bool,
+    /// How strongly bodies wear their Build Graph colour in the viewport:
+    /// 0.0 = the neutral default grey, 1.0 = exactly the graph's lane colour.
+    pub body_tint: f32,
     /// The plane a new toolbar sketch is started on.
     pub sketch_plane: SketchPlane,
     /// Whether the About window is open.
@@ -79,6 +82,7 @@ impl Default for HistoryState {
             show_xz: false,
             show_yz: false,
             snap_to_grid: true,
+            body_tint: 0.35,
             sketch_plane: SketchPlane::Xy,
             about_open: false,
             tape_active: false,
@@ -123,6 +127,9 @@ pub struct HistoryResponse {
     /// "Tidy history" was clicked — the host merges stacked Translates (one
     /// undo entry) and reports the result in the status bar.
     pub tidy: bool,
+    /// The body-tint dial moved — `state.body_tint` changed and the host
+    /// should persist it (rendering picks it up per frame, no regen needed).
+    pub tint_changed: bool,
 }
 
 impl HistoryState {
@@ -196,6 +203,19 @@ pub fn history_panel(
                         .suffix(" mm"),
                 )
                 .on_hover_text("Total grid size (extent)");
+                ui.label("Tint");
+                let mut pct = (state.body_tint * 100.0).round();
+                if ui
+                    .add(egui::DragValue::new(&mut pct).speed(1.0).range(0.0..=100.0).suffix("%"))
+                    .on_hover_text(
+                        "How strongly bodies wear their Build Graph colour: \
+                         0% = neutral grey, 100% = exactly the graph's colours",
+                    )
+                    .changed()
+                {
+                    state.body_tint = (pct as f32 / 100.0).clamp(0.0, 1.0);
+                    resp.tint_changed = true;
+                }
             });
             ui.horizontal(|ui| {
                 ui.label("Planes");
@@ -457,18 +477,13 @@ const LANE_W: f32 = 14.0;
 const GRAPH_ROW_H: f32 = 22.0;
 const NODE_R: f32 = 4.0;
 
-/// A distinct, muted colour per lane so parallel body lines read apart — used
-/// as the fallback when a body has no user colour.
+/// A distinct colour per lane so parallel body lines read apart — used when a
+/// body has no user colour. The palette lives in cdt-core (`LANE_PALETTE`) so
+/// the viewport tints bodies with EXACTLY these colours: the Build Graph is
+/// the scene's legend.
 fn lane_color(lane: usize) -> Color32 {
-    const PALETTE: [Color32; 6] = [
-        Color32::from_rgb(120, 170, 255), // blue
-        Color32::from_rgb(140, 210, 140), // green
-        Color32::from_rgb(230, 170, 110), // orange
-        Color32::from_rgb(200, 140, 220), // purple
-        Color32::from_rgb(220, 200, 120), // yellow
-        Color32::from_rgb(150, 210, 210), // teal
-    ];
-    PALETTE[lane % PALETTE.len()]
+    let [r, g, b] = cdt_core::LANE_PALETTE[lane % cdt_core::LANE_PALETTE.len()];
+    Color32::from_rgb(r, g, b)
 }
 
 /// A body's linear-RGB colour as an egui (sRGB) colour for the lane graph.

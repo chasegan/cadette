@@ -58,6 +58,9 @@ pub(crate) struct Globals {
     ghost_color: [f32; 4],
     /// Build-Graph hover body tint: `[first_face, end_face, active, 0]`.
     hover_body: [u32; 4],
+    /// `[body_tint, 0, 0, 0]`: how strongly bodies take their vertex colour
+    /// (0 = face_base grey, 1 = full colour). Set by `encode` per frame.
+    tint: [f32; 4],
 }
 
 /// Uniform for the background gradient pass: top/bottom colors (linear RGB).
@@ -132,6 +135,7 @@ impl Globals {
             face_base: rgba(ViewportTheme::DARK.face_base, 1.0),
             edge_base: rgba(ViewportTheme::DARK.edge, 1.0),
             ghost_color: ViewportTheme::DARK.ghost,
+            tint: [ViewportTheme::DARK.body_tint, 0.0, 0.0, 0.0],
             hover_body: match highlights.hover_body {
                 Some((start, end)) => [start, end, 1, 0],
                 None => [0; 4],
@@ -785,6 +789,7 @@ impl Scene {
         globals.face_base = rgba(theme.face_base, 1.0);
         globals.edge_base = rgba(theme.edge, 1.0);
         globals.ghost_color = theme.ghost;
+        globals.tint = [theme.body_tint, 0.0, 0.0, 0.0];
         self.queue
             .write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
         self.queue.write_buffer(

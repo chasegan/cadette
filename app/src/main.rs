@@ -897,8 +897,8 @@ impl Controller for Modeler {
         // Build Graph hover: ghost the hovered step's own result (debounced)
         // and tint the visible body it feeds into (via `highlights`).
         self.update_graph_hover();
-        if resp.theme_changed {
-            prefs::save(&Prefs { theme: self.ui.theme });
+        if resp.theme_changed || resp.tint_changed {
+            prefs::save(&Prefs { theme: self.ui.theme, body_tint: self.ui.body_tint });
         }
         // Commit the pre-edit snapshot if any continuous UI edit (Properties or
         // Build Graph) touched the doc this frame.
@@ -1085,6 +1085,17 @@ impl Controller for Modeler {
         self.ui.visible = regen.visible().to_vec();
         let bodies = regen.into_visible_bodies();
 
+        // Each feature's Build Graph lane — the palette fallback colour for
+        // bodies with no user colour.
+        let lane_of: std::collections::HashMap<FeatureId, usize> = self
+            .doc
+            .history
+            .build_graph()
+            .rows
+            .iter()
+            .map(|r| (r.id, r.lane))
+            .collect();
+
         let mut mesh = MeshData::default();
         let mut face_offset = 0u32; // keep face/edge ids unique across bodies
         let mut edge_offset = 0u32;
@@ -1095,14 +1106,19 @@ impl Controller for Modeler {
         for (idx, body) in bodies.iter().enumerate() {
             self.face_ranges.push(face_offset);
             self.edge_ranges.push(edge_offset);
-            // This body's user colour (walking down its input chain), or the
-            // sentinel so the shader falls back to the theme's default material.
-            let color = self
-                .ui
-                .visible
-                .get(idx)
-                .and_then(|&id| self.doc.history.resolve_color(id))
-                .unwrap_or(cdt_render::NO_COLOR);
+            // This body's Build Graph colour: its user colour (walking down
+            // the input chain) or its lane's palette colour. The shader mixes
+            // it over the theme grey by the tint dial, so the graph is always
+            // a legend for the scene.
+            let color = match self.ui.visible.get(idx) {
+                Some(&id) => self.doc.history.resolve_color(id).unwrap_or_else(|| {
+                    let lane = lane_of.get(&id).copied().unwrap_or(0);
+                    cdt_render::srgb_to_linear(
+                        cdt_core::LANE_PALETTE[lane % cdt_core::LANE_PALETTE.len()],
+                    )
+                }),
+                None => cdt_render::NO_COLOR,
+            };
             match body.tessellate(DEFLECTION_MM) {
                 Ok(part) => {
                     self.body_centers.push(positions_center(&part.positions));
@@ -1348,11 +1364,13 @@ impl Controller for Modeler {
     }
 
     fn viewport_theme(&self) -> ViewportTheme {
-        if self.ui.theme.is_dark() {
+        let mut theme = if self.ui.theme.is_dark() {
             ViewportTheme::DARK
         } else {
             ViewportTheme::LIGHT
-        }
+        };
+        theme.body_tint = self.ui.body_tint;
+        theme
     }
 
     fn gizmo(&self) -> Option<Gizmo> {
@@ -1843,10 +1861,16 @@ fn main() -> anyhow::Result<()> {
     let mut modeler = Modeler::new();
     // Restore the saved look-and-feel. `CADETTE_THEME=light|dark` overrides it
     // for a single run (handy for screenshots) without touching saved prefs.
+    let saved = prefs::load();
     modeler.ui.theme = match std::env::var("CADETTE_THEME").as_deref() {
         Ok("light") => cdt_ui::Theme::Light,
         Ok("dark") => cdt_ui::Theme::Dark,
-        _ => prefs::load().theme,
+        _ => saved.theme,
+    };
+    // `CADETTE_TINT=0..100` likewise overrides the body-tint dial for one run.
+    modeler.ui.body_tint = match std::env::var("CADETTE_TINT").ok().and_then(|v| v.parse::<f32>().ok()) {
+        Some(pct) => (pct / 100.0).clamp(0.0, 1.0),
+        None => saved.body_tint,
     };
 
     // Headless verification/demo harnesses (`--sketch-demo`, `--screenshot`,

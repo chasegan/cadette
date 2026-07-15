@@ -10,11 +10,25 @@ use serde::{Deserialize, Serialize};
 
 /// User preferences, serialized to `prefs.json`. `#[serde(default)]` so adding
 /// fields later stays backward-compatible with older files.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
     /// The active look-and-feel.
     pub theme: Theme,
+    /// How strongly bodies wear their Build Graph colour in the viewport
+    /// (0.0 = neutral grey, 1.0 = exactly the graph's lane colours).
+    pub body_tint: f32,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Prefs {
+            theme: Theme::default(),
+            // A restrained default: bodies read as material with a clear
+            // colour identity, without the graph's full vibrancy.
+            body_tint: 0.35,
+        }
+    }
 }
 
 /// The per-user config directory for Cadette, creating it if needed. `None` if

@@ -20,6 +20,9 @@ pub struct ViewportTheme {
     pub grid_major: [f32; 4],
     /// Hover-ghost overlay color, RGBA (linear; alpha-blended, drawn x-ray).
     pub ghost: [f32; 4],
+    /// How strongly bodies take their vertex (Build Graph lane) colour:
+    /// 0 = the neutral `face_base` grey, 1 = the full lane colour.
+    pub body_tint: f32,
     /// ViewCube face fill, hovered-face fill, edge, and label colors (sRGB u8).
     pub view_cube_face: [u8; 3],
     pub view_cube_face_hover: [u8; 3],
@@ -37,6 +40,7 @@ impl ViewportTheme {
         grid_minor: [0.58, 0.60, 0.66, 0.16],
         grid_major: [0.62, 0.64, 0.70, 0.38],
         ghost: [0.807, 0.125, 0.045, 0.35], // Atomic Tangerine (linear)
+        body_tint: 1.0,
         view_cube_face: [206, 209, 214],
         view_cube_face_hover: [120, 165, 235],
         view_cube_edge: [90, 90, 90],
@@ -55,6 +59,7 @@ impl ViewportTheme {
         grid_minor: [0.009, 0.016, 0.054, 0.20], // Deep Space (linear)
         grid_major: [0.009, 0.016, 0.054, 0.42],
         ghost: [0.807, 0.125, 0.045, 0.30], // Atomic Tangerine (linear)
+        body_tint: 1.0,
         view_cube_face: [200, 192, 172],     // warm gray (sRGB u8 for egui)
         view_cube_face_hover: [232, 99, 60], // Atomic Tangerine
         view_cube_edge: [24, 34, 65],        // Deep Space
