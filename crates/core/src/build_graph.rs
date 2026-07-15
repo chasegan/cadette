@@ -98,13 +98,17 @@ impl History {
     /// condensed DAG out (same lane algorithm as [`Self::build_graph`]).
     ///
     /// One rule, applied to a fixpoint: **a node folds into its sole
-    /// consumer** — chains, merges, and whole tool subtrees alike, no matter
-    /// how history interleaves their steps. What remains is each body's
-    /// final version (live tips), branch points (a body feeding several
-    /// consumers), and pinned steps. Pins: suppressed steps and anything
-    /// `keep` names (the selected step, errored steps, expanded folds) never
-    /// fold — though they can still absorb; suppressed steps absorb nothing;
-    /// and no fold crosses the rollback boundary at `active`.
+    /// consumer, along a PRIMARY edge only** — the consumer must continue
+    /// this node's body line (a boolean belongs to its target's line; the
+    /// tool is a guest there). So chains and same-line merges fold, no
+    /// matter how history interleaves their steps, but every body that ever
+    /// existed keeps at least one node: a tool's story folds to its final
+    /// step and stops, feeding the boolean visibly. Also visible: live tips,
+    /// branch points (a body feeding several consumers), and pinned steps.
+    /// Pins: suppressed steps and anything `keep` names (the selected step,
+    /// errored steps, expanded folds) never fold — though they can still
+    /// absorb; suppressed steps absorb nothing; and no fold crosses the
+    /// rollback boundary at `active`.
     pub fn display_graph(&self, active: usize, keep: impl Fn(FeatureId) -> bool) -> DisplayGraph {
         let features = self.features();
         let n = features.len();
@@ -131,34 +135,27 @@ impl History {
                 if owner[r] != r || !may_fold(r) {
                     continue;
                 }
-                // The node's consumers, at NODE level (a diamond's two arms
-                // both feeding one merge count as ONE consumer).
-                let mut target: Option<usize> = None;
-                let mut single = true;
-                for m in 0..n {
-                    if owner[m] != r {
-                        continue;
-                    }
-                    for &c in &feature_consumers[m] {
-                        let node = owner[c];
-                        if node == r {
-                            continue;
-                        }
-                        match target {
-                            None => target = Some(node),
-                            Some(t) if t == node => {}
-                            Some(_) => {
-                                single = false;
-                                break;
-                            }
-                        }
-                    }
-                    if !single {
-                        break;
-                    }
+                // A node's outward edges all leave from its representative
+                // (every earlier fold pointed the folded node's edges at the
+                // absorber), so the rep's consumers ARE the node's consumers.
+                let cs = &feature_consumers[r];
+                let Some(&first) = cs.first() else {
+                    continue; // a live tip — always visible
+                };
+                let s = owner[first];
+                if cs.iter().any(|&c| owner[c] != s) {
+                    continue; // a branch point — feeds several nodes
                 }
-                let Some(s) = target else { continue }; // a live tip
-                if !single || !may_absorb(s) || (r >= active) != (s >= active) {
+                // Fold along PRIMARY edges only: every consuming step must
+                // continue THIS body line. A boolean's tool never folds into
+                // it — the tool body keeps a node of its own.
+                if !cs
+                    .iter()
+                    .all(|&c| features[c].kind.primary_input() == Some(features[r].id))
+                {
+                    continue;
+                }
+                if !may_absorb(s) || (r >= active) != (s >= active) {
                     continue;
                 }
                 for o in owner.iter_mut() {
@@ -436,10 +433,11 @@ mod tests {
     }
 
     #[test]
-    fn merges_and_tools_fold_into_the_body_they_build() {
-        // The uniform rule: the tool chain folds into the tool, the tool into
-        // its subtract, the subtract into the next step — one body, one node,
-        // no matter that history interleaves the two chains.
+    fn every_body_keeps_a_node_of_its_own() {
+        // Folds follow PRIMARY edges only: the target's chain folds through
+        // the boolean it owns (interleaving notwithstanding), but the TOOL —
+        // a separate body — folds to its own final step and stops there,
+        // feeding the merge visibly.
         let mut doc = Document::new("merge");
         let a = doc.add("A", FeatureKind::Box { size: DVec3::splat(10.0) });
         let t = doc.add("Tool", FeatureKind::Cylinder { radius: 2.0, height: 20.0 });
@@ -452,9 +450,19 @@ mod tests {
         let f = doc.add("Fillet", FeatureKind::FilletAll { source: u, radius: 1.0 });
 
         let d = doc.history.display_graph(doc.history.len(), |_| false);
-        assert_eq!(d.nodes.len(), 1, "everything flows into the one live body");
-        assert_eq!(d.nodes[0].rep, f);
-        assert_eq!(d.nodes[0].members, vec![a, t, am, tm, u, f]);
+        let reps: Vec<_> = d.nodes.iter().map(|n| n.rep).collect();
+        assert_eq!(reps, vec![tm, f], "the tool body + the main body");
+        assert_eq!(d.nodes[0].members, vec![t, tm], "the tool's own chain folds");
+        assert_eq!(
+            d.nodes[1].members,
+            vec![a, am, u, f],
+            "the target's chain folds THROUGH its boolean"
+        );
+        // The tool's ribbon connects INTO the main node (one external input;
+        // the boolean itself is folded, so no merge ring — the connection is
+        // what matters).
+        let row = &d.graph.rows[1];
+        assert_eq!(row.input_lanes, vec![d.graph.rows[0].lane]);
     }
 
     #[test]
@@ -485,9 +493,10 @@ mod tests {
     }
 
     #[test]
-    fn a_diamond_folds_whole() {
-        // s branches to two arms that remerge: at node level the diamond has
-        // one story — it folds into the merge, and onward.
+    fn a_diamond_keeps_the_branch_and_the_second_arm() {
+        // s branches into two arms that remerge (the mirror-copy pattern).
+        // The union belongs to m1's line, so m1 folds through it; m2 is a
+        // body of its own and stays; s feeds two nodes and stays.
         let mut doc = Document::new("diamond");
         let s = doc.add("S", FeatureKind::Box { size: DVec3::splat(10.0) });
         let m1 = doc.add("M1", FeatureKind::Translate { source: s, offset: DVec3::X });
@@ -498,8 +507,9 @@ mod tests {
         );
 
         let d = doc.history.display_graph(doc.history.len(), |_| false);
-        assert_eq!(d.nodes.len(), 1);
-        assert_eq!(d.nodes[0].members, vec![s, m1, m2, u]);
+        let reps: Vec<_> = d.nodes.iter().map(|n| n.rep).collect();
+        assert_eq!(reps, vec![s, m2, u], "origin, second arm, main line");
+        assert_eq!(d.nodes[2].members, vec![m1, u], "the owning arm folds through");
     }
 
     #[test]
