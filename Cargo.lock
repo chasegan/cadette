@@ -510,7 +510,7 @@ dependencies = [
 
 [[package]]
 name = "cdt-app"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "cdt-core",
@@ -533,7 +533,7 @@ dependencies = [
 
 [[package]]
 name = "cdt-core"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "glam",
  "serde",
@@ -543,14 +543,14 @@ dependencies = [
 
 [[package]]
 name = "cdt-interaction"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "cdt-core",
 ]
 
 [[package]]
 name = "cdt-kernel"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "cdt-core",
  "cxx",
@@ -560,7 +560,7 @@ dependencies = [
 
 [[package]]
 name = "cdt-render"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -580,14 +580,14 @@ dependencies = [
 
 [[package]]
 name = "cdt-solver"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "cdt-core",
 ]
 
 [[package]]
 name = "cdt-ui"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "cdt-core",
  "egui",
