@@ -897,8 +897,12 @@ impl Controller for Modeler {
         // Build Graph hover: ghost the hovered step's own result (debounced)
         // and tint the visible body it feeds into (via `highlights`).
         self.update_graph_hover();
-        if resp.theme_changed || resp.tint_changed {
-            prefs::save(&Prefs { theme: self.ui.theme, body_tint: self.ui.body_tint });
+        if resp.theme_changed || resp.tint_changed || resp.compact_changed {
+            prefs::save(&Prefs {
+                theme: self.ui.theme,
+                body_tint: self.ui.body_tint,
+                compact_graph: self.ui.compact,
+            });
         }
         // Commit the pre-edit snapshot if any continuous UI edit (Properties or
         // Build Graph) touched the doc this frame.
@@ -1872,6 +1876,7 @@ fn main() -> anyhow::Result<()> {
         Some(pct) => (pct / 100.0).clamp(0.0, 1.0),
         None => saved.body_tint,
     };
+    modeler.ui.compact = saved.compact_graph;
 
     // Headless verification/demo harnesses (`--sketch-demo`, `--screenshot`,
     // `--bench-regen`, ...). If one ran, the process is done; otherwise

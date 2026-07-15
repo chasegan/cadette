@@ -26,7 +26,7 @@ pub mod units;
 pub use backend::GeometryBackend;
 pub use document::Document;
 pub use features::{BooleanOp, EdgeAnchor, FaceAnchor, Feature, FeatureId, FeatureKind, SweepPath};
-pub use build_graph::{BuildGraph, BuildGraphRow, LANE_PALETTE};
+pub use build_graph::{BuildGraph, BuildGraphRow, Condensed, LANE_PALETTE};
 pub use glam::DVec3;
 pub use history::{DependencyError, History};
 pub use regen::{regenerate, RegenCache, RegenError, Regeneration};

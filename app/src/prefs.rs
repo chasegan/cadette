@@ -18,6 +18,8 @@ pub struct Prefs {
     /// How strongly bodies wear their Build Graph colour in the viewport
     /// (0.0 = neutral grey, 1.0 = exactly the graph's lane colours).
     pub body_tint: f32,
+    /// Compact Build Graph: fold linear runs into each body line's final step.
+    pub compact_graph: bool,
 }
 
 impl Default for Prefs {
@@ -27,6 +29,7 @@ impl Default for Prefs {
             // A restrained default: bodies read as material with a clear
             // colour identity, without the graph's full vibrancy.
             body_tint: 0.35,
+            compact_graph: true,
         }
     }
 }

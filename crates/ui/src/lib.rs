@@ -53,6 +53,12 @@ pub struct HistoryState {
     /// How strongly bodies wear their Build Graph colour in the viewport:
     /// 0.0 = the neutral default grey, 1.0 = exactly the graph's lane colour.
     pub body_tint: f32,
+    /// Compact Build Graph: fold linear runs of chain steps into each body
+    /// line's final step (merges, branch points, and pinned steps stay).
+    pub compact: bool,
+    /// Runs the user has expanded in place while compact (keyed by the run's
+    /// visible final step). Transient view state.
+    pub expanded_runs: std::collections::HashSet<FeatureId>,
     /// The plane a new toolbar sketch is started on.
     pub sketch_plane: SketchPlane,
     /// Whether the About window is open.
@@ -83,6 +89,8 @@ impl Default for HistoryState {
             show_yz: false,
             snap_to_grid: true,
             body_tint: 0.35,
+            compact: true,
+            expanded_runs: std::collections::HashSet::new(),
             sketch_plane: SketchPlane::Xy,
             about_open: false,
             tape_active: false,
@@ -130,6 +138,9 @@ pub struct HistoryResponse {
     /// The body-tint dial moved — `state.body_tint` changed and the host
     /// should persist it (rendering picks it up per frame, no regen needed).
     pub tint_changed: bool,
+    /// The compact-graph toggle was clicked — `state.compact` changed and the
+    /// host should persist it.
+    pub compact_changed: bool,
 }
 
 impl HistoryState {
@@ -239,6 +250,17 @@ pub fn history_panel(
                     .on_hover_text("Each body is a lane; lanes merge at a boolean or group.");
                 // Reorder the SELECTED step (backward-only refs may reject a move).
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .selectable_label(state.compact, RichText::new(icon::ARROWS_IN_LINE_VERTICAL))
+                        .on_hover_text(
+                            "Compact: fold runs of in-between steps into each body \
+                             line's final step (merges and branches always show)",
+                        )
+                        .clicked()
+                    {
+                        state.compact = !state.compact;
+                        resp.compact_changed = true;
+                    }
                     if ui
                         .add(egui::Button::new(icon::BROOM).small())
                         .on_hover_text(
@@ -508,6 +530,30 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
     let gutter_w = graph.lane_count.max(1) as f32 * LANE_W;
     let active = doc.rollback();
 
+    // Compact view: fold linear runs into each body line's final step. The
+    // selected step and errored steps are pinned visible (suppression and the
+    // rollback boundary are pinned inside `condensed`). Folding a chain row
+    // is layout-safe — its lane occupancy is unchanged (top_open == open) —
+    // so skipped rows leave the remaining ribbons connected.
+    let condensed = state.compact.then(|| {
+        graph.condensed(&doc.history, active, |id| {
+            state.selected == Some(id) || state.errors.iter().any(|(e, _)| *e == id)
+        })
+    });
+    // Which visible step each folded row expands under (for the expand toggle).
+    let folded_under: std::collections::HashMap<FeatureId, FeatureId> = condensed
+        .as_ref()
+        .map(|c| {
+            c.runs
+                .iter()
+                .flat_map(|(&kept, members)| {
+                    let kept_id = doc.history.features()[kept].id;
+                    members.iter().map(move |&m| (m, kept_id))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     // Snapshot rows (with their lane layout) so we can mutate the doc in the loop.
     let rows: Vec<_> = doc
         .history
@@ -533,6 +579,17 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
     ui.spacing_mut().item_spacing.y = 0.0;
 
     for (index, (id, name, suppressed, gr)) in rows.into_iter().enumerate() {
+        // Compact: skip folded rows unless their run is expanded in place.
+        if let Some(c) = &condensed {
+            if c.hidden[index]
+                && !folded_under
+                    .get(&id)
+                    .is_some_and(|kept| state.expanded_runs.contains(kept))
+            {
+                continue;
+            }
+        }
+        let run = condensed.as_ref().and_then(|c| c.runs.get(&index));
         let rolled_back = index >= active;
         let error = state.error_for(id).map(str::to_owned);
         let selected = state.selected == Some(id);
@@ -591,6 +648,43 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
             }
 
             // --- Row controls ------------------------------------------------
+            // Compact: a run's final step carries the expand/collapse toggle
+            // ("⌄ N" folded, "⌃" expanded). Runless rows reserve the same
+            // width so names align down the panel.
+            if condensed.is_some() {
+                // Fixed width so names align whether or not a row has a run.
+                const BADGE_W: f32 = 34.0;
+                match run {
+                    Some(members) => {
+                        let open = state.expanded_runs.contains(&id);
+                        let label = if open {
+                            icon::CARET_UP.to_string()
+                        } else {
+                            format!("{} {}", icon::CARET_DOWN, members.len())
+                        };
+                        let tip = if open {
+                            "Collapse the earlier steps of this body line".to_owned()
+                        } else {
+                            format!(
+                                "Show the {} earlier step(s) folded into this one",
+                                members.len()
+                            )
+                        };
+                        let button = egui::Button::new(RichText::new(label).small())
+                            .min_size(egui::vec2(BADGE_W, 0.0));
+                        if ui.add(button).on_hover_text(tip).clicked() {
+                            if open {
+                                state.expanded_runs.remove(&id);
+                            } else {
+                                state.expanded_runs.insert(id);
+                            }
+                        }
+                    }
+                    None => {
+                        ui.add_space(BADGE_W + ui.spacing().item_spacing.x);
+                    }
+                }
+            }
             let mut sup = suppressed;
             if ui
                 .add(egui::Checkbox::without_text(&mut sup))
