@@ -24,9 +24,9 @@ impl Default for Prefs {
     fn default() -> Self {
         Prefs {
             theme: Theme::default(),
-            // A restrained default: bodies read as material with a clear
-            // colour identity, without the graph's full vibrancy.
-            body_tint: 0.35,
+            // Bodies wear most of their colour identity by default, held just
+            // short of the graph's full vibrancy.
+            body_tint: 0.68,
         }
     }
 }

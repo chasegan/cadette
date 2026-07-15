@@ -82,7 +82,7 @@ impl Default for HistoryState {
             show_xz: false,
             show_yz: false,
             snap_to_grid: true,
-            body_tint: 0.35,
+            body_tint: 0.68,
             sketch_plane: SketchPlane::Xy,
             about_open: false,
             tape_active: false,
