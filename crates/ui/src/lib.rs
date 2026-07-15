@@ -517,22 +517,42 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
         .map(|(f, gr)| (f.id, f.name.clone(), f.suppressed, gr.clone()))
         .collect();
 
-    // A lane takes its body's user colour if one is set anywhere down its chain
-    // (so the graph is a legend for the coloured 3D bodies), else the palette
-    // fallback. Later rows on a lane overwrite, but colour propagates down the
-    // chain so they resolve to the same value — the visible body's colour wins.
-    let mut lane_colors: std::collections::HashMap<usize, Color32> = std::collections::HashMap::new();
-    for (f, gr) in doc.history.features().iter().zip(graph.rows.iter()) {
-        if let Some(c) = doc.history.resolve_color(f.id) {
-            lane_colors.insert(gr.lane, linear_to_color32(c));
+    // A body's canonical colour: its user colour (walking down the input
+    // chain) or the palette keyed by its lane — ONE formula, shared with the
+    // viewport's body tinting, so the graph is an exact legend for the scene.
+    // Ribbons are painted per SEGMENT by the body flowing through them, so a
+    // freed-and-reused column shows each body's own colour on its stretch.
+    let mut body_colors: std::collections::HashMap<FeatureId, Color32> =
+        std::collections::HashMap::new();
+    for gr in graph.rows.iter() {
+        for &occ in gr.occupants.iter().chain(std::iter::once(&gr.id)) {
+            body_colors.entry(occ).or_insert_with(|| match doc.history.resolve_color(occ) {
+                Some(c) => linear_to_color32(c),
+                None => lane_color(
+                    graph.rows.iter().find(|r| r.id == occ).map_or(0, |r| r.lane),
+                ),
+            });
         }
     }
-    let lane_col = |lane: usize| lane_colors.get(&lane).copied().unwrap_or_else(|| lane_color(lane));
+    let body_color = |id: FeatureId| -> Color32 {
+        body_colors.get(&id).copied().unwrap_or_else(|| lane_color(0))
+    };
 
     // Contiguous rows so the lane lines join across rows.
     ui.spacing_mut().item_spacing.y = 0.0;
 
+    // Colours of the lanes flowing INTO the current row (the previous row's
+    // outgoing occupants, keyed by lane).
+    let mut top_colors: std::collections::HashMap<usize, Color32> =
+        std::collections::HashMap::new();
     for (index, (id, name, suppressed, gr)) in rows.into_iter().enumerate() {
+        let node_color = body_color(id);
+        let bot_colors: std::collections::HashMap<usize, Color32> = gr
+            .open
+            .iter()
+            .zip(gr.occupants.iter())
+            .map(|(&l, &occ)| (l, body_color(occ)))
+            .collect();
         let rolled_back = index >= active;
         let error = state.error_for(id).map(str::to_owned);
         let selected = state.selected == Some(id);
@@ -548,10 +568,9 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
             let lane_x = |l: usize| rect.left() + l as f32 * LANE_W + LANE_W * 0.5;
             let node_x = lane_x(gr.lane);
             let dim = rolled_back || suppressed;
-            let stroke = |l: usize| {
-                let c = lane_col(l);
-                egui::Stroke::new(1.5, if dim { c.gamma_multiply(0.4) } else { c })
-            };
+            let stroke = |c: Color32| egui::Stroke::new(1.5, if dim { c.gamma_multiply(0.4) } else { c });
+            let top_col = |l: usize| top_colors.get(&l).copied().unwrap_or_else(|| lane_color(l));
+            let bot_col = |l: usize| bot_colors.get(&l).copied().unwrap_or_else(|| lane_color(l));
             // Top half: each incoming lane connects to the node, others pass
             // down. An input lane that STAYS OPEN below (a body feeding more
             // consumers further down, e.g. one carver subtracted from several
@@ -561,16 +580,16 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
             for &l in &gr.top_open {
                 let feeds_node = l == gr.lane || gr.input_lanes.contains(&l);
                 if feeds_node {
-                    p.line_segment([egui::pos2(lane_x(l), top), egui::pos2(node_x, mid)], stroke(l));
+                    p.line_segment([egui::pos2(lane_x(l), top), egui::pos2(node_x, mid)], stroke(top_col(l)));
                 }
                 if !feeds_node || (l != gr.lane && gr.open.contains(&l)) {
-                    p.line_segment([egui::pos2(lane_x(l), top), egui::pos2(lane_x(l), mid)], stroke(l));
+                    p.line_segment([egui::pos2(lane_x(l), top), egui::pos2(lane_x(l), mid)], stroke(top_col(l)));
                 }
             }
             // Bottom half: the node's lane (and any other open lane) flows down.
             for &l in &gr.open {
                 let x = if l == gr.lane { node_x } else { lane_x(l) };
-                p.line_segment([egui::pos2(x, mid), egui::pos2(x, bot)], stroke(l));
+                p.line_segment([egui::pos2(x, mid), egui::pos2(x, bot)], stroke(bot_col(l)));
             }
             // The node: a ring for a merge, a dot otherwise.
             let node_c = if error.is_some() {
@@ -578,7 +597,7 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
             } else if dim {
                 Color32::from_gray(120)
             } else {
-                lane_col(gr.lane)
+                node_color
             };
             let center = egui::pos2(node_x, mid);
             if gr.is_merge {
@@ -632,6 +651,7 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
         if row.response.contains_pointer() {
             state.hovered_step = Some(id);
         }
+        top_colors = bot_colors;
     }
 
     changed
