@@ -358,7 +358,9 @@ fn command_bar(
             }
             // Sketch: the plane is chosen at the moment of starting (a menu), not
             // from a persistent global picker — each sketch names its own plane.
-            ui.menu_button(icon::PENCIL_SIMPLE, |ui| {
+            // Sized like `icon_btn`'s glyphs — a bare str would render at the
+            // default font size and leave this button shorter than its row.
+            ui.menu_button(RichText::new(icon::PENCIL_SIMPLE).size(18.0), |ui| {
                 ui.label("Sketch on plane:");
                 for (p, item) in [
                     (SketchPlane::Xy, "XY — top"),
