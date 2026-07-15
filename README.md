@@ -1,6 +1,6 @@
 # Cadette
 
-**Powerful. Usable. Free. Pick all three.**
+**Powerful. Friendly. Free. Pick all three.**
 
 Cadette is free, open-source parametric CAD for makers — Tinkercad's simplicity,
 Shapr3D's spunk, FreeCAD's kernel, nobody's subscription. Model a part, change
