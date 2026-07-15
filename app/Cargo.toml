@@ -30,3 +30,9 @@ egui-phosphor = "0.12.0"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSProcessInfo", "NSBundle", "NSString", "NSDictionary"] }
+
+# Windows: bake assets/icon/icon.ico into the exe's resource table so Explorer
+# shows it for the file itself (see build.rs). Host-gated: only fetched when
+# building on Windows, which is where the release exe is produced.
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winresource = "0.1"
