@@ -48,111 +48,192 @@ pub struct BuildGraph {
     pub lane_count: usize,
 }
 
-/// The condensed view of a [`BuildGraph`]: linear runs of chain steps folded
-/// into the run's FINAL step — each body line shows only the version a merge
-/// consumes (or the live tip), plus branch points and merges. Folding a
-/// chain-interior row is layout-safe: its lane occupancy is identical entering
-/// and leaving (`top_open == open`), so remaining rows' ribbons still connect.
-#[derive(Clone, Debug, Default)]
-pub struct Condensed {
-    /// Aligned with `BuildGraph::rows`: true when the view should fold this
-    /// step into its consumer's run.
-    pub hidden: Vec<bool>,
-    /// For each VISIBLE row index, the steps folded into it (oldest first).
-    /// Rows that head no run are absent.
-    pub runs: HashMap<usize, Vec<FeatureId>>,
+/// One node of the CONDENSED graph: a whole region of the feature DAG folded
+/// into the step everything in it flows to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisplayNode {
+    /// The representative — the region's final step (its sink), whose body is
+    /// what the node stands for.
+    pub rep: FeatureId,
+    /// Every folded step, history order; the last one is `rep`. Length 1
+    /// means nothing folded.
+    pub members: Vec<FeatureId>,
 }
 
-impl BuildGraph {
-    /// Fold linear runs. A step folds when it is chain-INTERIOR: at most one
-    /// input (a merge row is where lanes CONNECT — folding one leaves its
-    /// tool's lane dead-ending in thin air), exactly ONE consumer, which
-    /// takes exactly ONE input and stays on the SAME lane — and nothing pins
-    /// it visible: suppressed steps and steps whose dim state differs from
-    /// their consumer's (the rollback boundary at `active` runs between them)
-    /// never fold, and `keep` lets the caller pin more (the selected step,
-    /// errored steps, expanded runs).
-    pub fn condensed(
-        &self,
-        history: &History,
-        active: usize,
-        keep: impl Fn(FeatureId) -> bool,
-    ) -> Condensed {
-        let features = history.features();
-        debug_assert_eq!(features.len(), self.rows.len());
-        let index_of: HashMap<FeatureId, usize> =
-            features.iter().enumerate().map(|(i, f)| (f.id, i)).collect();
-        let mut consumers: HashMap<FeatureId, Vec<usize>> = HashMap::new();
-        for (i, f) in features.iter().enumerate() {
-            for input in f.kind.inputs() {
-                consumers.entry(input).or_default().push(i);
-            }
-        }
+/// The condensed graph: nodes plus their lane layout (`graph.rows[i]`
+/// describes `nodes[i]`). Because the layout runs on the condensed DAG
+/// itself — rather than hiding rows of the full layout — the ribbons are
+/// consistent by construction, no matter how history interleaves.
+#[derive(Clone, Debug, Default)]
+pub struct DisplayGraph {
+    pub nodes: Vec<DisplayNode>,
+    pub graph: BuildGraph,
+}
 
-        let hidden: Vec<bool> = features
-            .iter()
-            .enumerate()
-            .map(|(i, f)| {
-                if f.suppressed || keep(f.id) {
-                    return false;
-                }
-                if self.rows[i].is_merge {
-                    return false; // lanes connect HERE — folding breaks them
-                }
-                let Some(cs) = consumers.get(&f.id) else {
-                    return false; // a live tip — always a run's visible end
-                };
-                let &[ci] = cs.as_slice() else {
-                    return false; // a branch point — feeds several consumers
-                };
-                features[ci].kind.inputs().len() == 1
-                    && self.rows[ci].lane == self.rows[i].lane
-                    && (i >= active) == (ci >= active)
-            })
-            .collect();
-
-        // Attribute each folded chain to the visible step that ends it, by
-        // walking single inputs upward while they stay folded.
-        let mut runs: HashMap<usize, Vec<FeatureId>> = HashMap::new();
-        for i in 0..features.len() {
-            if hidden[i] {
-                continue;
-            }
-            let mut run = Vec::new();
-            let mut j = i;
-            loop {
-                let inputs = features[j].kind.inputs();
-                let &[input] = inputs.as_slice() else { break };
-                let Some(&pi) = index_of.get(&input) else { break };
-                if !hidden[pi] {
-                    break;
-                }
-                run.push(features[pi].id);
-                j = pi;
-            }
-            if !run.is_empty() {
-                run.reverse();
-                runs.insert(i, run);
-            }
-        }
-
-        Condensed { hidden, runs }
-    }
+/// What the lane layout needs to know about one node — a raw feature (the
+/// full graph) or a folded [`DisplayNode`] (the condensed graph).
+struct LayoutNode {
+    id: FeatureId,
+    inputs: Vec<FeatureId>,
+    /// The input whose lane this node continues (its main body line).
+    primary: Option<FeatureId>,
 }
 
 impl History {
     /// Lay the feature DAG out into lanes for the graph view.
     pub fn build_graph(&self) -> BuildGraph {
-        let features = self.features();
+        let nodes: Vec<LayoutNode> = self
+            .features()
+            .iter()
+            .map(|f| LayoutNode {
+                id: f.id,
+                inputs: f.kind.inputs(),
+                primary: f.kind.primary_input(),
+            })
+            .collect();
+        layout(&nodes)
+    }
 
-        // How many features consume each feature's output. `total` is fixed (a
+    /// Condense the feature DAG for the compact Build Graph, then lay the
+    /// condensed DAG out (same lane algorithm as [`Self::build_graph`]).
+    ///
+    /// One rule, applied to a fixpoint: **a node folds into its sole
+    /// consumer** — chains, merges, and whole tool subtrees alike, no matter
+    /// how history interleaves their steps. What remains is each body's
+    /// final version (live tips), branch points (a body feeding several
+    /// consumers), and pinned steps. Pins: suppressed steps and anything
+    /// `keep` names (the selected step, errored steps, expanded folds) never
+    /// fold — though they can still absorb; suppressed steps absorb nothing;
+    /// and no fold crosses the rollback boundary at `active`.
+    pub fn display_graph(&self, active: usize, keep: impl Fn(FeatureId) -> bool) -> DisplayGraph {
+        let features = self.features();
+        let n = features.len();
+        let index_of: HashMap<FeatureId, usize> =
+            features.iter().enumerate().map(|(i, f)| (f.id, i)).collect();
+        let mut feature_consumers: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for (i, f) in features.iter().enumerate() {
+            for input in f.kind.inputs() {
+                if let Some(&pi) = index_of.get(&input) {
+                    feature_consumers[pi].push(i);
+                }
+            }
+        }
+
+        // `owner[i]` = the node feature `i` currently belongs to, named by its
+        // representative's index. Contract one eligible node per pass until
+        // nothing changes; n is small (a model has hundreds of steps, not
+        // millions), so the O(n²) simplicity wins.
+        let mut owner: Vec<usize> = (0..n).collect();
+        let may_fold = |r: usize| !features[r].suppressed && !keep(features[r].id);
+        let may_absorb = |s: usize| !features[s].suppressed;
+        'contract: loop {
+            for r in (0..n).rev() {
+                if owner[r] != r || !may_fold(r) {
+                    continue;
+                }
+                // The node's consumers, at NODE level (a diamond's two arms
+                // both feeding one merge count as ONE consumer).
+                let mut target: Option<usize> = None;
+                let mut single = true;
+                for m in 0..n {
+                    if owner[m] != r {
+                        continue;
+                    }
+                    for &c in &feature_consumers[m] {
+                        let node = owner[c];
+                        if node == r {
+                            continue;
+                        }
+                        match target {
+                            None => target = Some(node),
+                            Some(t) if t == node => {}
+                            Some(_) => {
+                                single = false;
+                                break;
+                            }
+                        }
+                    }
+                    if !single {
+                        break;
+                    }
+                }
+                let Some(s) = target else { continue }; // a live tip
+                if !single || !may_absorb(s) || (r >= active) != (s >= active) {
+                    continue;
+                }
+                for o in owner.iter_mut() {
+                    if *o == r {
+                        *o = s;
+                    }
+                }
+                continue 'contract;
+            }
+            break;
+        }
+
+        // Assemble nodes (ordered by representative, i.e. history order) and
+        // their condensed edges for the layout.
+        let reps: Vec<usize> = (0..n).filter(|&i| owner[i] == i).collect();
+        let nodes: Vec<DisplayNode> = reps
+            .iter()
+            .map(|&r| DisplayNode {
+                rep: features[r].id,
+                members: (0..n)
+                    .filter(|&m| owner[m] == r)
+                    .map(|m| features[m].id)
+                    .collect(),
+            })
+            .collect();
+        let layout_nodes: Vec<LayoutNode> = reps
+            .iter()
+            .map(|&r| {
+                // Inputs: every member edge that leaves the node, deduped, as
+                // the owning node's representative.
+                let mut inputs: Vec<FeatureId> = Vec::new();
+                for m in (0..n).filter(|&m| owner[m] == r) {
+                    for input in features[m].kind.inputs() {
+                        let Some(&pi) = index_of.get(&input) else { continue };
+                        if owner[pi] == r {
+                            continue;
+                        }
+                        let rep = features[owner[pi]].id;
+                        if !inputs.contains(&rep) {
+                            inputs.push(rep);
+                        }
+                    }
+                }
+                // Primary: follow the representative's primary chain until it
+                // exits the node — that node's line is the one we continue.
+                let mut primary = None;
+                let mut cur = r;
+                while let Some(p) = features[cur].kind.primary_input() {
+                    let Some(&pi) = index_of.get(&p) else { break };
+                    if owner[pi] == r {
+                        cur = pi;
+                        continue;
+                    }
+                    primary = Some(features[owner[pi]].id);
+                    break;
+                }
+                LayoutNode { id: features[r].id, inputs, primary }
+            })
+            .collect();
+
+        DisplayGraph { graph: layout(&layout_nodes), nodes }
+    }
+}
+
+/// The lane layout pass, over raw features or condensed display nodes alike.
+fn layout(nodes: &[LayoutNode]) -> BuildGraph {
+    {
+        // How many nodes consume each node's output. `total` is fixed (a
         // body feeding ONE consumer keeps its lane; feeding several, each consumer
         // branches off); `remaining` counts down so a lane frees after its last
         // consumer.
         let mut total: HashMap<FeatureId, usize> = HashMap::new();
-        for f in features {
-            for inp in f.kind.inputs() {
-                *total.entry(inp).or_default() += 1;
+        for f in nodes {
+            for inp in &f.inputs {
+                *total.entry(*inp).or_default() += 1;
             }
         }
         let mut remaining = total.clone();
@@ -173,22 +254,22 @@ impl History {
             }
         };
 
-        let mut rows = Vec::with_capacity(features.len());
+        let mut rows = Vec::with_capacity(nodes.len());
         let mut lane_count = 0usize;
         let mut prev_open: Vec<usize> = Vec::new();
 
-        for f in features {
-            let inputs = f.kind.inputs();
+        for f in nodes {
+            let inputs = &f.inputs;
             let is_merge = inputs.len() >= 2;
             let input_lanes: Vec<usize> =
                 inputs.iter().filter_map(|inp| lane_of(&lanes, *inp)).collect();
 
-            // The primary input continues this feature's lane (its main body line).
-            let primary = f.kind.primary_input().or_else(|| inputs.first().copied());
+            // The primary input continues this node's lane (its main body line).
+            let primary = f.primary.or_else(|| inputs.first().copied());
             let primary_lane = primary.and_then(|p| lane_of(&lanes, p));
 
-            // This feature now uses up one consumer slot of each input.
-            for inp in &inputs {
+            // This node now uses up one consumer slot of each input.
+            for inp in inputs {
                 if let Some(r) = remaining.get_mut(inp) {
                     *r = r.saturating_sub(1);
                 }
@@ -341,107 +422,117 @@ mod tests {
     }
 
     #[test]
-    fn a_linear_chain_condenses_to_its_final_step() {
+    fn a_linear_chain_condenses_to_one_node() {
         let mut doc = Document::new("chain");
         let b = doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
         let m = doc.add("Move", FeatureKind::Translate { source: b, offset: DVec3::X });
         let f = doc.add("Fillet", FeatureKind::FilletAll { source: m, radius: 1.0 });
 
-        let g = doc.history.build_graph();
-        let c = g.condensed(&doc.history, doc.history.len(), |_| false);
-        assert_eq!(c.hidden, vec![true, true, false], "only the tip stays");
-        assert_eq!(c.runs[&2], vec![b, m], "the run folds into the tip, oldest first");
-        let _ = f;
+        let d = doc.history.display_graph(doc.history.len(), |_| false);
+        assert_eq!(d.nodes.len(), 1, "one body, one node");
+        assert_eq!(d.nodes[0].rep, f, "the node stands for the final step");
+        assert_eq!(d.nodes[0].members, vec![b, m, f]);
+        assert_eq!(d.graph.lane_count, 1);
     }
 
     #[test]
-    fn merges_and_their_final_inputs_stay_visible() {
-        // box → move feeds a boolean as target; the tool is a bare cylinder.
-        // `move` is the target body's FINAL version → visible; only `box`
-        // folds. The merge and the tool stay.
+    fn merges_and_tools_fold_into_the_body_they_build() {
+        // The uniform rule: the tool chain folds into the tool, the tool into
+        // its subtract, the subtract into the next step — one body, one node,
+        // no matter that history interleaves the two chains.
         let mut doc = Document::new("merge");
-        let b = doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
-        let m = doc.add("Move", FeatureKind::Translate { source: b, offset: DVec3::X });
-        let t = doc.add("Tool", FeatureKind::Cylinder { radius: 2.0, height: 20.0 });
-        let u = doc.add(
-            "Cut",
-            FeatureKind::Boolean { op: BooleanOp::Subtract, target: m, tool: t },
-        );
-
-        let g = doc.history.build_graph();
-        let c = g.condensed(&doc.history, doc.history.len(), |_| false);
-        assert_eq!(c.hidden, vec![true, false, false, false]);
-        assert_eq!(c.runs[&1], vec![b], "box folds into the pre-merge move");
-        let _ = u;
-    }
-
-    #[test]
-    fn a_merge_never_folds_even_mid_chain() {
-        // bool → fillet → move: the boolean has ONE consumer in a same-lane
-        // chain, so the naive interior rule would fold it — leaving the
-        // tool's lane dead-ending in thin air (the "gap in the graph" bug).
-        // The merge must stay; the chain AFTER it folds as usual.
-        let mut doc = Document::new("merge-mid-chain");
         let a = doc.add("A", FeatureKind::Box { size: DVec3::splat(10.0) });
-        let b = doc.add("B", FeatureKind::Cylinder { radius: 2.0, height: 20.0 });
+        let t = doc.add("Tool", FeatureKind::Cylinder { radius: 2.0, height: 20.0 });
+        let am = doc.add("Move A", FeatureKind::Translate { source: a, offset: DVec3::X });
+        let tm = doc.add("Move T", FeatureKind::Translate { source: t, offset: DVec3::Y });
         let u = doc.add(
             "Cut",
-            FeatureKind::Boolean { op: BooleanOp::Subtract, target: a, tool: b },
+            FeatureKind::Boolean { op: BooleanOp::Subtract, target: am, tool: tm },
         );
         let f = doc.add("Fillet", FeatureKind::FilletAll { source: u, radius: 1.0 });
-        let m = doc.add("Move", FeatureKind::Translate { source: f, offset: DVec3::X });
 
-        let g = doc.history.build_graph();
-        let c = g.condensed(&doc.history, doc.history.len(), |_| false);
-        assert!(!c.hidden[2], "the boolean stays visible — its tool lane connects there");
-        assert_eq!(c.hidden, vec![false, false, false, true, false]);
-        assert_eq!(c.runs[&4], vec![f], "only the post-merge chain folds into the tip");
-        let _ = (u, m);
+        let d = doc.history.display_graph(doc.history.len(), |_| false);
+        assert_eq!(d.nodes.len(), 1, "everything flows into the one live body");
+        assert_eq!(d.nodes[0].rep, f);
+        assert_eq!(d.nodes[0].members, vec![a, t, am, tm, u, f]);
     }
 
     #[test]
-    fn branch_points_stay_visible() {
-        let mut doc = Document::new("branch");
-        let s = doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
-        let _m1 = doc.add("M1", FeatureKind::Translate { source: s, offset: DVec3::X });
-        let _m2 = doc.add("M2", FeatureKind::Translate { source: s, offset: DVec3::Y });
-
-        let g = doc.history.build_graph();
-        let c = g.condensed(&doc.history, doc.history.len(), |_| false);
-        assert_eq!(
-            c.hidden,
-            vec![false, false, false],
-            "a body feeding two consumers never folds"
+    fn branch_points_and_shared_tools_stay_visible() {
+        // One carver subtracted from two bodies: the carver feeds two
+        // consumers, so it must remain its own node, feeding both cut nodes.
+        let mut doc = Document::new("fork");
+        let a = doc.add("Carver", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let b = doc.add("B", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let c = doc.add("C", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let s1 = doc.add(
+            "S1",
+            FeatureKind::Boolean { op: BooleanOp::Subtract, target: b, tool: a },
         );
-        assert!(c.runs.is_empty());
+        let s2 = doc.add(
+            "S2",
+            FeatureKind::Boolean { op: BooleanOp::Subtract, target: c, tool: a },
+        );
+
+        let d = doc.history.display_graph(doc.history.len(), |_| false);
+        let reps: Vec<_> = d.nodes.iter().map(|n| n.rep).collect();
+        assert_eq!(reps, vec![a, s1, s2], "carver + the two cut bodies");
+        // Both cut nodes list the carver's node among their inputs — the
+        // ribbons connect to a VISIBLE node, never into thin air.
+        for row in &d.graph.rows[1..] {
+            assert!(!row.input_lanes.is_empty(), "each cut connects to the carver");
+        }
     }
 
     #[test]
-    fn keep_splits_a_run_and_suppression_or_rollback_pin_steps() {
+    fn a_diamond_folds_whole() {
+        // s branches to two arms that remerge: at node level the diamond has
+        // one story — it folds into the merge, and onward.
+        let mut doc = Document::new("diamond");
+        let s = doc.add("S", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let m1 = doc.add("M1", FeatureKind::Translate { source: s, offset: DVec3::X });
+        let m2 = doc.add("M2", FeatureKind::Translate { source: s, offset: DVec3::Y });
+        let u = doc.add(
+            "U",
+            FeatureKind::Boolean { op: BooleanOp::Union, target: m1, tool: m2 },
+        );
+
+        let d = doc.history.display_graph(doc.history.len(), |_| false);
+        assert_eq!(d.nodes.len(), 1);
+        assert_eq!(d.nodes[0].members, vec![s, m1, m2, u]);
+    }
+
+    #[test]
+    fn pins_split_folds_and_boundaries_hold() {
         let mut doc = Document::new("pins");
         let b = doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
         let m1 = doc.add("M1", FeatureKind::Translate { source: b, offset: DVec3::X });
         let m2 = doc.add("M2", FeatureKind::Translate { source: m1, offset: DVec3::Y });
         let f = doc.add("Fillet", FeatureKind::FilletAll { source: m2, radius: 1.0 });
-        let g = doc.history.build_graph();
         let len = doc.history.len();
 
-        // keep(m1) splits box→m1 and m2→fillet into two runs.
-        let c = g.condensed(&doc.history, len, |id| id == m1);
-        assert_eq!(c.hidden, vec![true, false, true, false]);
-        assert_eq!(c.runs[&1], vec![b]);
-        assert_eq!(c.runs[&3], vec![m2]);
+        // keep(m1): it stays a node — and absorbs its upstream (box) while the
+        // downstream chain folds into the tip.
+        let d = doc.history.display_graph(len, |id| id == m1);
+        let reps: Vec<_> = d.nodes.iter().map(|n| n.rep).collect();
+        assert_eq!(reps, vec![m1, f]);
+        assert_eq!(d.nodes[0].members, vec![b, m1], "pinned steps still absorb");
+        assert_eq!(d.nodes[1].members, vec![m2, f]);
 
-        // The rollback boundary between m1 and m2 pins m1 (its consumer dims,
-        // it doesn't) — the run may not straddle the boundary invisibly.
-        let c = g.condensed(&doc.history, 2, |_| false);
-        assert!(!c.hidden[1], "the last active step stays visible");
+        // No fold crosses the rollback boundary (active = 2: m2 dims, m1 not).
+        let d = doc.history.display_graph(2, |_| false);
+        let reps: Vec<_> = d.nodes.iter().map(|n| n.rep).collect();
+        assert_eq!(reps, vec![m1, f], "the boundary splits the body's story");
 
-        // A suppressed step never folds.
+        // A suppressed step neither folds nor absorbs — it interrupts the
+        // story (upstream steps can't leapfrog it into a later consumer).
         doc.history.set_suppressed(m2, true);
-        let c = doc.history.build_graph().condensed(&doc.history, len, |_| false);
-        assert!(!c.hidden[2], "suppressed steps stay visible");
-        let _ = f;
+        let d = doc.history.display_graph(len, |_| false);
+        let reps: Vec<_> = d.nodes.iter().map(|n| n.rep).collect();
+        assert_eq!(reps, vec![m1, m2, f], "the suppressed step stands alone");
+        assert_eq!(d.nodes[0].members, vec![b, m1], "upstream folds up to it");
+        assert_eq!(d.nodes[1].members, vec![m2]);
+        assert_eq!(d.nodes[2].members, vec![f]);
     }
 
     #[test]

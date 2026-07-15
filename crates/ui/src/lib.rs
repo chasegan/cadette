@@ -13,7 +13,8 @@
 use egui::{Color32, Context, RichText, Ui};
 use egui_phosphor::regular as icon;
 use cdt_core::{
-    BooleanOp, Constraint, Document, FeatureId, FeatureKind, Profile, SketchPlane, DVec3,
+    BooleanOp, BuildGraphRow, Constraint, Document, FeatureId, FeatureKind, Profile, SketchPlane,
+    DVec3,
 };
 
 mod theme;
@@ -56,9 +57,9 @@ pub struct HistoryState {
     /// Compact Build Graph: fold linear runs of chain steps into each body
     /// line's final step (merges, branch points, and pinned steps stay).
     pub compact: bool,
-    /// Runs the user has expanded in place while compact (keyed by the run's
-    /// visible final step). Transient view state.
-    pub expanded_runs: std::collections::HashSet<FeatureId>,
+    /// Folds the user has expanded in place while compact: the fold's final
+    /// step, mapped to the member steps pinned visible. Transient view state.
+    pub expanded_runs: std::collections::HashMap<FeatureId, Vec<FeatureId>>,
     /// The plane a new toolbar sketch is started on.
     pub sketch_plane: SketchPlane,
     /// Whether the About window is open.
@@ -90,7 +91,7 @@ impl Default for HistoryState {
             snap_to_grid: true,
             body_tint: 0.35,
             compact: true,
-            expanded_runs: std::collections::HashSet::new(),
+            expanded_runs: std::collections::HashMap::new(),
             sketch_plane: SketchPlane::Xy,
             about_open: false,
             tape_active: false,
@@ -526,51 +527,75 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
         state.hovered_step = None;
     }
     let error_color = state.theme.palette().error;
-    let graph = doc.history.build_graph();
-    let gutter_w = graph.lane_count.max(1) as f32 * LANE_W;
     let active = doc.rollback();
 
-    // Compact view: fold linear runs into each body line's final step. The
-    // selected step and errored steps are pinned visible (suppression and the
-    // rollback boundary are pinned inside `condensed`). Folding a chain row
-    // is layout-safe — its lane occupancy is unchanged (top_open == open) —
-    // so skipped rows leave the remaining ribbons connected.
-    let condensed = state.compact.then(|| {
-        graph.condensed(&doc.history, active, |id| {
-            state.selected == Some(id) || state.errors.iter().any(|(e, _)| *e == id)
-        })
-    });
-    // Which visible step each folded row expands under (for the expand toggle).
-    let folded_under: std::collections::HashMap<FeatureId, FeatureId> = condensed
-        .as_ref()
-        .map(|c| {
-            c.runs
-                .iter()
-                .flat_map(|(&kept, members)| {
-                    let kept_id = doc.history.features()[kept].id;
-                    members.iter().map(move |&m| (m, kept_id))
+    // One display row per graph node. Compact condenses the DAG first — a
+    // node folds into its sole consumer, to a fixpoint — and lays out the
+    // CONDENSED graph, so the ribbons are consistent by construction no
+    // matter how history interleaves body lines. Pinned visible: the selected
+    // step, errored steps, and the members of runs the user expanded in place
+    // (suppression and the rollback boundary are pinned inside).
+    struct RowData {
+        id: FeatureId,
+        name: String,
+        suppressed: bool,
+        rolled_back: bool,
+        gr: BuildGraphRow,
+        /// Steps folded into this row (empty when nothing folded).
+        folded: Vec<FeatureId>,
+    }
+    let (rows, lane_count) = if state.compact {
+        let display = doc.history.display_graph(active, |id| {
+            state.selected == Some(id)
+                || state.errors.iter().any(|(e, _)| *e == id)
+                || state.expanded_runs.values().any(|v| v.contains(&id))
+        });
+        let rows: Vec<RowData> = display
+            .nodes
+            .iter()
+            .zip(display.graph.rows.iter())
+            .filter_map(|(n, gr)| {
+                let f = doc.history.get(n.rep)?;
+                Some(RowData {
+                    id: n.rep,
+                    name: f.name.clone(),
+                    suppressed: f.suppressed,
+                    rolled_back: doc.history.index_of(n.rep).is_some_and(|i| i >= active),
+                    gr: gr.clone(),
+                    folded: n.members[..n.members.len() - 1].to_vec(),
                 })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    // Snapshot rows (with their lane layout) so we can mutate the doc in the loop.
-    let rows: Vec<_> = doc
-        .history
-        .features()
-        .iter()
-        .zip(graph.rows.iter())
-        .map(|(f, gr)| (f.id, f.name.clone(), f.suppressed, gr.clone()))
-        .collect();
+            })
+            .collect();
+        (rows, display.graph.lane_count)
+    } else {
+        let graph = doc.history.build_graph();
+        let rows: Vec<RowData> = doc
+            .history
+            .features()
+            .iter()
+            .zip(graph.rows.iter())
+            .enumerate()
+            .map(|(i, (f, gr))| RowData {
+                id: f.id,
+                name: f.name.clone(),
+                suppressed: f.suppressed,
+                rolled_back: i >= active,
+                gr: gr.clone(),
+                folded: Vec::new(),
+            })
+            .collect();
+        (rows, graph.lane_count)
+    };
+    let gutter_w = lane_count.max(1) as f32 * LANE_W;
 
     // A lane takes its body's user colour if one is set anywhere down its chain
     // (so the graph is a legend for the coloured 3D bodies), else the palette
     // fallback. Later rows on a lane overwrite, but colour propagates down the
     // chain so they resolve to the same value — the visible body's colour wins.
     let mut lane_colors: std::collections::HashMap<usize, Color32> = std::collections::HashMap::new();
-    for (f, gr) in doc.history.features().iter().zip(graph.rows.iter()) {
-        if let Some(c) = doc.history.resolve_color(f.id) {
-            lane_colors.insert(gr.lane, linear_to_color32(c));
+    for row in &rows {
+        if let Some(c) = doc.history.resolve_color(row.id) {
+            lane_colors.insert(row.gr.lane, linear_to_color32(c));
         }
     }
     let lane_col = |lane: usize| lane_colors.get(&lane).copied().unwrap_or_else(|| lane_color(lane));
@@ -578,19 +603,7 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
     // Contiguous rows so the lane lines join across rows.
     ui.spacing_mut().item_spacing.y = 0.0;
 
-    for (index, (id, name, suppressed, gr)) in rows.into_iter().enumerate() {
-        // Compact: skip folded rows unless their run is expanded in place.
-        if let Some(c) = &condensed {
-            if c.hidden[index]
-                && !folded_under
-                    .get(&id)
-                    .is_some_and(|kept| state.expanded_runs.contains(kept))
-            {
-                continue;
-            }
-        }
-        let run = condensed.as_ref().and_then(|c| c.runs.get(&index));
-        let rolled_back = index >= active;
+    for RowData { id, name, suppressed, rolled_back, gr, folded } in rows {
         let error = state.error_for(id).map(str::to_owned);
         let selected = state.selected == Some(id);
 
@@ -648,41 +661,34 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
             }
 
             // --- Row controls ------------------------------------------------
-            // Compact: a run's final step carries the expand/collapse toggle
-            // ("⌄ N" folded, "⌃" expanded). Runless rows reserve the same
+            // Compact: a fold's final step carries the expand/collapse toggle
+            // ("⌄ N" folded, "⌃" expanded). Foldless rows reserve the same
             // width so names align down the panel.
-            if condensed.is_some() {
-                // Fixed width so names align whether or not a row has a run.
+            if state.compact {
                 const BADGE_W: f32 = 34.0;
-                match run {
-                    Some(members) => {
-                        let open = state.expanded_runs.contains(&id);
-                        let label = if open {
-                            icon::CARET_UP.to_string()
+                let open = state.expanded_runs.contains_key(&id);
+                if open || !folded.is_empty() {
+                    let label = if open {
+                        icon::CARET_UP.to_string()
+                    } else {
+                        format!("{} {}", icon::CARET_DOWN, folded.len())
+                    };
+                    let tip = if open {
+                        "Collapse the steps folded into this one".to_owned()
+                    } else {
+                        format!("Show the {} step(s) folded into this one", folded.len())
+                    };
+                    let button = egui::Button::new(RichText::new(label).small())
+                        .min_size(egui::vec2(BADGE_W, 0.0));
+                    if ui.add(button).on_hover_text(tip).clicked() {
+                        if open {
+                            state.expanded_runs.remove(&id);
                         } else {
-                            format!("{} {}", icon::CARET_DOWN, members.len())
-                        };
-                        let tip = if open {
-                            "Collapse the earlier steps of this body line".to_owned()
-                        } else {
-                            format!(
-                                "Show the {} earlier step(s) folded into this one",
-                                members.len()
-                            )
-                        };
-                        let button = egui::Button::new(RichText::new(label).small())
-                            .min_size(egui::vec2(BADGE_W, 0.0));
-                        if ui.add(button).on_hover_text(tip).clicked() {
-                            if open {
-                                state.expanded_runs.remove(&id);
-                            } else {
-                                state.expanded_runs.insert(id);
-                            }
+                            state.expanded_runs.insert(id, folded.clone());
                         }
                     }
-                    None => {
-                        ui.add_space(BADGE_W + ui.spacing().item_spacing.x);
-                    }
+                } else {
+                    ui.add_space(BADGE_W + ui.spacing().item_spacing.x);
                 }
             }
             let mut sup = suppressed;
