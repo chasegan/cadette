@@ -36,6 +36,10 @@ pub struct BuildGraphRow {
     pub top_open: Vec<usize>,
     /// Lanes occupied leaving this row downward (open for consumers below).
     pub open: Vec<usize>,
+    /// Who occupies each open lane (aligned with `open`) — the node whose
+    /// output flows down it. Lets the renderer colour each ribbon segment by
+    /// the BODY flowing through it, not by column index.
+    pub occupants: Vec<FeatureId>,
     /// True if the feature consumes two or more inputs (a merge node).
     pub is_merge: bool,
 }
@@ -312,6 +316,7 @@ fn layout(nodes: &[LayoutNode]) -> BuildGraph {
             lanes[node_lane] = Some(f.id);
             let open: Vec<usize> =
                 lanes.iter().enumerate().filter_map(|(i, l)| l.map(|_| i)).collect();
+            let occupants: Vec<FeatureId> = lanes.iter().filter_map(|l| *l).collect();
             lane_count = lane_count.max(lanes.len());
 
             rows.push(BuildGraphRow {
@@ -320,6 +325,7 @@ fn layout(nodes: &[LayoutNode]) -> BuildGraph {
                 input_lanes,
                 top_open: std::mem::take(&mut prev_open),
                 open: open.clone(),
+                occupants,
                 is_merge,
             });
             prev_open = open;
