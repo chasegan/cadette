@@ -304,9 +304,16 @@ impl GeometryBackend for KernelBackend {
             anchor.normal.to_array(),
             distance,
         )?;
-        // The zero-distance no-op: the result IS the input — identity map.
-        let Some(info) = tracked.info else {
-            return Ok(body.transformed(tracked.result));
+        let info = match tracked.tracking {
+            // The zero-distance no-op: the result IS the input — identity map.
+            crate::solids::PushPullTracking::Identity => {
+                return Ok(body.transformed(tracked.result));
+            }
+            // Healed/unmappable: good geometry, no lineage — honest empty map.
+            crate::solids::PushPullTracking::Untracked => {
+                return Ok(Body::untracked(tracked.result));
+            }
+            crate::solids::PushPullTracking::Tracked(info) => info,
         };
         // Seed the prism operand's pseudo-map: its far cap IS the pushed
         // face, moved — verbatim name. Its sides stay unnamed, so where they

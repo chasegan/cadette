@@ -776,8 +776,32 @@ std::unique_ptr<Shape> push_pull_tracked(const Shape& s, double px, double py,
                                      /*unifyFaces=*/true,
                                      /*concatBSplines=*/false);
     usd.Build();
-    const TopoDS_Shape result = usd.Shape();
+    TopoDS_Shape result = usd.Shape();
     const Handle(BRepTools_History) uhist = usd.History();
+
+    // A pull whose prism runs tangent along existing walls (e.g. raising a
+    // pocket floor beside its own fillets) can make the fuse emit a
+    // self-intersecting body: IsDone, renders, even measures — but corrupts
+    // every downstream boolean and STL. Same heal-or-error policy as the
+    // swept-solid and fillet paths: recover tolerance-level defects, REQUIRE
+    // a valid closed solid, fail loudly otherwise.
+    bool healed = false;
+    if (!BRepCheck_Analyzer(result).IsValid()) {
+      ShapeFix_Shape fixer(result);
+      fixer.Perform();
+      result = fixer.Shape();
+      healed = true;
+      bool has_solid = false;
+      for (TopExp_Explorer ex(result, TopAbs_SOLID); ex.More(); ex.Next()) {
+        has_solid = true;
+        break;
+      }
+      if (!has_solid || !BRepCheck_Analyzer(result).IsValid()) {
+        throw std::runtime_error(
+            "push_pull: the result self-intersects (the moved face collides "
+            "with nearby walls or fillets) — reduce the distance");
+      }
+    }
 
     // Lineage: where the pushed face sits in `s`, where its offset image (the
     // prism's far cap) sits in the prism, and how everything flowed through
@@ -788,7 +812,7 @@ std::unique_ptr<Shape> push_pull_tracked(const Shape& s, double px, double py,
     TopExp::MapShapes(prism, TopAbs_EDGE, prism_edges);
     const int pushed = s_faces.FindIndex(target);
     const int far_cap = prism_faces.FindIndex(prism_mk.LastShape());
-    if (pushed > 0 && far_cap > 0) {
+    if (!healed && pushed > 0 && far_cap > 0) {
       meta.push_back(static_cast<int32_t>(pushed - 1));
       meta.push_back(static_cast<int32_t>(far_cap - 1));
       meta.push_back(static_cast<int32_t>(prism_faces.Extent()));
@@ -798,6 +822,11 @@ std::unique_ptr<Shape> push_pull_tracked(const Shape& s, double px, double py,
       track_elements(*bop, uhist, {&s.shape, &prism}, result, TopAbs_EDGE,
                      edge_records);
       track_sections(*bop, uhist, s.shape, prism, result, section_records);
+    } else {
+      // A healed (rebuilt-without-history) or unmappable result: geometry is
+      // good but lineage is not — signal "untracked", distinct from the
+      // empty-meta zero-distance no-op (whose result IS the input).
+      meta.push_back(-1);
     }
     return std::make_unique<Shape>(result);
   });

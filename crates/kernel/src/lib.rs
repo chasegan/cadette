@@ -15,7 +15,8 @@ pub mod solids;
 pub use backend::{Body, KernelBackend};
 pub use elements::{ElemKind, ElementMap, ElementName, GenRecord, Lineage};
 pub use solids::{
-    Mesh, PushPullInfo, Solid, TrackedBoolOp, TrackedBoolean, TrackedModify, TrackedPushPull,
+    Mesh, PushPullInfo, PushPullTracking, Solid, TrackedBoolOp, TrackedBoolean, TrackedModify,
+    TrackedPushPull,
 };
 
 /// Error raised when an OCCT operation fails. Wraps the message OCCT threw

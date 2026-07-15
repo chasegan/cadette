@@ -79,14 +79,24 @@ pub struct TrackedModify {
 }
 
 /// A push/pull result with its evolution history: boolean-style lineage where
-/// operand 0 is the body and operand 1 the offset prism. `info` is `None`
-/// for the zero-distance no-op (the result is the input, identity map).
+/// operand 0 is the body and operand 1 the offset prism.
 pub struct TrackedPushPull {
     pub result: Solid,
-    pub info: Option<PushPullInfo>,
+    pub tracking: PushPullTracking,
     pub faces: Vec<Lineage>,
     pub edges: Vec<Lineage>,
     pub sections: Vec<(u8, u32, u32)>,
+}
+
+/// How a push/pull result relates to its input's element map.
+pub enum PushPullTracking {
+    /// The zero-distance no-op: the result IS the input — keep its map.
+    Identity,
+    /// The result was healed (rebuilt without history) or unmappable: good
+    /// geometry, no lineage — the map must be empty, never stale.
+    Untracked,
+    /// Full lineage, ready for composition.
+    Tracked(PushPullInfo),
 }
 
 /// Where the pushed face sits — everything needed to seed the prism operand's
@@ -467,15 +477,19 @@ impl Solid {
             &self.0, point[0], point[1], point[2], normal[0], normal[1], normal[2], distance,
             &mut meta, &mut f, &mut e, &mut s,
         )?;
-        let info = (meta.len() == 4).then(|| PushPullInfo {
-            pushed_face: meta[0] as u32,
-            far_cap: meta[1] as u32,
-            prism_faces: meta[2] as usize,
-            prism_edges: meta[3] as usize,
-        });
+        let tracking = match meta.len() {
+            0 => PushPullTracking::Identity,
+            4 => PushPullTracking::Tracked(PushPullInfo {
+                pushed_face: meta[0] as u32,
+                far_cap: meta[1] as u32,
+                prism_faces: meta[2] as usize,
+                prism_edges: meta[3] as usize,
+            }),
+            _ => PushPullTracking::Untracked,
+        };
         Ok(TrackedPushPull {
             result: Self::wrap(shape),
-            info,
+            tracking,
             faces: lineage(f),
             edges: lineage(e),
             sections: s
