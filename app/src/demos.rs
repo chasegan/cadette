@@ -440,7 +440,10 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
                         ],
                         yaw: -0.9,
                         pitch: 0.6,
-                        distance: (radius * 4.8) as f32,
+                        // Tuned for the 1920-wide shot: the fixed-width side
+                        // panels leave proportionally more viewport than the
+                        // old 1280 window, so frame the part closer.
+                        distance: (radius * 3.4) as f32,
                     });
                 }
             }
@@ -459,7 +462,7 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
 /// of the screenshot demos.
 fn shoot(modeler: Modeler, path: &str) -> anyhow::Result<()> {
     std::fs::create_dir_all("out")?;
-    cdt_render::screenshot(modeler, 1280, 820, path)?;
+    cdt_render::screenshot(modeler, 1920, 1230, path)?;
     println!("wrote {path}");
     Ok(())
 }
