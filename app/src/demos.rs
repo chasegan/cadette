@@ -45,7 +45,7 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
         modeler.graph_hover =
             Some((hole, std::time::Instant::now() - std::time::Duration::from_secs(1)));
         modeler.update_graph_hover();
-        shoot(modeler, "out/ghost-demo.png")?;
+        shoot(&mut modeler, "out/ghost-demo.png")?;
         return Ok(None);
     }
 
@@ -64,7 +64,7 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
             s.last = Some(p2);
         }
         modeler.finish_sketch(); // commits + selects the sketch
-        shoot(modeler, "out/sketch-demo.png")?;
+        shoot(&mut modeler, "out/sketch-demo.png")?;
         return Ok(None);
     }
 
@@ -97,7 +97,7 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
             s.selected_lines = vec![bottom, top]; // show selection + enable Equal/Parallel
         }
         modeler.resolve_session();
-        shoot(modeler, "out/constrain-demo.png")?;
+        shoot(&mut modeler, "out/constrain-demo.png")?;
         return Ok(None);
     }
 
@@ -196,7 +196,7 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
     if flag("--highlight-demo") {
         modeler.selection.select(Some(Pick::Face(0)), false, None); // strong face
         modeler.selection.hover(Some(Pick::Edge(0))); // hovered edge
-        shoot(modeler, "out/highlight-demo.png")?;
+        shoot(&mut modeler, "out/highlight-demo.png")?;
         return Ok(None);
     }
 
@@ -223,7 +223,7 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
         std::mem::swap(&mut modeler.doc, &mut doc);
         let _ = modeler.mesh();
         modeler.edit_sketch(sk);
-        shoot(modeler, "out/pen-demo.png")?;
+        shoot(&mut modeler, "out/pen-demo.png")?;
         return Ok(None);
     }
 
@@ -244,7 +244,7 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
         std::mem::swap(&mut modeler.doc, &mut doc);
         let _ = modeler.mesh();
         modeler.edit_sketch(sk);
-        shoot(modeler, "out/bezier-demo.png")?;
+        shoot(&mut modeler, "out/bezier-demo.png")?;
         return Ok(None);
     }
 
@@ -257,7 +257,7 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
         modeler.on_pick(Some(Pick::Face(0)), None, false);
         modeler.on_pick(Some(Pick::Face(2)), None, true); // additive
         modeler.on_pick(Some(Pick::Face(4)), None, true);
-        shoot(modeler, "out/multiface-demo.png")?;
+        shoot(&mut modeler, "out/multiface-demo.png")?;
         return Ok(None);
     }
 
@@ -283,7 +283,7 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
         );
         std::mem::swap(&mut modeler.doc, &mut doc);
         let _ = modeler.mesh();
-        shoot(modeler, "out/group-demo.png")?;
+        shoot(&mut modeler, "out/group-demo.png")?;
         return Ok(None);
     }
 
@@ -312,7 +312,7 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
         );
         std::mem::swap(&mut modeler.doc, &mut doc);
         let _ = modeler.mesh();
-        shoot(modeler, "out/mirror-demo.png")?;
+        shoot(&mut modeler, "out/mirror-demo.png")?;
         return Ok(None);
     }
 
@@ -347,7 +347,7 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
         );
         std::mem::swap(&mut modeler.doc, &mut doc);
         let _ = modeler.mesh();
-        shoot(modeler, "out/revolve-demo.png")?;
+        shoot(&mut modeler, "out/revolve-demo.png")?;
         return Ok(None);
     }
 
@@ -356,7 +356,7 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
         modeler.ui.show_xz = true;
         modeler.ui.show_yz = true;
         let _ = modeler.mesh();
-        shoot(modeler, "out/planes-demo.png")?;
+        shoot(&mut modeler, "out/planes-demo.png")?;
         return Ok(None);
     }
 
@@ -365,7 +365,7 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
         // grips show on a filleted/booleaned body alongside the move/rotate gizmo.
         let _ = modeler.mesh();
         modeler.on_pick(Some(Pick::Face(0)), None, false);
-        shoot(modeler, "out/resize-demo.png")?;
+        shoot(&mut modeler, "out/resize-demo.png")?;
         return Ok(None);
     }
 
@@ -394,7 +394,7 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
                 started: true,
             });
         }
-        shoot(modeler, "out/gizmo-readout-demo.png")?;
+        shoot(&mut modeler, "out/gizmo-readout-demo.png")?;
         return Ok(None);
     }
 
@@ -451,7 +451,7 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
                 modeler.ui.selected = modeler.doc.history.features().first().map(|f| f.id);
             }
         }
-        shoot(modeler, "out/modeler.png")?;
+        shoot(&mut modeler, "out/modeler.png")?;
         return Ok(None);
     }
 
@@ -460,7 +460,7 @@ pub fn run_if_flagged(mut modeler: Modeler) -> anyhow::Result<Option<Modeler>> {
 
 /// Render one composited frame (panel + viewport) to `path` — the shared tail
 /// of the screenshot demos.
-fn shoot(modeler: Modeler, path: &str) -> anyhow::Result<()> {
+fn shoot(modeler: &mut Modeler, path: &str) -> anyhow::Result<()> {
     std::fs::create_dir_all("out")?;
     cdt_render::screenshot(modeler, 1920, 1230, path)?;
     println!("wrote {path}");

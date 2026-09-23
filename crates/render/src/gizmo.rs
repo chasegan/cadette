@@ -3,7 +3,8 @@
 //! state the window loop drives.
 
 use glam::Vec3;
-use winit::dpi::PhysicalPosition;
+
+use crate::math::Px;
 
 use crate::camera::OrbitCamera;
 use crate::controller::{Axis3, GizmoHandle, Plane3, ResizeBox};
@@ -33,10 +34,11 @@ pub(crate) fn gizmo_ring_ratio(
     center: Vec3,
     axis: Axis3,
     camera: &OrbitCamera,
-    cursor: PhysicalPosition<f64>,
+    cursor: impl Into<Px>,
     w: u32,
     h: u32,
 ) -> f32 {
+    let cursor: Px = cursor.into();
     let len = gizmo_axis_length(camera);
     let Some(cc) = project_point(center, camera, w, h) else {
         return 99.0;
@@ -155,10 +157,11 @@ pub(crate) fn plane_corners(origin: Vec3, plane: Plane3, len: f32) -> [Vec3; 4] 
 pub(crate) fn gizmo_hit_test(
     origin: Vec3,
     camera: &OrbitCamera,
-    cursor: PhysicalPosition<f64>,
+    cursor: impl Into<Px>,
     w: u32,
     h: u32,
 ) -> Option<GizmoHandle> {
+    let cursor: Px = cursor.into();
     let len = gizmo_axis_length(camera);
     let c = (cursor.x as f32, cursor.y as f32);
 
@@ -356,10 +359,11 @@ pub(crate) fn resize_grip_pos(rb: &ResizeBox, axis: Axis3, positive: bool) -> Ve
 pub(crate) fn resize_hit_test(
     rb: &ResizeBox,
     camera: &OrbitCamera,
-    cursor: PhysicalPosition<f64>,
+    cursor: impl Into<Px>,
     w: u32,
     h: u32,
 ) -> Option<(Axis3, bool)> {
+    let cursor: Px = cursor.into();
     let c = (cursor.x as f32, cursor.y as f32);
     let mut best = (GIZMO_PICK_PX + 2.0, None);
     for (axis, positive) in RESIZE_FACES {
@@ -502,7 +506,7 @@ mod tests {
         // clear of the shared origin).
         for axis in Axis3::ALL {
             let on = project_point(origin + axis.dir() * len * 0.9, &camera, w, h).unwrap();
-            let cursor = PhysicalPosition::new(on.0 as f64, on.1 as f64);
+            let cursor = Px::new(on.0 as f64, on.1 as f64);
             assert_eq!(
                 gizmo_hit_test(origin, &camera, cursor, w, h),
                 Some(GizmoHandle::TranslateAxis(axis)),
@@ -515,7 +519,7 @@ mod tests {
             let q = plane_corners(origin, plane, len);
             let center = (q[0] + q[1] + q[2] + q[3]) * 0.25;
             let on = project_point(center, &camera, w, h).unwrap();
-            let cursor = PhysicalPosition::new(on.0 as f64, on.1 as f64);
+            let cursor = Px::new(on.0 as f64, on.1 as f64);
             assert_eq!(
                 gizmo_hit_test(origin, &camera, cursor, w, h),
                 Some(GizmoHandle::TranslatePlane(plane))
@@ -528,7 +532,7 @@ mod tests {
             let (u, v) = axis.perps();
             let diag = (u + v).normalize() * len * GIZMO_RING_RADIUS;
             let on = project_point(origin + diag, &camera, w, h).unwrap();
-            let cursor = PhysicalPosition::new(on.0 as f64, on.1 as f64);
+            let cursor = Px::new(on.0 as f64, on.1 as f64);
             assert_eq!(
                 gizmo_hit_test(origin, &camera, cursor, w, h),
                 Some(GizmoHandle::RotateAxis(axis)),
@@ -537,7 +541,7 @@ mod tests {
         }
 
         // Top-left corner is far from the centered gizmo → no grab.
-        let far = PhysicalPosition::new(4.0, 4.0);
+        let far = Px::new(4.0, 4.0);
         assert_eq!(gizmo_hit_test(origin, &camera, far, w, h), None);
     }
 

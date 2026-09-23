@@ -2,12 +2,11 @@
 //! screen-space edge pick, and the combined edge-over-face resolution.
 
 use glam::Vec3;
-use winit::dpi::PhysicalPosition;
 
 use crate::camera::OrbitCamera;
 use crate::controller::{Highlights, Pick};
 use crate::math::{
-    closest_point_on_segment_to_ray, cursor_ray, point_segment_distance, unproject_pixel,
+    closest_point_on_segment_to_ray, cursor_ray, point_segment_distance, unproject_pixel, Px,
 };
 use crate::scene::{create_depth, Globals, Scene, PICK_DEPTH_FORMAT, PICK_FORMAT};
 
@@ -310,7 +309,7 @@ impl Scene {
         w: u32,
         h: u32,
     ) -> Option<Vec3> {
-        let cursor = PhysicalPosition::new(px as f64 + 0.5, py as f64 + 0.5);
+        let cursor = Px::new(px as f64 + 0.5, py as f64 + 0.5);
         let (origin, ray) = cursor_ray(camera, cursor, w, h);
         let mut best = (f32::MAX, None);
         for &(a, b, id) in &self.edge_segments {
@@ -339,7 +338,7 @@ mod tests {
     #[test]
     fn picks_the_face_under_the_center_pixel() {
         let instance = wgpu::Instance::default();
-        let (_adapter, device, queue) = pollster::block_on(request_device(&instance, None));
+        let (_adapter, device, queue) = pollster::block_on(request_device(&instance, None)).unwrap();
 
         let v = |x: f32, y: f32| Vertex {
             position: [x, y, 0.0],
@@ -365,7 +364,7 @@ mod tests {
     #[test]
     fn pick_prefers_a_nearby_edge_over_the_face() {
         let instance = wgpu::Instance::default();
-        let (_adapter, device, queue) = pollster::block_on(request_device(&instance, None));
+        let (_adapter, device, queue) = pollster::block_on(request_device(&instance, None)).unwrap();
 
         let v = |x: f32, y: f32| Vertex {
             position: [x, y, 0.0],
@@ -394,7 +393,7 @@ mod tests {
     #[test]
     fn pick_with_point_recovers_the_surface_point() {
         let instance = wgpu::Instance::default();
-        let (_adapter, device, queue) = pollster::block_on(request_device(&instance, None));
+        let (_adapter, device, queue) = pollster::block_on(request_device(&instance, None)).unwrap();
 
         let v = |x: f32, y: f32| Vertex {
             position: [x, y, 0.0],

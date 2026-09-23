@@ -1,21 +1,27 @@
 //! # cdt-render
 //!
 //! The wgpu viewport: render graph, mesh buffers, camera, ray-cast picking,
-//! gizmos, grid, and measurement overlays. Milestone B brings up a live window
-//! ([`run`]) that displays kernel meshes with an orbit camera; later phases
-//! split this into the scene/picking/overlay structure from the outline.
+//! gizmos, grid, and measurement overlays. Two front doors:
+//!
+//! - [`run`] — the interactive winit window (behind the default `window`
+//!   feature), driven by an app's [`Controller`].
+//! - [`HeadlessRenderer`] / [`render_model`] — the same 3D pass rendered to
+//!   an image with no window and no egui, for tools and agents; and
+//!   [`screenshot`], the composited (3D + egui chrome) variant.
 
 pub mod camera;
 mod controller;
 mod gizmo;
 mod grid;
 mod math;
+mod offscreen;
 mod picking;
 mod scene;
 mod screenshot;
 mod theme;
 mod view;
 mod view_cube;
+#[cfg(feature = "window")]
 mod window;
 
 // Re-export egui so `cdt-ui` and the app share exactly this version.
@@ -27,10 +33,19 @@ pub use controller::{
     ResizeBox, TransformDelta,
 };
 pub use grid::min_grid_spacing;
+pub use image::RgbaImage;
+pub use offscreen::{render_model, HeadlessRenderer, RenderOptions};
+pub use screenshot::screenshot;
 pub use theme::ViewportTheme;
 pub use view::ViewContext;
-pub use screenshot::screenshot;
+#[cfg(feature = "window")]
 pub use window::run;
+
+/// Frame `mesh` from a pleasant three-quarter view — the automatic camera the
+/// window and the offscreen renderer start from.
+pub fn frame_camera(mesh: &MeshData) -> OrbitCamera {
+    scene::frame_camera(&mesh.vertices)
+}
 
 use bytemuck::{Pod, Zeroable};
 

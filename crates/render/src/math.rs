@@ -2,7 +2,28 @@
 //! projection/unprojection, ray casts, and small screen-space predicates.
 
 use glam::Vec3;
-use winit::dpi::PhysicalPosition;
+
+/// A cursor position in physical pixels. The crate's own type so the maths,
+/// gizmo and picking code don't depend on the windowing stack (`window.rs`
+/// converts winit's `PhysicalPosition` into it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Px {
+    pub x: f64,
+    pub y: f64,
+}
+
+impl Px {
+    pub fn new(x: f64, y: f64) -> Self {
+        Self { x, y }
+    }
+}
+
+#[cfg(feature = "window")]
+impl From<winit::dpi::PhysicalPosition<f64>> for Px {
+    fn from(p: winit::dpi::PhysicalPosition<f64>) -> Self {
+        Self { x: p.x, y: p.y }
+    }
+}
 
 use crate::camera::OrbitCamera;
 
@@ -19,10 +40,11 @@ pub(crate) fn project_point(p: Vec3, camera: &OrbitCamera, w: u32, h: u32) -> Op
 /// World-space ray (origin, unit dir) through `cursor` for the given camera.
 pub(crate) fn cursor_ray(
     camera: &OrbitCamera,
-    cursor: PhysicalPosition<f64>,
+    cursor: impl Into<Px>,
     width: u32,
     height: u32,
 ) -> (Vec3, Vec3) {
+    let cursor: Px = cursor.into();
     let (w, h) = (width as f32, height as f32);
     let nx = cursor.x as f32 / w * 2.0 - 1.0;
     let ny = 1.0 - cursor.y as f32 / h * 2.0;
@@ -107,7 +129,7 @@ pub(crate) fn closest_point_on_segment_to_ray(
 /// the cursor ray — how far the user has dragged the face.
 pub(crate) fn manip_distance(
     camera: &OrbitCamera,
-    cursor: PhysicalPosition<f64>,
+    cursor: impl Into<Px>,
     point: Vec3,
     dir: Vec3,
     width: u32,

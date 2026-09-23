@@ -6,6 +6,7 @@ use glam::Vec3;
 use crate::controller::Controller;
 use crate::gizmo::{gizmo_geometry, resize_geometry};
 use crate::grid::grid_geometry;
+use crate::offscreen::readback_rgba;
 use crate::scene::{
     create_depth, egui_renderer, encode_egui, frame_camera, install_phosphor, request_device,
     Scene,
@@ -13,9 +14,11 @@ use crate::scene::{
 use crate::view::ViewContext;
 use crate::view_cube::draw_view_cube;
 
-/// Render one composited frame (3D scene + egui UI) to a PNG at `path`.
+/// Render one composited frame (3D scene + egui UI + ViewCube) to a PNG at
+/// `path` — the app as a user sees it. For the model alone, see
+/// [`crate::render_model`].
 pub fn screenshot(
-    mut controller: impl Controller,
+    controller: &mut impl Controller,
     width: u32,
     height: u32,
     path: &str,
@@ -24,7 +27,7 @@ pub fn screenshot(
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
 
     let instance = wgpu::Instance::default();
-    let (_adapter, device, queue) = pollster::block_on(request_device(&instance, None));
+    let (_adapter, device, queue) = pollster::block_on(request_device(&instance, None))?;
 
     let mesh = controller.mesh();
     let mut camera = frame_camera(&mesh.vertices);
@@ -134,72 +137,6 @@ pub fn screenshot(
         egui_renderer.free_texture(id);
     }
 
-    save_texture_png(&device, &queue, &color, width, height, path)
-}
-
-fn save_texture_png(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    width: u32,
-    height: u32,
-    path: &str,
-) -> anyhow::Result<()> {
-    let unpadded = width * 4;
-    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let padded = unpadded.div_ceil(align) * align;
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("cdt-readback"),
-        size: (padded * height) as u64,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-
-    let mut encoder =
-        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded),
-                rows_per_image: Some(height),
-            },
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit(Some(encoder.finish()));
-
-    let slice = buffer.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |r| r.expect("map readback buffer"));
-    device
-        .poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        })
-        .ok();
-
-    let mapped = slice.get_mapped_range();
-    let mut pixels = Vec::with_capacity((unpadded * height) as usize);
-    for row in 0..height {
-        let start = (row * padded) as usize;
-        pixels.extend_from_slice(&mapped[start..start + unpadded as usize]);
-    }
-    drop(mapped);
-    buffer.unmap();
-
-    let img: image::RgbaImage =
-        image::ImageBuffer::from_raw(width, height, pixels).expect("image buffer size");
-    img.save(path)?;
+    readback_rgba(&device, &queue, &color, width, height)?.save(path)?;
     Ok(())
 }

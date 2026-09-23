@@ -943,10 +943,14 @@ pub(crate) fn frame_camera(vertices: &[Vertex]) -> OrbitCamera {
     OrbitCamera::framing(center, radius)
 }
 
+/// Pick an adapter (a discrete GPU when there is one; wgpu falls back to a
+/// software adapter such as lavapipe or WARP where none exists) and open a
+/// device on it. An error, not a panic, when the machine has nothing usable,
+/// so a headless tool can report it.
 pub(crate) async fn request_device(
     instance: &wgpu::Instance,
     compatible_surface: Option<&wgpu::Surface<'_>>,
-) -> (wgpu::Adapter, wgpu::Device, wgpu::Queue) {
+) -> anyhow::Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -954,7 +958,7 @@ pub(crate) async fn request_device(
             force_fallback_adapter: false,
         })
         .await
-        .expect("no suitable GPU adapter");
+        .map_err(|e| anyhow::anyhow!("no suitable GPU adapter (no GPU and no software fallback): {e}"))?;
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("cdt-device"),
@@ -965,8 +969,8 @@ pub(crate) async fn request_device(
             trace: wgpu::Trace::Off,
         })
         .await
-        .expect("request device");
-    (adapter, device, queue)
+        .map_err(|e| anyhow::anyhow!("could not open a device on {}: {e}", adapter.get_info().name))?;
+    Ok((adapter, device, queue))
 }
 
 pub(crate) fn egui_renderer(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> EguiRenderer {

@@ -144,7 +144,7 @@ pub trait Controller {
 
 /// The construction-grid configuration: spacing/extent shared by the three
 /// origin planes, plus which of them to draw as guides.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GridSpec {
     /// Cell spacing (mm) — line density and snap increment. `<= 0` disables.
     pub spacing: f32,
@@ -304,7 +304,7 @@ impl Plane3 {
 /// Entities to emphasize this frame: a clicked selection set (strong) and a
 /// single hover pre-highlight (subtle). Faces and edges both highlight as a
 /// set (for multi-face fillet/group and multi-edge fillet).
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Highlights {
     pub selected: Vec<Pick>,
     pub hovered: Option<Pick>,

@@ -191,7 +191,8 @@ impl<C: Controller> ApplicationHandler for WindowApp<C> {
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(window.clone()).expect("create surface");
         let (adapter, device, queue) =
-            pollster::block_on(request_device(&instance, Some(&surface)));
+            pollster::block_on(request_device(&instance, Some(&surface)))
+                .expect("Cadette needs a GPU (or a software renderer) to open its window");
 
         let caps = surface.get_capabilities(&adapter);
         let format = caps
