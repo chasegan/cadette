@@ -195,6 +195,7 @@ impl Modeler {
         }
         self.reset_to(Document::new("untitled"));
         self.current_path = None;
+        self.announce_link();
         self.mark_saved(); // a blank doc is its own clean baseline
         self.status = Some("New project".into());
         true
@@ -221,6 +222,7 @@ impl Modeler {
         match self.save_project_to(&path_str) {
             Ok(()) => {
                 self.current_path = Some(path);
+                self.announce_link();
                 self.mark_saved(); // new clean baseline
                 self.status = Some(format!("Saved {path_str}"));
                 true
@@ -248,6 +250,7 @@ impl Modeler {
         match self.load_project_from(&path_str) {
             Ok(()) => {
                 self.current_path = Some(path);
+                self.announce_link();
                 self.mark_saved(); // freshly-opened baseline
                 self.status = Some(format!("Opened {path_str}"));
                 true

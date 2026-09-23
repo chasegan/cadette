@@ -109,7 +109,9 @@ pub struct EdgeReport {
     pub faces: Vec<u32>,
 }
 
-pub(crate) fn build(doc: &Document, regen: &Regeneration<Body, KernelError>) -> Report {
+/// Build the report for a document and its regeneration — for hosts that own
+/// their own backend and cache (the app) rather than a [`crate::Session`].
+pub fn build_report(doc: &Document, regen: &Regeneration<Body, KernelError>) -> Report {
     let active = doc.rollback();
     let errors: Vec<&RegenError<KernelError>> = regen.errors().iter().collect();
     let error_for = |id: FeatureId| errors.iter().find(|e| e.feature() == id).map(|e| error_message(e, doc));
@@ -183,7 +185,8 @@ pub(crate) fn build(doc: &Document, regen: &Regeneration<Body, KernelError>) -> 
     }
 }
 
-pub(crate) fn detail(id: FeatureId, solid: &Solid) -> Result<BodyDetail, SessionError> {
+/// Per-face and per-edge detail of one solid.
+pub fn body_detail(id: FeatureId, solid: &Solid) -> Result<BodyDetail, SessionError> {
     let faces = solid
         .faces()?
         .into_iter()

@@ -5,6 +5,12 @@
 //! `apply` writes the file back (or to `--out`), so the next call sees the
 //! result. Edits are `DocEdit` batches — see `cdt apply --help` for the shape.
 //!
+//! When a running Cadette window has the file open, `info`, `check` and
+//! `apply` go through that window instead (the edit lands as an undo step
+//! and the viewport updates); `--offline` forces the file path. `cdt live`
+//! talks to a window directly, file or no file — "help me with what I have
+//! open".
+//!
 //! Exit codes: 0 ok · 1 usage or I/O error · 2 the model has regeneration
 //! errors (`check`, and `apply` after saving) · 3 an edit was refused.
 
@@ -15,6 +21,7 @@ use std::process::ExitCode;
 use anyhow::{anyhow, Context};
 use cdt_core::{DocEdit, Document, FeatureId};
 use cdt_render::{CameraPose, GridSpec, Highlights, HeadlessRenderer, RenderOptions, ViewportTheme};
+use cdt_session::link::{self, Instance, LinkRequest, LinkResponse};
 use cdt_session::{EditBatch, Session, EXPORT_DEFLECTION_MM, PREVIEW_DEFLECTION_MM};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
@@ -25,6 +32,9 @@ struct Cli {
     /// Print compact JSON (one line) instead of pretty-printed.
     #[arg(long, global = true)]
     compact: bool,
+    /// Work on the file directly even if a running window has it open.
+    #[arg(long, global = true)]
+    offline: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -83,6 +93,49 @@ enum Command {
         #[command(flatten)]
         view: ViewArgs,
     },
+    /// Talk to a running Cadette window (the most recent one, or --pid).
+    Live {
+        /// Which window, when several are open.
+        #[arg(long, global = true)]
+        pid: Option<u32>,
+        #[command(subcommand)]
+        command: LiveCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum LiveCommand {
+    /// The running windows and the files they have open.
+    List,
+    /// Liveness and the open file.
+    Ping,
+    /// The report for the open project (+ face/edge detail for these ids).
+    Info {
+        #[arg(long, value_delimiter = ',')]
+        detail: Vec<u64>,
+    },
+    /// The user's selection, the visible bodies, the camera, and whether
+    /// the window is mid-edit.
+    State,
+    /// Apply an edit batch (JSON file or `-`) as one undo step.
+    Apply {
+        #[arg(default_value = "-")]
+        edits: String,
+        /// Also save the project to its file afterwards.
+        #[arg(long)]
+        save: bool,
+    },
+    Undo,
+    Redo,
+    /// Save the project to its file.
+    Save,
+    /// Render what the user sees (camera, theme, selection) to a PNG.
+    Render {
+        #[arg(short, long)]
+        out: PathBuf,
+        #[arg(long, default_value = "1280x800")]
+        size: String,
+    },
 }
 
 #[derive(Args)]
@@ -127,7 +180,7 @@ enum Theme {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    match run(cli.command, cli.compact) {
+    match run(cli.command, cli.compact, cli.offline) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("error: {e:#}");
@@ -142,8 +195,65 @@ fn print<T: Serialize>(value: &T, compact: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run(command: Command, compact: bool) -> anyhow::Result<ExitCode> {
+/// Send a request to a window and print its reply. Exit 1 on a link error
+/// or a refused request; `bad_model` maps a `"ok": false` report to exit 2.
+fn relay(instance: &Instance, request: LinkRequest, compact: bool, refused_code: u8) -> anyhow::Result<ExitCode> {
+    let response: LinkResponse = link::send(&instance.socket, &request)
+        .with_context(|| format!("talking to the Cadette window (pid {})", instance.pid))?;
+    let mut value = match response.data {
+        serde_json::Value::Object(_) => response.data,
+        serde_json::Value::Null => serde_json::json!({}),
+        other => serde_json::json!({ "result": other }),
+    };
+    value["via"] = serde_json::json!({ "pid": instance.pid, "file": instance.file });
+    if !response.ok {
+        value["ok"] = false.into();
+        value["error"] = response.error.clone().into();
+        print(&value, compact)?;
+        return Ok(ExitCode::from(refused_code));
+    }
+    let model_ok = value.get("ok").and_then(|v| v.as_bool()).unwrap_or(true);
+    print(&value, compact)?;
+    Ok(if model_ok { ExitCode::SUCCESS } else { ExitCode::from(2) })
+}
+
+fn pick_instance(pid: Option<u32>) -> anyhow::Result<Instance> {
+    let live = Instance::live();
+    match pid {
+        Some(pid) => live.into_iter().find(|i| i.pid == pid).ok_or_else(|| anyhow!("no running Cadette window with pid {pid}")),
+        None => live.into_iter().next().ok_or_else(|| anyhow!("no running Cadette window found (open one, or work on a file directly)")),
+    }
+}
+
+fn run(command: Command, compact: bool, offline: bool) -> anyhow::Result<ExitCode> {
+    // A window with the file open answers for it: the edit becomes an undo
+    // step there and the viewport shows it.
+    let window_for = |file: &PathBuf| if offline { None } else { Instance::with_file(file) };
     match command {
+        Command::Live { pid, command } => {
+            if let LiveCommand::List = command {
+                let live = Instance::live();
+                print(&serde_json::json!({ "instances": live }), compact)?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            let instance = pick_instance(pid)?;
+            let (request, refused) = match command {
+                LiveCommand::List => unreachable!(),
+                LiveCommand::Ping => (LinkRequest::Ping, 1),
+                LiveCommand::Info { detail } => (LinkRequest::Info { detail: detail.into_iter().map(FeatureId).collect() }, 1),
+                LiveCommand::State => (LinkRequest::State, 1),
+                LiveCommand::Apply { edits, save } => (LinkRequest::Apply { batch: read_batch(&edits)?, save }, 3),
+                LiveCommand::Undo => (LinkRequest::Undo, 1),
+                LiveCommand::Redo => (LinkRequest::Redo, 1),
+                LiveCommand::Save => (LinkRequest::Save, 1),
+                LiveCommand::Render { out, size } => {
+                    let (width, height) = parse_size(&size)?;
+                    let path = std::path::absolute(&out).unwrap_or(out);
+                    (LinkRequest::Render { path, width, height }, 1)
+                }
+            };
+            relay(&instance, request, compact, refused)
+        }
         Command::New { file, name } => {
             let name = name.unwrap_or_else(|| {
                 file.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "untitled".into())
@@ -154,6 +264,10 @@ fn run(command: Command, compact: bool) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Info { file, detail } => {
+            if let Some(instance) = window_for(&file) {
+                let detail = detail.iter().filter_map(|d| d.parse::<u64>().ok().map(FeatureId)).collect();
+                return relay(&instance, LinkRequest::Info { detail }, compact, 1);
+            }
             let mut session = open(&file)?;
             let report = session.report();
             let wanted: Vec<FeatureId> = if detail.iter().any(|d| d == "all") {
@@ -179,6 +293,17 @@ fn run(command: Command, compact: bool) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Check { file } => {
+            if let Some(instance) = window_for(&file) {
+                let response = link::send(&instance.socket, &LinkRequest::Info { detail: vec![] })?;
+                if !response.ok {
+                    return Err(anyhow!("the window refused: {}", response.error.unwrap_or_default()));
+                }
+                let ok = response.data["ok"].as_bool().unwrap_or(false);
+                let errors = response.data["errors"].clone();
+                let bodies = response.data["bodies"].as_array().map(|b| b.len()).unwrap_or(0);
+                print(&serde_json::json!({ "ok": ok, "errors": errors, "bodies": bodies, "via": { "pid": instance.pid } }), compact)?;
+                return Ok(if ok { ExitCode::SUCCESS } else { ExitCode::from(2) });
+            }
             let mut session = open(&file)?;
             let report = session.report();
             print(&serde_json::json!({ "ok": report.ok, "errors": report.errors, "bodies": report.bodies.len() }), compact)?;
@@ -186,6 +311,11 @@ fn run(command: Command, compact: bool) -> anyhow::Result<ExitCode> {
         }
         Command::Apply { file, edits, out, dry_run } => {
             let batch = read_batch(&edits)?;
+            if out.is_none() && !dry_run {
+                if let Some(instance) = window_for(&file) {
+                    return relay(&instance, LinkRequest::Apply { batch, save: true }, compact, 3);
+                }
+            }
             let mut session = open(&file)?;
             let applied = match session.apply(&batch.edits) {
                 Ok(outcomes) => outcomes,

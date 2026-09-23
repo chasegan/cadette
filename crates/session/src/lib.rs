@@ -24,11 +24,15 @@ use cdt_project::{ProjectError, ProjectFile};
 use cdt_solver::LmSolver;
 use serde::{Deserialize, Serialize};
 
+pub mod link;
 mod report;
 #[cfg(feature = "render")]
 mod scene;
 
-pub use report::{BodyDetail, BodyReport, EdgeReport, ErrorReport, FaceReport, FeatureReport, FeatureStatus, Report};
+pub use report::{
+    build_report, body_detail, BodyDetail, BodyReport, EdgeReport, ErrorReport, FaceReport,
+    FeatureReport, FeatureStatus, Report,
+};
 #[cfg(feature = "render")]
 pub use scene::{BodyRange, SceneMesh};
 
@@ -213,13 +217,13 @@ impl Session {
     /// Everything a caller needs to know about the model, serializable.
     pub fn report(&mut self) -> Report {
         self.regenerate();
-        report::build(&self.doc, self.regen.as_ref().expect("regenerated"))
+        build_report(&self.doc, self.regen.as_ref().expect("regenerated"))
     }
 
     /// Per-face and per-edge detail of one feature's body.
     pub fn body_detail(&mut self, id: FeatureId) -> Result<BodyDetail, SessionError> {
         let body = self.body(id).ok_or(SessionError::UnknownFeature(id))?;
-        report::detail(id, &body.solid)
+        body_detail(id, &body.solid)
     }
 
     /// Combine the visible bodies into one compound.

@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -90,8 +91,21 @@ namespace {
 // cxx can translate it into a Rust `Err`. Calling Rust-bound code across an
 // un-caught C++ exception is undefined behavior, so every entry point funnels
 // through this guard.
+// OCCT keeps process-wide state (allocators, geometry caches, the failure
+// handler chain) that is not safe to touch from two threads at once; a Solid
+// is !Send in Rust, but separate threads can each own their own (parallel
+// tests do), and concurrent calls then produce sporadically wrong geometry.
+// Every entry point funnels through `guard`, so one recursive mutex here
+// serialises all kernel work per process. Recursive because entry points
+// call each other (describe → topology).
+std::recursive_mutex& kernel_mutex() {
+  static std::recursive_mutex m;
+  return m;
+}
+
 template <typename F>
 auto guard(const char* op, F&& f) -> decltype(f()) {
+  std::lock_guard<std::recursive_mutex> lock(kernel_mutex());
   try {
     return f();
   } catch (const Standard_Failure& e) {

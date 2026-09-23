@@ -518,6 +518,7 @@ dependencies = [
  "cdt-kernel",
  "cdt-project",
  "cdt-render",
+ "cdt-session",
  "cdt-solver",
  "cdt-ui",
  "egui-phosphor",

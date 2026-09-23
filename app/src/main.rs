@@ -12,9 +12,10 @@
 use std::collections::HashMap;
 
 use cdt_core::{
-    BooleanOp, Constraint, Document, FaceAnchor, FeatureId, FeatureKind, MissingReason,
-    Profile, RegenCache, RegenError, Sketch2d, SketchPlane, SolveStatus, DVec3,
+    BooleanOp, Constraint, Document, FaceAnchor, FeatureId, FeatureKind, Profile, RegenCache,
+    Sketch2d, SketchPlane, DVec3,
 };
+use cdt_session::error_message;
 use cdt_solver::LmSolver;
 use cdt_interaction::Selection;
 use cdt_kernel::{Body, KernelBackend};
@@ -27,6 +28,7 @@ use cdt_render::{
 use cdt_ui::{history_panel, HistoryState};
 
 mod demos;
+mod link;
 #[cfg(target_os = "macos")]
 mod macos;
 mod commands;
@@ -221,6 +223,8 @@ struct Modeler {
     /// Signature of the document as last saved/opened (or the initial baseline);
     /// `dirty` is `doc_signature(&doc) != saved_sig`.
     saved_sig: u64,
+    /// The control link (`cdt live ...`), when the window is listening.
+    link: Option<link::Link>,
 }
 
 /// A cheap content signature of the document (a hash of its serialized form),
@@ -271,6 +275,7 @@ impl Modeler {
             current_path: None,
             dirty: false,
             saved_sig,
+            link: None,
         }
     }
 
@@ -605,6 +610,8 @@ impl Controller for Modeler {
         self.camera_pose = Some(view.camera_pose());
         let mut changed = false;
         let mut sketch_actions: Vec<SketchAction> = Vec::new();
+        // Requests from outside (`cdt live`, an agent) land here, between frames.
+        changed |= self.poll_link();
 
         // One undo entry per continuous edit (a Properties drag or a Build Graph
         // edit): snapshot the doc BEFORE any panel mutates it, then commit that
@@ -1846,32 +1853,6 @@ impl Controller for Modeler {
     }
 }
 
-fn error_message(err: &RegenError<cdt_kernel::KernelError>, doc: &Document) -> String {
-    match err {
-        RegenError::Backend { source, .. } => source.to_string(),
-        RegenError::MissingInput { input, reason, .. } => {
-            let name = doc.history.get(*input).map(|f| f.name.as_str()).unwrap_or("?");
-            match reason {
-                MissingReason::Failed => format!("needs '{name}', which failed"),
-                MissingReason::Suppressed => format!("needs '{name}' (suppressed)"),
-                MissingReason::RolledBack => format!("needs '{name}' (rolled back)"),
-                MissingReason::Later => format!("needs '{name}', which comes later in history"),
-                MissingReason::Deleted => "needs a step that was deleted".to_string(),
-            }
-        }
-        RegenError::Invalid { reason, .. } => reason.to_string(),
-        RegenError::UnsolvedSketch { status, .. } => match status {
-            SolveStatus::Contradictory { .. } => {
-                "sketch constraints contradict each other — remove one".to_string()
-            }
-            SolveStatus::Stalled { .. } => {
-                "sketch constraints can't all be satisfied — check the dimensions".to_string()
-            }
-            SolveStatus::Converged => unreachable!("a converged sketch is not an error"),
-        },
-    }
-}
-
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
@@ -1893,9 +1874,23 @@ fn main() -> anyhow::Result<()> {
     // Headless verification/demo harnesses (`--sketch-demo`, `--screenshot`,
     // `--bench-regen`, ...). If one ran, the process is done; otherwise
     // continue to the interactive window.
-    let Some(modeler) = demos::run_if_flagged(modeler)? else {
+    let Some(mut modeler) = demos::run_if_flagged(modeler)? else {
         return Ok(());
     };
+    // Listen for `cdt live ...` / agent requests (Unix only for now).
+    modeler.link = link::Link::start();
+    // `cdt-app part.cdt` opens that project (the OS "open with" path, and
+    // what an agent uses to put a file in front of the user).
+    if let Some(path) = std::env::args().skip(1).find(|a| a.ends_with(".cdt") && !a.starts_with("--")) {
+        match modeler.load_project_from(&path) {
+            Ok(()) => {
+                modeler.current_path = Some(std::path::PathBuf::from(&path));
+                modeler.mark_saved();
+            }
+            Err(e) => eprintln!("could not open {path}: {e}"),
+        }
+    }
+    modeler.announce_link();
 
     println!("Cadette — interactive modeler");
     println!("  history panel: edit/suppress/reorder features, drag the rollback bar");
@@ -2032,6 +2027,7 @@ mod tests {
             current_path: None,
             dirty: false,
             saved_sig: 0,
+            link: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());
@@ -3977,6 +3973,7 @@ mod tests {
             current_path: None,
             dirty: false,
             saved_sig: 0,
+            link: None,
         };
         let mesh = m.mesh();
         assert!(m.ui.errors.is_empty());

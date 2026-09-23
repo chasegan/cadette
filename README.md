@@ -29,6 +29,32 @@ More at **[cadette.org](https://cadette.org)**.
 - **Print-ready output** — STL export, plus `.cdt` project files that keep the
   full parametric history.
 
+## Scripting and AI agents
+
+Everything the window can do to a model is available headlessly through the
+`cdt` command line (JSON in, JSON out), built on the same crates the app uses:
+
+```sh
+cargo run -p cdt-cli -- info part.cdt              # every step's status, every body's exact bbox/volume/area
+cargo run -p cdt-cli -- info part.cdt --detail all # + faces and edges with types, normals and anchors
+cargo run -p cdt-cli -- check part.cdt             # exit 2 if a step failed to build
+echo '[{"op":"add","kind":{"Box":{"size":[40,13,26]}}}]' | cargo run -p cdt-cli -- apply part.cdt
+cargo run -p cdt-cli -- render part.cdt -o iso.png --view top --highlight 12
+cargo run -p cdt-cli -- export-stl part.cdt -o part.stl
+```
+
+Edits are `DocEdit` batches — the verbs (`add`, `replace`, `suppress`,
+`remove`, `insert_transform`, `ungroup`, …) around the same `FeatureKind`
+data a `.cdt` file stores — applied all-or-nothing as one undo step.
+
+If a Cadette window has the file open, `info`, `check` and `apply` go through
+that window instead: the edit lands as an undoable step and the viewport
+updates live (`--offline` forces the file). `cdt live ...` talks to a window
+directly, saved file or not — `cdt live state` says what the user has
+selected, `cdt live render -o shot.png` shows what they see, `cdt live apply`
+edits it. Windows register in `<config dir>/Cadette/instances/`; the link is a
+Unix socket (Windows named pipes are not wired yet).
+
 ## Build from source
 
 You need Rust (1.85+) and OpenCASCADE 7.7 or newer.

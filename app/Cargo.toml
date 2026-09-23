@@ -13,6 +13,7 @@ cdt-kernel = { workspace = true }
 cdt-render = { workspace = true }
 cdt-solver = { workspace = true }
 cdt-project = { workspace = true }
+cdt-session = { workspace = true }
 cdt-interaction = { workspace = true }
 cdt-ui = { workspace = true }
 anyhow = { workspace = true }
