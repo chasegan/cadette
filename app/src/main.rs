@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use cdt_core::{
-    BooleanOp, Constraint, Document, FaceAnchor, FeatureId, FeatureKind,
+    BooleanOp, Constraint, Document, FaceAnchor, FeatureId, FeatureKind, MissingReason,
     Profile, RegenCache, RegenError, Sketch2d, SketchPlane, DVec3,
 };
 use cdt_interaction::Selection;
@@ -1150,7 +1150,8 @@ impl Controller for Modeler {
                 Err(e) => {
                     self.body_centers.push([0.0; 3]); // keep aligned with visible
                     self.body_bounds.push(([0.0; 3], [0.0; 3]));
-                    self.ui.errors.push((cdt_core::FeatureId(0), e.to_string()));
+                    let id = self.ui.visible.get(idx).copied().unwrap_or(cdt_core::FeatureId(0));
+                    self.ui.errors.push((id, format!("could not tessellate: {e}")));
                 }
             }
         }
@@ -1847,10 +1848,16 @@ impl Controller for Modeler {
 fn error_message(err: &RegenError<cdt_kernel::KernelError>, doc: &Document) -> String {
     match err {
         RegenError::Backend { source, .. } => source.to_string(),
-        RegenError::MissingInput { input, .. } => match doc.history.get(*input) {
-            Some(f) => format!("needs '{}' (suppressed)", f.name),
-            None => "needs a step that was deleted".to_string(),
-        },
+        RegenError::MissingInput { input, reason, .. } => {
+            let name = doc.history.get(*input).map(|f| f.name.as_str()).unwrap_or("?");
+            match reason {
+                MissingReason::Failed => format!("needs '{name}', which failed"),
+                MissingReason::Suppressed => format!("needs '{name}' (suppressed)"),
+                MissingReason::RolledBack => format!("needs '{name}' (rolled back)"),
+                MissingReason::Later => format!("needs '{name}', which comes later in history"),
+                MissingReason::Deleted => "needs a step that was deleted".to_string(),
+            }
+        }
         RegenError::Invalid { reason, .. } => reason.to_string(),
     }
 }

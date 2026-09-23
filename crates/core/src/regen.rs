@@ -26,14 +26,59 @@ use crate::features::{FeatureId, FeatureKind};
 pub enum RegenError<E> {
     /// The backend rejected the operation (e.g. infeasible fillet).
     Backend { feature: FeatureId, source: E },
-    /// A referenced input wasn't available (failed, suppressed, or rolled back).
-    MissingInput { feature: FeatureId, input: FeatureId },
+    /// A referenced input wasn't available; `reason` says why, so hosts can
+    /// tell a cascade from a suppressed step or a structural error.
+    MissingInput {
+        feature: FeatureId,
+        input: FeatureId,
+        reason: MissingReason,
+    },
     /// The feature's own definition is invalid (e.g. a sketch with no closed
     /// loop to extrude).
     Invalid {
         feature: FeatureId,
         reason: &'static str,
     },
+}
+
+/// Why an input body was not available when a feature needed it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MissingReason {
+    /// The input is present and active but failed to build (a cascade: fix the
+    /// input and this feature follows).
+    Failed,
+    /// The input is suppressed.
+    Suppressed,
+    /// The input sits behind the rollback bar.
+    RolledBack,
+    /// The input comes *later* in history than the feature that needs it — a
+    /// forward reference, which no valid history contains.
+    Later,
+    /// No feature with that id exists in the history.
+    Deleted,
+}
+
+impl MissingReason {
+    fn of(document: &Document, feature: FeatureId, input: FeatureId) -> Self {
+        let Some(input_feature) = document.history.get(input) else {
+            return MissingReason::Deleted;
+        };
+        if input_feature.suppressed {
+            return MissingReason::Suppressed;
+        }
+        let (Some(fi), Some(ii)) =
+            (document.history.index_of(feature), document.history.index_of(input))
+        else {
+            return MissingReason::Deleted;
+        };
+        if ii >= fi {
+            MissingReason::Later
+        } else if ii >= document.rollback() {
+            MissingReason::RolledBack
+        } else {
+            MissingReason::Failed
+        }
+    }
 }
 
 impl<E> RegenError<E> {
@@ -107,7 +152,7 @@ where
         }
 
         backend.begin_feature(feature.id);
-        match eval(backend, feature.id, &feature.kind, &bodies) {
+        match eval(backend, document, feature.id, &feature.kind, &bodies) {
             Ok(body) => {
                 consume_inputs(&mut visible, &feature.kind.inputs());
                 bodies.insert(feature.id, body);
@@ -221,7 +266,7 @@ impl<B: Clone> RegenCache<B> {
             }
 
             backend.begin_feature(feature.id);
-            match eval(backend, feature.id, &feature.kind, &bodies) {
+            match eval(backend, document, feature.id, &feature.kind, &bodies) {
                 Ok(body) => {
                     self.next_version += 1;
                     self.entries.insert(
@@ -262,6 +307,7 @@ impl<B: Clone> RegenCache<B> {
 /// Evaluate one feature, resolving its inputs from already-built bodies.
 fn eval<B>(
     backend: &mut B,
+    document: &Document,
     feature: FeatureId,
     kind: &FeatureKind,
     bodies: &HashMap<FeatureId, B::Body>,
@@ -269,11 +315,14 @@ fn eval<B>(
 where
     B: GeometryBackend,
 {
-    // Look up an input body or report precisely which reference was missing.
+    // Look up an input body or report precisely which reference was missing,
+    // and why.
     let input = |id: FeatureId| -> Result<&B::Body, RegenError<B::Error>> {
-        bodies
-            .get(&id)
-            .ok_or(RegenError::MissingInput { feature, input: id })
+        bodies.get(&id).ok_or_else(|| RegenError::MissingInput {
+            feature,
+            input: id,
+            reason: MissingReason::of(document, feature, id),
+        })
     };
     let backend_err = |source: B::Error| RegenError::Backend { feature, source };
 

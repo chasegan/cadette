@@ -6,8 +6,8 @@
 //! Rust, independent of OCCT.
 
 use cdt_core::{
-    regenerate, BooleanOp, Document, FeatureId, FeatureKind, GeometryBackend, Profile, RegenError,
-    SketchPlane, DVec3,
+    regenerate, BooleanOp, Document, FeatureId, FeatureKind, GeometryBackend, MissingReason,
+    Profile, RegenError, SketchPlane, DVec3,
 };
 
 /// A backend whose "body" is a symbolic string describing how it was built.
@@ -219,11 +219,59 @@ fn suppressing_an_input_breaks_only_its_dependents() {
     assert_eq!(errors.len(), 1);
     assert!(matches!(
         errors[0],
-        RegenError::MissingInput { feature, input } if feature == cut && input == f
+        RegenError::MissingInput { feature, input, reason: MissingReason::Suppressed }
+            if feature == cut && input == f
     ));
     // The fillet was skipped, so the box is no longer consumed; the failed cut
     // consumes nothing. Box and cylinder remain visible.
     assert_eq!(regen.visible(), &[b, c]);
+}
+
+#[test]
+fn missing_input_reasons_tell_cascades_from_structural_errors() {
+    // A cascade: the fillet fails (radius 0 is rejected by Recording), so the
+    // boolean that consumes it is missing its input because it *failed*.
+    let (mut doc, [_b, f, _c, cut]) = sample();
+    doc.history.get_mut(f).unwrap().kind = FeatureKind::FilletAll { source: _b, radius: 0.0 };
+    let regen = regenerate(&doc, &mut Recording);
+    assert!(matches!(
+        regen.errors()[0],
+        RegenError::Backend { feature, .. } if feature == f
+    ));
+    assert!(matches!(
+        regen.errors()[1],
+        RegenError::MissingInput { feature, input, reason: MissingReason::Failed }
+            if feature == cut && input == f
+    ));
+
+    // A forward reference (only reachable by hand-editing a file): the cut
+    // names a tool that comes after it.
+    let (mut doc, [_b, _f, c, cut]) = sample();
+    assert!(doc.history.reorder(c, 3).is_err(), "reorder refuses to break the invariant");
+    // So build the broken order directly through the serde surface.
+    let mut json = serde_json::to_value(&doc).unwrap();
+    let features = json["history"]["features"].as_array_mut().unwrap();
+    let tool = features.remove(2); // the cylinder
+    features.push(tool); // ...now after the cut
+    let doc: Document = serde_json::from_value(json).unwrap();
+    let regen = regenerate(&doc, &mut Recording);
+    assert!(matches!(
+        regen.errors()[0],
+        RegenError::MissingInput { feature, input, reason: MissingReason::Later }
+            if feature == cut && input == c
+    ));
+
+    // A deleted input: the referenced id is gone from history entirely.
+    let (doc, [_b, _f, c, cut]) = sample();
+    let mut json = serde_json::to_value(&doc).unwrap();
+    json["history"]["features"].as_array_mut().unwrap().remove(2);
+    let doc: Document = serde_json::from_value(json).unwrap();
+    let regen = regenerate(&doc, &mut Recording);
+    assert!(matches!(
+        regen.errors()[0],
+        RegenError::MissingInput { feature, input, reason: MissingReason::Deleted }
+            if feature == cut && input == c
+    ));
 }
 
 #[test]
