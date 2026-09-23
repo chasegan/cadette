@@ -40,9 +40,11 @@ pub(crate) struct SketchSession {
     pub(crate) selected_beziers: Vec<usize>,
     /// Remaining degrees of freedom from the last solve (for UI feedback).
     pub(crate) dof: usize,
-    /// True when the last solve found contradictory constraints (redundant
-    /// equations that failed to converge) — surfaced as "over-constrained".
+    /// True when the last solve failed to converge — the constraints can't all
+    /// be satisfied. Surfaced as "over-constrained" when the solver also found
+    /// redundant equations (a proven contradiction), else "can't be solved".
     pub(crate) conflicted: bool,
+    pub(crate) over_constrained: bool,
     /// The feature being re-edited, if this session reopened an existing sketch
     /// — `finish` writes back to it in place. `None` for a brand-new sketch.
     pub(crate) editing: Option<FeatureId>,
@@ -133,6 +135,7 @@ impl Modeler {
             selected_beziers: Vec::new(),
             dof: 0,
             conflicted: false,
+            over_constrained: false,
             editing: None,
             sweep_profile: None,
             dragging: None,
@@ -178,6 +181,7 @@ impl Modeler {
             selected_beziers: Vec::new(),
             dof: 0,
             conflicted: false,
+            over_constrained: false,
             editing: Some(id), // overwrite this Sweep on finish
             sweep_profile: Some(profile),
             dragging: None,
@@ -222,6 +226,7 @@ impl Modeler {
             selected_beziers: Vec::new(),
             dof: 0,
             conflicted: false,
+            over_constrained: false,
             editing: Some(id),
             sweep_profile: None,
             dragging: None,
@@ -258,7 +263,8 @@ impl Modeler {
         if let Some(session) = self.sketch_session.as_mut() {
             let solution = cdt_solver::solve_sketch(&mut session.sketch);
             session.dof = solution.degrees_of_freedom;
-            session.conflicted = solution.is_over_constrained() && !solution.report.converged;
+            session.conflicted = !solution.report.converged;
+            session.over_constrained = solution.is_over_constrained();
         }
     }
 
@@ -412,8 +418,9 @@ impl Modeler {
                 ui.separator();
                 let dof = session.dof;
                 let status = if session.conflicted {
-                    egui::RichText::new("over-constrained")
-                        .color(self.ui.theme.palette().error)
+                    let text =
+                        if session.over_constrained { "over-constrained" } else { "can't be solved" };
+                    egui::RichText::new(text).color(self.ui.theme.palette().error)
                 } else if dof == 0 {
                     egui::RichText::new("fully constrained").color(self.ui.theme.palette().positive)
                 } else {

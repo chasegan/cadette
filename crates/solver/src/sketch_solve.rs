@@ -6,7 +6,7 @@
 //! (variables minus Jacobian rank) classifies the sketch as under-, well-, or
 //! over-constrained.
 
-use cdt_core::{CircleId, Constraint, LineId, PointId, Sketch2d};
+use cdt_core::{CircleId, Constraint, LineId, PointId, Sketch2d, SketchSolver, SolveStatus};
 
 use crate::lm::{solve, Residual, SolveOptions, SolveReport};
 
@@ -26,6 +26,9 @@ pub struct SketchSolution {
     /// check [`SolveReport::converged`] to tell which: a contradiction can't
     /// converge, a harmless restatement can.
     pub redundant: usize,
+    /// Constraints that referenced a point, line or circle the sketch doesn't
+    /// have (a hand-edited file). They were ignored rather than indexed.
+    pub invalid_constraints: usize,
 }
 
 impl SketchSolution {
@@ -36,11 +39,41 @@ impl SketchSolution {
     pub fn is_over_constrained(&self) -> bool {
         self.redundant > 0
     }
+
+    /// The outcome as core's [`SolveStatus`]: converged, or why not. A
+    /// non-converged solve with redundant equations is a proven contradiction;
+    /// one without is reported as stalled (still almost always impossible —
+    /// e.g. distances that can't form a triangle — but not provably so).
+    pub fn status(&self) -> SolveStatus {
+        if self.report.converged {
+            SolveStatus::Converged
+        } else if self.redundant > 0 {
+            SolveStatus::Contradictory { residual_norm: self.report.residual_norm }
+        } else {
+            SolveStatus::Stalled { residual_norm: self.report.residual_norm }
+        }
+    }
+}
+
+/// The Levenberg-Marquardt solver as core's [`SketchSolver`], for
+/// [`cdt_core::regenerate_solved`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LmSolver;
+
+impl SketchSolver for LmSolver {
+    fn solve(&mut self, sketch: &mut Sketch2d) -> SolveStatus {
+        solve_sketch(sketch).status()
+    }
+}
+
+/// Solve `sketch` in place with default options; see [`solve_sketch_with`].
+pub fn solve_sketch(sketch: &mut Sketch2d) -> SketchSolution {
+    solve_sketch_with(sketch, &SolveOptions::default())
 }
 
 /// Solve `sketch` in place, updating its point and circle values to satisfy the
 /// constraints as closely as possible.
-pub fn solve_sketch(sketch: &mut Sketch2d) -> SketchSolution {
+pub fn solve_sketch_with(sketch: &mut Sketch2d, opts: &SolveOptions) -> SketchSolution {
     let n_points = sketch.points.len();
     let n_circles = sketch.circles.len();
     let n_vars = 2 * n_points + n_circles;
@@ -60,9 +93,9 @@ pub fn solve_sketch(sketch: &mut Sketch2d) -> SketchSolution {
         vars[2 * n_points + j] = c.radius;
     }
 
-    let residuals = build_residuals(sketch, &px, &py, &cr);
+    let (residuals, invalid_constraints) = build_residuals(sketch, &px, &py, &cr);
 
-    let report = solve(&mut vars, &residuals, &SolveOptions::default());
+    let report = solve(&mut vars, &residuals, opts);
 
     // Write solved values back.
     for (i, p) in sketch.points.iter_mut().enumerate() {
@@ -80,22 +113,46 @@ pub fn solve_sketch(sketch: &mut Sketch2d) -> SketchSolution {
         equations: residuals.len(),
         degrees_of_freedom: n_vars.saturating_sub(rank),
         redundant: residuals.len().saturating_sub(rank),
+        invalid_constraints,
     }
 }
 
+/// Whether every entity `c` names exists in `sketch` — ids are raw indices,
+/// so a stale one from a hand-edited file would otherwise index out of range.
+fn references_exist(sketch: &Sketch2d, c: Constraint) -> bool {
+    c.points().iter().all(|p| p.0 < sketch.points.len())
+        && c.lines().iter().all(|l| {
+            sketch
+                .lines
+                .get(l.0)
+                .is_some_and(|line| line.a.0 < sketch.points.len() && line.b.0 < sketch.points.len())
+        })
+        && match c {
+            Constraint::Radius(circle, _) => circle.0 < sketch.circles.len(),
+            _ => true,
+        }
+}
+
+/// Compile the constraints into residual closures, skipping (and counting)
+/// any whose references don't exist.
 fn build_residuals(
     sketch: &Sketch2d,
     px: &impl Fn(PointId) -> usize,
     py: &impl Fn(PointId) -> usize,
     cr: &impl Fn(CircleId) -> usize,
-) -> Vec<Residual> {
+) -> (Vec<Residual>, usize) {
     let line_pts = |l: LineId| {
         let line = sketch.line(l);
         (line.a, line.b)
     };
     let mut residuals: Vec<Residual> = Vec::new();
+    let mut invalid = 0;
 
     for &constraint in &sketch.constraints {
+        if !references_exist(sketch, constraint) {
+            invalid += 1;
+            continue;
+        }
         match constraint {
             Constraint::Fixed(p) => {
                 let (ix, iy) = (px(p), py(p));
@@ -173,7 +230,7 @@ fn build_residuals(
         }
     }
 
-    residuals
+    (residuals, invalid)
 }
 
 /// Numerical rank of the residual Jacobian at `vars` — used to count degrees of

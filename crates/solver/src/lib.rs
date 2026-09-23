@@ -14,4 +14,4 @@ pub mod lm;
 mod sketch_solve;
 
 pub use lm::{solve, Residual, SolveOptions, SolveReport};
-pub use sketch_solve::{solve_sketch, SketchSolution};
+pub use sketch_solve::{solve_sketch, solve_sketch_with, LmSolver, SketchSolution};

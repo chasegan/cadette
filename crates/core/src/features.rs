@@ -81,7 +81,9 @@ pub enum FeatureKind {
 
     /// A constraint-driven 2D sketch on `plane`. Its solved geometry forms a
     /// closed loop that evaluates to a planar face (see [`Sketch2d`]). The
-    /// solver runs before regeneration, so the stored coordinates are solved.
+    /// stored coordinates are what regeneration reads, so they must be solved
+    /// first: [`regenerate_solved`](crate::regenerate_solved) does that, and
+    /// reports a sketch that can't be solved instead of building it.
     ConstraintSketch { plane: SketchPlane, sketch: Sketch2d },
 
     // --- Operations (reference earlier features) ---

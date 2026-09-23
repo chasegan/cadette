@@ -393,3 +393,65 @@ fn grouping_merges_lanes_and_ungroup_splits_them() {
     let regen = regenerate(&doc, &mut Recording);
     assert_eq!(regen.visible(), &[a, b], "members independently visible after ungroup");
 }
+
+/// A solver that "fails" every sketch with a constraint and passes the rest.
+struct FailConstrained;
+
+impl cdt_core::SketchSolver for FailConstrained {
+    fn solve(&mut self, sketch: &mut cdt_core::Sketch2d) -> cdt_core::SolveStatus {
+        if sketch.constraints.is_empty() {
+            cdt_core::SolveStatus::Converged
+        } else {
+            cdt_core::SolveStatus::Contradictory { residual_norm: 1.0 }
+        }
+    }
+}
+
+#[test]
+fn an_unsolvable_sketch_is_an_error_and_is_not_built() {
+    use cdt_core::{regenerate_solved, Constraint, Sketch2d, SolveStatus};
+    let mut sketch = Sketch2d::new();
+    let a = sketch.add_point(0.0, 0.0);
+    let b = sketch.add_point(10.0, 0.0);
+    let c = sketch.add_point(10.0, 10.0);
+    sketch.add_line(a, b);
+    sketch.add_line(b, c);
+    sketch.add_line(c, a);
+    let mut doc = Document::new("sk");
+    let s = doc.add(
+        "Sketch",
+        FeatureKind::ConstraintSketch { plane: SketchPlane::Xy, sketch: sketch.clone() },
+    );
+    let e = doc.add("Extrude", FeatureKind::Extrude { source: s, distance: 5.0 });
+
+    // No constraints: the solver passes and the sketch builds as before.
+    let regen = regenerate_solved(&mut doc, &mut Recording, &mut FailConstrained);
+    assert!(regen.is_ok(), "{:?}", regen.errors());
+    assert_eq!(regen.visible(), &[e]);
+
+    // Add a constraint the (fake) solver can't satisfy: the sketch is reported
+    // and skipped, so the extrude is missing its input because it *failed*.
+    if let Some(FeatureKind::ConstraintSketch { sketch, .. }) =
+        doc.history.get_mut(s).map(|f| &mut f.kind)
+    {
+        sketch.add_constraint(Constraint::Fixed(a));
+    }
+    let regen = regenerate_solved(&mut doc, &mut Recording, &mut FailConstrained);
+    assert_eq!(regen.errors().len(), 2, "{:?}", regen.errors());
+    assert!(matches!(
+        regen.errors()[0],
+        RegenError::UnsolvedSketch { feature, status: SolveStatus::Contradictory { .. } }
+            if feature == s
+    ));
+    assert!(matches!(
+        regen.errors()[1],
+        RegenError::MissingInput { feature, input, reason: MissingReason::Failed }
+            if feature == e && input == s
+    ));
+    assert!(regen.visible().is_empty(), "nothing was built from the unsolved coordinates");
+
+    // The cached engine agrees.
+    let mut cache = cdt_core::RegenCache::new();
+    let regen = cache.regenerate_solved(&mut doc, &mut Recording, &mut FailConstrained);
+    assert_eq!(regen.errors().len(), 2);
+}

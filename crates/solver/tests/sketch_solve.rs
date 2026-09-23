@@ -1,8 +1,8 @@
 //! End-to-end constraint-solving tests: build a sketch, solve it, and assert
 //! the geometry lands where the constraints demand.
 
-use cdt_core::{Constraint, Sketch2d};
-use cdt_solver::solve_sketch;
+use cdt_core::{CircleId, Constraint, LineId, PointId, Sketch2d, SketchSolver, SolveStatus};
+use cdt_solver::{solve_sketch, LmSolver};
 
 fn close(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-5
@@ -163,4 +163,50 @@ fn underconstrained_sketch_reports_free_dofs() {
     assert_eq!(solution.variables, 4);
     assert_eq!(solution.degrees_of_freedom, 2, "the free endpoint has 2 dof");
     assert!(!solution.is_fully_constrained());
+}
+
+#[test]
+fn an_impossible_triangle_is_reported_not_silently_written() {
+    // Sides 10, 10 and 30 can't close: the triangle inequality fails, so no
+    // arrangement satisfies every distance. The Jacobian is still full rank
+    // (nothing is *redundant*), which is exactly the case the old
+    // "over-constrained" check missed.
+    let mut s = Sketch2d::new();
+    let p0 = s.add_point(0.0, 0.0);
+    let p1 = s.add_point(9.0, 0.5);
+    let p2 = s.add_point(20.0, 8.0);
+    let base = s.add_line(p0, p1);
+    s.add_constraint(Constraint::Fixed(p0));
+    s.add_constraint(Constraint::Horizontal(base));
+    s.add_constraint(Constraint::Distance(p0, p1, 10.0));
+    s.add_constraint(Constraint::Distance(p1, p2, 10.0));
+    s.add_constraint(Constraint::Distance(p0, p2, 30.0));
+    let solution = solve_sketch(&mut s);
+    assert!(!solution.report.converged);
+    assert!(!solution.status().is_converged(), "{:?}", solution.status());
+    assert!(
+        matches!(solution.status(), SolveStatus::Stalled { residual_norm } if residual_norm > 1.0),
+        "{:?}",
+        solution.status()
+    );
+    // The trait form agrees.
+    let mut again = s.clone();
+    assert!(!LmSolver.solve(&mut again).is_converged());
+}
+
+#[test]
+fn constraints_with_stale_ids_are_skipped_not_indexed() {
+    // A hand-edited file naming a line that doesn't exist must not panic.
+    let mut s = Sketch2d::new();
+    let p0 = s.add_point(0.0, 0.0);
+    let p1 = s.add_point(10.0, 1.0);
+    let base = s.add_line(p0, p1);
+    s.add_constraint(Constraint::Horizontal(base));
+    s.add_constraint(Constraint::Horizontal(LineId(7)));
+    s.add_constraint(Constraint::Distance(p0, PointId(42), 5.0));
+    s.add_constraint(Constraint::Radius(CircleId(0), 2.0));
+    let solution = solve_sketch(&mut s);
+    assert!(solution.report.converged);
+    assert_eq!(solution.invalid_constraints, 3);
+    assert!((s.point(p0).y - s.point(p1).y).abs() < 1e-6, "the valid constraint still solved");
 }

@@ -11,6 +11,7 @@
 //! - [`history`] — the ordered feature tree + dependency validation.
 //! - [`document`] — a named history with units and a rollback bar.
 //! - [`backend`] — the trait a kernel implements.
+//! - [`solver`] — the trait a sketch constraint solver implements.
 //! - [`regen`] — the replay engine tying them together.
 
 pub mod backend;
@@ -21,6 +22,7 @@ pub mod history;
 pub mod regen;
 pub mod selection;
 pub mod sketch;
+pub mod solver;
 pub mod units;
 
 pub use backend::GeometryBackend;
@@ -29,10 +31,13 @@ pub use features::{BooleanOp, EdgeAnchor, FaceAnchor, Feature, FeatureId, Featur
 pub use build_graph::{BuildGraph, BuildGraphRow, LANE_PALETTE};
 pub use glam::DVec3;
 pub use history::{DependencyError, History};
-pub use regen::{regenerate, MissingReason, RegenCache, RegenError, Regeneration};
+pub use regen::{
+    regenerate, regenerate_solved, MissingReason, RegenCache, RegenError, Regeneration,
+};
 pub use selection::Pick;
 pub use sketch::{
     CircleId, Constraint, LineId, PointId, Profile, ProfileElem, Sketch2d, SketchBezier,
     SketchCircle, SketchLine, SketchPlane, SketchPoint,
 };
+pub use solver::{NoSolver, SketchSolver, SolveStatus};
 pub use units::LengthUnit;

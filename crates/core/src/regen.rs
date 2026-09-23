@@ -20,9 +20,10 @@ use std::collections::{HashMap, HashSet};
 use crate::backend::GeometryBackend;
 use crate::document::Document;
 use crate::features::{FeatureId, FeatureKind};
+use crate::solver::{SketchSolver, SolveStatus};
 
 /// A single feature's failure during regeneration.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RegenError<E> {
     /// The backend rejected the operation (e.g. infeasible fillet).
     Backend { feature: FeatureId, source: E },
@@ -38,6 +39,12 @@ pub enum RegenError<E> {
     Invalid {
         feature: FeatureId,
         reason: &'static str,
+    },
+    /// The feature's sketch constraints could not be solved, so its geometry
+    /// was not built (see [`regenerate_solved`]).
+    UnsolvedSketch {
+        feature: FeatureId,
+        status: SolveStatus,
     },
 }
 
@@ -87,7 +94,8 @@ impl<E> RegenError<E> {
         match self {
             RegenError::Backend { feature, .. }
             | RegenError::MissingInput { feature, .. }
-            | RegenError::Invalid { feature, .. } => *feature,
+            | RegenError::Invalid { feature, .. }
+            | RegenError::UnsolvedSketch { feature, .. } => *feature,
         }
     }
 }
@@ -142,12 +150,57 @@ pub fn regenerate<B>(document: &Document, backend: &mut B) -> Regeneration<B::Bo
 where
     B: GeometryBackend,
 {
+    regenerate_inner(document, backend, &HashMap::new())
+}
+
+/// Solve the document's constraint sketches, then [`regenerate`]. A sketch
+/// whose constraints can't be satisfied is reported as
+/// [`RegenError::UnsolvedSketch`] and skipped (its dependents then miss their
+/// input), instead of being built from whatever coordinates the failed solve
+/// left behind. This is the entry point for anything that builds a document
+/// without going through the interactive sketcher.
+pub fn regenerate_solved<B>(
+    document: &mut Document,
+    backend: &mut B,
+    solver: &mut impl SketchSolver,
+) -> Regeneration<B::Body, B::Error>
+where
+    B: GeometryBackend,
+{
+    let unsolved = unsolved_sketches(document, solver);
+    regenerate_inner(document, backend, &unsolved)
+}
+
+/// Solve every sketch and collect the ones that failed.
+fn unsolved_sketches(
+    document: &mut Document,
+    solver: &mut impl SketchSolver,
+) -> HashMap<FeatureId, SolveStatus> {
+    document
+        .solve_sketches(solver)
+        .into_iter()
+        .filter(|(_, status)| !status.is_converged())
+        .collect()
+}
+
+fn regenerate_inner<B>(
+    document: &Document,
+    backend: &mut B,
+    unsolved: &HashMap<FeatureId, SolveStatus>,
+) -> Regeneration<B::Body, B::Error>
+where
+    B: GeometryBackend,
+{
     let mut bodies: HashMap<FeatureId, B::Body> = HashMap::new();
     let mut visible: Vec<FeatureId> = Vec::new();
     let mut errors: Vec<RegenError<B::Error>> = Vec::new();
 
     for feature in document.active_features() {
         if feature.suppressed {
+            continue;
+        }
+        if let Some(&status) = unsolved.get(&feature.id) {
+            errors.push(RegenError::UnsolvedSketch { feature: feature.id, status });
             continue;
         }
 
@@ -234,12 +287,45 @@ impl<B: Clone> RegenCache<B> {
     where
         BK: GeometryBackend<Body = B>,
     {
+        self.regenerate_inner(document, backend, &HashMap::new())
+    }
+
+    /// Solve the document's sketches, then regenerate incrementally — the
+    /// cached counterpart of [`regenerate_solved`].
+    pub fn regenerate_solved<BK>(
+        &mut self,
+        document: &mut Document,
+        backend: &mut BK,
+        solver: &mut impl SketchSolver,
+    ) -> Regeneration<B, BK::Error>
+    where
+        BK: GeometryBackend<Body = B>,
+    {
+        let unsolved = unsolved_sketches(document, solver);
+        self.regenerate_inner(document, backend, &unsolved)
+    }
+
+    fn regenerate_inner<BK>(
+        &mut self,
+        document: &Document,
+        backend: &mut BK,
+        unsolved: &HashMap<FeatureId, SolveStatus>,
+    ) -> Regeneration<B, BK::Error>
+    where
+        BK: GeometryBackend<Body = B>,
+    {
         let mut bodies: HashMap<FeatureId, B> = HashMap::new();
         let mut visible: Vec<FeatureId> = Vec::new();
         let mut errors: Vec<RegenError<BK::Error>> = Vec::new();
 
         for feature in document.active_features() {
             if feature.suppressed {
+                continue;
+            }
+            if let Some(&status) = unsolved.get(&feature.id) {
+                // Drop the stale entry so dependents see the change next pass.
+                self.entries.remove(&feature.id);
+                errors.push(RegenError::UnsolvedSketch { feature: feature.id, status });
                 continue;
             }
             let inputs = feature.kind.inputs();

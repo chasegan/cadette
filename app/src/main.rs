@@ -13,8 +13,9 @@ use std::collections::HashMap;
 
 use cdt_core::{
     BooleanOp, Constraint, Document, FaceAnchor, FeatureId, FeatureKind, MissingReason,
-    Profile, RegenCache, RegenError, Sketch2d, SketchPlane, DVec3,
+    Profile, RegenCache, RegenError, Sketch2d, SketchPlane, SolveStatus, DVec3,
 };
+use cdt_solver::LmSolver;
 use cdt_interaction::Selection;
 use cdt_kernel::{Body, KernelBackend};
 use cdt_render::egui;
@@ -73,16 +74,6 @@ fn constraint_rectangle(width: f64, height: f64) -> Sketch2d {
     s
 }
 
-/// Solve every constraint sketch in the document in place, so regeneration
-/// reads solved coordinates. (`core` can't solve — that would cycle with the
-/// solver crate — so the app drives it here.)
-fn solve_sketches(doc: &mut Document) {
-    for feature in doc.history.features_mut() {
-        if let FeatureKind::ConstraintSketch { sketch, .. } = &mut feature.kind {
-            cdt_solver::solve_sketch(sketch);
-        }
-    }
-}
 
 /// The default starting part, built end to end from sketches: a sketched
 /// rectangle extruded into a block, edges filleted, then a sketched circle
@@ -246,7 +237,7 @@ impl Modeler {
         // Store the solved doc so its baseline signature matches what `mesh`
         // hashes (which is post-solve).
         let mut doc = build_document();
-        solve_sketches(&mut doc);
+        doc.solve_sketches(&mut LmSolver);
         let saved_sig = doc_signature(&doc);
         Self {
             doc,
@@ -526,7 +517,7 @@ impl Modeler {
     /// Mark the current document as the clean baseline (on save/open): its
     /// signature becomes the reference `dirty` is measured against.
     fn mark_saved(&mut self) {
-        solve_sketches(&mut self.doc); // hash the same (solved) state `mesh` will
+        self.doc.solve_sketches(&mut LmSolver); // hash the same (solved) state `mesh` will
         self.saved_sig = doc_signature(&self.doc);
         self.dirty = false;
     }
@@ -1069,7 +1060,10 @@ impl Controller for Modeler {
     /// Regenerate the document through OCCT and tessellate every visible body
     /// into one mesh. Records per-feature errors for the panel.
     fn mesh(&mut self) -> MeshData {
-        solve_sketches(&mut self.doc);
+        // Solves the constraint sketches in place first (a sketch that can't be
+        // solved is a per-feature error, like any other failed step).
+        let regen =
+            self.regen_cache.regenerate_solved(&mut self.doc, &mut self.backend, &mut LmSolver);
         // The viewer calls this exactly when the doc changed (edit / undo / redo /
         // drag), so it's the natural place to refresh the unsaved-changes flag.
         // Compared post-solve, matching the state a save would serialize.
@@ -1079,7 +1073,6 @@ impl Controller for Modeler {
         if !self.interacting() {
             self.refresh_dirty();
         }
-        let regen = self.regen_cache.regenerate(&self.doc, &mut self.backend);
         self.ui.errors = regen
             .errors()
             .iter()
@@ -1862,6 +1855,15 @@ fn error_message(err: &RegenError<cdt_kernel::KernelError>, doc: &Document) -> S
             }
         }
         RegenError::Invalid { reason, .. } => reason.to_string(),
+        RegenError::UnsolvedSketch { status, .. } => match status {
+            SolveStatus::Contradictory { .. } => {
+                "sketch constraints contradict each other — remove one".to_string()
+            }
+            SolveStatus::Stalled { .. } => {
+                "sketch constraints can't all be satisfied — check the dimensions".to_string()
+            }
+            SolveStatus::Converged => unreachable!("a converged sketch is not an error"),
+        },
     }
 }
 
