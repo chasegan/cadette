@@ -216,6 +216,52 @@ pub enum Constraint {
     Radius(CircleId, f64),
 }
 
+impl Constraint {
+    /// Rewrite every line reference through `f`; `None` from `f` (the line is
+    /// gone) drops the whole constraint.
+    pub fn remap_lines(self, f: impl Fn(LineId) -> Option<LineId>) -> Option<Constraint> {
+        Some(match self {
+            Constraint::Horizontal(l) => Constraint::Horizontal(f(l)?),
+            Constraint::Vertical(l) => Constraint::Vertical(f(l)?),
+            Constraint::Parallel(a, b) => Constraint::Parallel(f(a)?, f(b)?),
+            Constraint::Perpendicular(a, b) => Constraint::Perpendicular(f(a)?, f(b)?),
+            Constraint::EqualLength(a, b) => Constraint::EqualLength(f(a)?, f(b)?),
+            other => other,
+        })
+    }
+
+    /// Rewrite every point reference through `f`; `None` (the point is gone)
+    /// drops the whole constraint.
+    pub fn remap_points(self, f: impl Fn(PointId) -> Option<PointId>) -> Option<Constraint> {
+        Some(match self {
+            Constraint::Fixed(p) => Constraint::Fixed(f(p)?),
+            Constraint::Coincident(a, b) => Constraint::Coincident(f(a)?, f(b)?),
+            Constraint::Distance(a, b, d) => Constraint::Distance(f(a)?, f(b)?, d),
+            other => other,
+        })
+    }
+
+    /// Every line this constraint references.
+    pub fn lines(&self) -> Vec<LineId> {
+        match *self {
+            Constraint::Horizontal(l) | Constraint::Vertical(l) => vec![l],
+            Constraint::Parallel(a, b)
+            | Constraint::Perpendicular(a, b)
+            | Constraint::EqualLength(a, b) => vec![a, b],
+            _ => Vec::new(),
+        }
+    }
+
+    /// Every point this constraint references.
+    pub fn points(&self) -> Vec<PointId> {
+        match *self {
+            Constraint::Fixed(p) => vec![p],
+            Constraint::Coincident(a, b) | Constraint::Distance(a, b, _) => vec![a, b],
+            _ => Vec::new(),
+        }
+    }
+}
+
 /// A 2D constraint sketch: entities plus the constraints relating them.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Sketch2d {
@@ -291,9 +337,34 @@ impl Sketch2d {
         let (a, b) = (self.point(l.a), self.point(l.b));
         let c1 = [a.x + (b.x - a.x) / 3.0, a.y + (b.y - a.y) / 3.0];
         let c2 = [a.x + 2.0 * (b.x - a.x) / 3.0, a.y + 2.0 * (b.y - a.y) / 3.0];
-        self.lines.remove(line.0);
+        self.remove_line(line);
         self.add_bezier(l.a, l.b, c1, c2);
         true
+    }
+
+    /// Remove a line, keeping every other [`LineId`] meaningful: constraints
+    /// that referenced the removed line are dropped, and constraints on later
+    /// lines are renumbered to follow the shifted `lines` vector. (Ids are raw
+    /// indices, so a bare `lines.remove` would silently re-target them.)
+    /// Returns the removed line, or `None` if the id is invalid.
+    pub fn remove_line(&mut self, line: LineId) -> Option<SketchLine> {
+        if line.0 >= self.lines.len() {
+            return None;
+        }
+        let removed = self.lines.remove(line.0);
+        let shift = |id: LineId| -> Option<LineId> {
+            match id.0.cmp(&line.0) {
+                std::cmp::Ordering::Less => Some(id),
+                std::cmp::Ordering::Equal => None,
+                std::cmp::Ordering::Greater => Some(LineId(id.0 - 1)),
+            }
+        };
+        self.constraints = self
+            .constraints
+            .iter()
+            .filter_map(|c| c.remap_lines(shift))
+            .collect();
+        Some(removed)
     }
 
     /// Convert bezier `bez` back into a straight line between its endpoints,
@@ -669,20 +740,26 @@ impl Sketch2d {
 
     /// The closed loop as ordered `(anchor, edge-leaving-it)` pairs, walking
     /// BOTH lines and beziers (edge = `None` for a line, `Some((c1,c2))` for a
-    /// bezier, handles oriented for the forward direction). `None` unless the
-    /// segments form exactly one closed loop.
-    #[allow(clippy::type_complexity)]
-    fn loop_edges(&self) -> Option<Vec<(PointId, Option<([f64; 2], [f64; 2])>)>> {
+    /// bezier, handles oriented for the forward direction). Each entry also
+    /// carries the [`LineId`] the edge came from (`None` for a bezier). `None`
+    /// unless the segments form exactly one closed loop.
+    fn loop_edges(&self) -> Option<Vec<LoopEdge>> {
         struct Conn {
             a: PointId,
             b: PointId,
             bez: Option<([f64; 2], [f64; 2])>,
+            line: Option<LineId>,
         }
         let conns: Vec<Conn> = self
             .lines
             .iter()
-            .map(|l| Conn { a: l.a, b: l.b, bez: None })
-            .chain(self.beziers.iter().map(|bz| Conn { a: bz.a, b: bz.b, bez: Some((bz.c1, bz.c2)) }))
+            .enumerate()
+            .map(|(i, l)| Conn { a: l.a, b: l.b, bez: None, line: Some(LineId(i)) })
+            .chain(
+                self.beziers
+                    .iter()
+                    .map(|bz| Conn { a: bz.a, b: bz.b, bez: Some((bz.c1, bz.c2)), line: None }),
+            )
             .collect();
         let n = conns.len();
         if n < 3 {
@@ -700,7 +777,7 @@ impl Sketch2d {
             visited[idx] = true;
             let forward = conn.a == current;
             let bez = conn.bez.map(|(c1, c2)| if forward { (c1, c2) } else { (c2, c1) });
-            edges.push((current, bez));
+            edges.push(LoopEdge { anchor: current, bez, line: conn.line });
             current = if forward { conn.b } else { conn.a };
         }
         (current == start).then_some(edges)
@@ -709,40 +786,84 @@ impl Sketch2d {
     /// Delete `remove`d points from the closed loop, reconnecting the survivors.
     /// Segments not touched by a deletion keep their type (line OR bezier); where
     /// a deletion bridges a gap the new segment is a straight line. Requires one
-    /// closed loop and ≥3 points left. Drops constraints + circles (topology
-    /// changed). Returns false (unchanged) if not applicable.
+    /// closed loop and ≥3 points left. Constraints and circles survive where
+    /// everything they reference does (points are renumbered, and a line keeps
+    /// its constraints only if it was kept intact); the rest are dropped.
+    /// Returns false (unchanged) if not applicable.
     pub fn delete_points(&mut self, remove: &[PointId]) -> bool {
         let Some(edges) = self.loop_edges() else {
             return false;
         };
         let n = edges.len();
-        let keep: Vec<usize> = (0..n).filter(|&i| !remove.contains(&edges[i].0)).collect();
+        let keep: Vec<usize> = (0..n).filter(|&i| !remove.contains(&edges[i].anchor)).collect();
         if keep.len() < 3 || keep.len() == n {
             return false; // nothing removed, or too few points left
         }
         let mut fresh = Sketch2d::new();
+        // Old point id -> new point id, for every kept anchor.
+        let mut point_map: Vec<(PointId, PointId)> = Vec::with_capacity(keep.len());
         let new_ids: Vec<PointId> = keep
             .iter()
             .map(|&i| {
-                let p = self.point(edges[i].0);
-                fresh.add_point(p.x, p.y)
+                let p = self.point(edges[i].anchor);
+                let id = fresh.add_point(p.x, p.y);
+                point_map.push((edges[i].anchor, id));
+                id
             })
             .collect();
+        // Old line id -> new line id, for every line kept intact.
+        let mut line_map: Vec<(LineId, LineId)> = Vec::new();
         for j in 0..keep.len() {
             let nj = (j + 1) % keep.len();
             // Keep the original edge only if the next kept anchor was the
             // original neighbour (no removed anchors bridged between them).
             let originally_adjacent = (keep[j] + 1) % n == keep[nj];
-            match (originally_adjacent, edges[keep[j]].1) {
+            let edge = &edges[keep[j]];
+            match (originally_adjacent, edge.bez) {
                 (true, Some((c1, c2))) => fresh.add_bezier(new_ids[j], new_ids[nj], c1, c2),
                 _ => {
-                    fresh.add_line(new_ids[j], new_ids[nj]);
+                    let id = fresh.add_line(new_ids[j], new_ids[nj]);
+                    if originally_adjacent {
+                        if let Some(old) = edge.line {
+                            line_map.push((old, id));
+                        }
+                    }
                 }
             }
         }
+        let map_point = |p: PointId| point_map.iter().find(|(o, _)| *o == p).map(|(_, n)| *n);
+        let map_line = |l: LineId| line_map.iter().find(|(o, _)| *o == l).map(|(_, n)| *n);
+        // Circles whose centre survives come along (renumbered), so circle ids
+        // stay dense and `Radius` constraints can follow them.
+        let mut circle_map: Vec<(CircleId, CircleId)> = Vec::new();
+        for (i, c) in self.circles.iter().enumerate() {
+            if let Some(center) = map_point(c.center) {
+                let id = fresh.add_circle(center, c.radius);
+                circle_map.push((CircleId(i), id));
+            }
+        }
+        let map_circle = |c: CircleId| circle_map.iter().find(|(o, _)| *o == c).map(|(_, n)| *n);
+        fresh.constraints = self
+            .constraints
+            .iter()
+            .filter_map(|c| c.remap_points(map_point))
+            .filter_map(|c| c.remap_lines(map_line))
+            .filter_map(|c| match c {
+                Constraint::Radius(id, r) => Some(Constraint::Radius(map_circle(id)?, r)),
+                other => Some(other),
+            })
+            .collect();
         *self = fresh;
         true
     }
+}
+
+/// One step of a closed loop walk: the anchor point, the bezier handles of the
+/// edge leaving it (`None` for a straight line), and the source line's id.
+struct LoopEdge {
+    anchor: PointId,
+    bez: Option<([f64; 2], [f64; 2])>,
+    line: Option<LineId>,
 }
 
 #[cfg(test)]
@@ -802,6 +923,114 @@ mod edit_tests {
         assert_eq!(s.points.len(), 3, "a triangle remains");
         assert_eq!(s.lines.len(), 3);
         assert!(s.loop_order().is_some(), "still one closed loop");
+    }
+
+    /// A constrained rectangle: points 0..4 counter-clockwise from the origin,
+    /// lines bottom=0, right=1, top=2, left=3, with the constraints the app's
+    /// rectangle tool applies.
+    fn constrained_rect() -> Sketch2d {
+        let mut s = Sketch2d::new();
+        let p0 = s.add_point(0.0, 0.0);
+        let p1 = s.add_point(40.0, 0.0);
+        let p2 = s.add_point(40.0, 20.0);
+        let p3 = s.add_point(0.0, 20.0);
+        let bottom = s.add_line(p0, p1);
+        let right = s.add_line(p1, p2);
+        let top = s.add_line(p2, p3);
+        let left = s.add_line(p3, p0);
+        s.add_constraint(Constraint::Fixed(p0));
+        s.add_constraint(Constraint::Horizontal(bottom));
+        s.add_constraint(Constraint::Vertical(right));
+        s.add_constraint(Constraint::Horizontal(top));
+        s.add_constraint(Constraint::Vertical(left));
+        s.add_constraint(Constraint::Distance(p0, p1, 40.0));
+        s.add_constraint(Constraint::Distance(p1, p2, 20.0));
+        s
+    }
+
+    #[test]
+    fn curve_line_renumbers_constraints_on_later_lines() {
+        let mut s = constrained_rect();
+        assert!(s.curve_line(LineId(0)), "curve the bottom line");
+        // The bottom line's Horizontal is gone; the others shifted down by one
+        // and still name the same geometry.
+        assert_eq!(s.lines.len(), 3);
+        assert!(!s.constraints.contains(&Constraint::Horizontal(LineId(0))));
+        assert!(s.constraints.contains(&Constraint::Vertical(LineId(0))), "right is now line 0");
+        assert!(s.constraints.contains(&Constraint::Horizontal(LineId(1))), "top is now line 1");
+        assert!(s.constraints.contains(&Constraint::Vertical(LineId(2))), "left is now line 2");
+        // Every remaining line reference is in range — the solver indexes
+        // `lines` unchecked, so a stale id used to panic.
+        for c in &s.constraints {
+            for l in c.lines() {
+                assert!(l.0 < s.lines.len(), "{c:?} references a missing line");
+            }
+        }
+        // The point constraints were untouched.
+        assert!(s.constraints.contains(&Constraint::Distance(PointId(0), PointId(1), 40.0)));
+        assert_eq!(s.constraints.len(), 6);
+    }
+
+    #[test]
+    fn curve_last_line_drops_only_its_own_constraint() {
+        let mut s = constrained_rect();
+        assert!(s.curve_line(LineId(3)));
+        assert!(!s.constraints.iter().any(|c| c.lines().contains(&LineId(3))));
+        assert!(s.constraints.contains(&Constraint::Horizontal(LineId(0))));
+        assert!(s.constraints.contains(&Constraint::Horizontal(LineId(2))));
+        assert_eq!(s.constraints.len(), 6);
+    }
+
+    #[test]
+    fn remove_line_rejects_a_bad_id() {
+        let mut s = constrained_rect();
+        assert!(s.remove_line(LineId(9)).is_none());
+        assert_eq!(s.lines.len(), 4);
+        assert_eq!(s.constraints.len(), 7, "nothing dropped");
+    }
+
+    #[test]
+    fn delete_points_keeps_constraints_that_survive() {
+        let mut s = constrained_rect();
+        let c = s.add_circle(PointId(2), 3.0);
+        s.add_constraint(Constraint::Radius(c, 3.0));
+        // Remove the corner opposite the origin: the bottom and left lines
+        // (and the origin) stay intact; right and top are bridged by a new
+        // diagonal, so their constraints go.
+        assert!(s.delete_points(&[PointId(2)]));
+        assert_eq!(s.points.len(), 3);
+        assert_eq!(s.lines.len(), 3);
+        // The origin was renumbered to whatever the walk assigned; find it by
+        // its Fixed constraint and check its coordinates.
+        let fixed = s
+            .constraints
+            .iter()
+            .find_map(|c| match c {
+                Constraint::Fixed(p) => Some(*p),
+                _ => None,
+            })
+            .expect("Fixed survived");
+        assert_eq!(s.point(fixed), SketchPoint { x: 0.0, y: 0.0 });
+        // Bottom's Horizontal and left's Vertical survive on intact lines;
+        // the 40 mm distance is still between the origin and (40, 0).
+        let horizontals: Vec<_> = s.constraints.iter().filter(|c| matches!(c, Constraint::Horizontal(_))).collect();
+        let verticals: Vec<_> = s.constraints.iter().filter(|c| matches!(c, Constraint::Vertical(_))).collect();
+        assert_eq!(horizontals.len(), 1, "{:?}", s.constraints);
+        assert_eq!(verticals.len(), 1, "{:?}", s.constraints);
+        assert!(s.constraints.iter().any(|c| matches!(c, Constraint::Distance(_, _, d) if *d == 40.0)));
+        // The 20 mm distance touched the removed point: gone. So did the
+        // circle centred on it and its Radius constraint.
+        assert!(!s.constraints.iter().any(|c| matches!(c, Constraint::Distance(_, _, d) if *d == 20.0)));
+        assert!(s.circles.is_empty());
+        assert!(!s.constraints.iter().any(|c| matches!(c, Constraint::Radius(..))));
+        for c in &s.constraints {
+            for l in c.lines() {
+                assert!(l.0 < s.lines.len());
+            }
+            for p in c.points() {
+                assert!(p.0 < s.points.len());
+            }
+        }
     }
 
     #[test]
