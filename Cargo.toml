@@ -5,6 +5,7 @@ members = [
     "crates/kernel",
     "crates/solver",
     "crates/project",
+    "crates/session",
     "crates/render",
     "crates/interaction",
     "crates/ui",
@@ -24,6 +25,7 @@ cdt-core = { path = "crates/core" }
 cdt-kernel = { path = "crates/kernel" }
 cdt-solver = { path = "crates/solver" }
 cdt-project = { path = "crates/project" }
+cdt-session = { path = "crates/session" }
 cdt-render = { path = "crates/render" }
 cdt-interaction = { path = "crates/interaction" }
 cdt-ui = { path = "crates/ui" }

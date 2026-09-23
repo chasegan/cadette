@@ -57,6 +57,7 @@ On Windows, `vcpkg install opencascade --triplet x64-windows` and use
 | `crates/kernel`      | OpenCASCADE FFI (cxx) — solids, booleans, tessellation   |
 | `crates/solver`      | Levenberg–Marquardt sketch-constraint solver             |
 | `crates/project`     | The `.cdt` project file: versioned document envelope + extras |
+| `crates/session`     | Headless session: document + kernel + solver + cache + undo, serializable report |
 | `crates/render`      | wgpu viewport: scene, picking, gizmo, window shell       |
 | `crates/interaction` | Selection model                                          |
 | `crates/ui`          | egui chrome: Build Graph panel, command bar, theming     |

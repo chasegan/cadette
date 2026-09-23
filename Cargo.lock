@@ -588,6 +588,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdt-session"
+version = "0.2.5"
+dependencies = [
+ "cdt-core",
+ "cdt-kernel",
+ "cdt-project",
+ "cdt-render",
+ "cdt-solver",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "cdt-solver"
 version = "0.2.5"
 dependencies = [

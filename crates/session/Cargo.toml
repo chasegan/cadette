@@ -1,0 +1,22 @@
+[package]
+name = "cdt-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "A headless modelling session: document + kernel + solver + cache + undo, with a serializable report. What the CLI, the agent socket and the app drive."
+
+[dependencies]
+cdt-core = { workspace = true }
+cdt-kernel = { workspace = true }
+cdt-solver = { workspace = true }
+cdt-project = { workspace = true }
+cdt-render = { workspace = true, default-features = false, optional = true }
+serde = { workspace = true }
+serde_json = "1"
+thiserror = { workspace = true }
+
+[features]
+default = ["render"]
+# Build display meshes (cdt-render's MeshData) from the session's bodies.
+render = ["dep:cdt-render"]
