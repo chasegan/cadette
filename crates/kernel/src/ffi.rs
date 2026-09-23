@@ -49,6 +49,90 @@ mod bridge {
         yz: f64,
     }
 
+    /// Exact whole-body measurements (see `Solid::mass_properties` /
+    /// `Solid::bbox`). Inertia is the 3×3 matrix about the centre of mass,
+    /// row-major.
+    #[derive(Clone, Copy, Debug, Default)]
+    struct BodyProps {
+        volume: f64,
+        surface_area: f64,
+        cx: f64,
+        cy: f64,
+        cz: f64,
+        ixx: f64,
+        ixy: f64,
+        ixz: f64,
+        iyx: f64,
+        iyy: f64,
+        iyz: f64,
+        izx: f64,
+        izy: f64,
+        izz: f64,
+        min_x: f64,
+        min_y: f64,
+        min_z: f64,
+        max_x: f64,
+        max_y: f64,
+        max_z: f64,
+    }
+
+    /// Structural summary of a shape — the typed form of `describe()`.
+    #[derive(Clone, Debug, Default)]
+    struct Topology {
+        kind: String,
+        solids: u32,
+        shells: u32,
+        closed_shells: u32,
+        faces: u32,
+        edges: u32,
+        vertices: u32,
+        is_valid: bool,
+    }
+
+    /// One face of a shape (index in TopExp exploration order, matching
+    /// tessellation face ids and `face_area`/`face_plane`). `surface` is a
+    /// `SurfaceKind` code; `radius` is set for cylinders, spheres, cones and
+    /// tori. The normal points OUT of the solid, sampled at the face's
+    /// parametric middle; `(cx, cy, cz)` is the face's centre of mass.
+    #[derive(Clone, Debug, Default)]
+    struct FaceInfo {
+        index: u32,
+        surface: u8,
+        area: f64,
+        cx: f64,
+        cy: f64,
+        cz: f64,
+        nx: f64,
+        ny: f64,
+        nz: f64,
+        radius: f64,
+        /// Bounding edges, as unique-edge indices.
+        edges: Vec<u32>,
+    }
+
+    /// One edge of a shape (unique-edge index, matching tessellation edge ids
+    /// and `edge_length`). `curve` is a `CurveKind` code; `radius` is set for
+    /// circles. `start`/`end` follow the edge's orientation; `mid` is a point
+    /// genuinely on the curve (usable as a fillet anchor).
+    #[derive(Clone, Debug, Default)]
+    struct EdgeInfo {
+        index: u32,
+        curve: u8,
+        length: f64,
+        sx: f64,
+        sy: f64,
+        sz: f64,
+        ex: f64,
+        ey: f64,
+        ez: f64,
+        mx: f64,
+        my: f64,
+        mz: f64,
+        radius: f64,
+        /// Adjacent faces, as face indices.
+        faces: Vec<u32>,
+    }
+
     unsafe extern "C++" {
         include!("cdt-kernel/src/ffi/bridge.hpp");
 
@@ -284,6 +368,23 @@ mod bridge {
         /// Exact length of the edge at `index` (unique-edge order, matching
         /// tessellation edge ids), for measurement.
         fn edge_length(s: &Shape, index: u32) -> Result<f64>;
+
+        // --- Interrogation ------------------------------------------------
+        /// Volume, surface area, centre of mass, inertia and the tight
+        /// axis-aligned bounding box, in one pass.
+        fn body_props(s: &Shape) -> Result<BodyProps>;
+
+        /// Sub-shape counts, closedness and BRepCheck validity, typed.
+        fn topology(s: &Shape) -> Result<Topology>;
+
+        /// Every face, in tessellation/face_area order.
+        fn faces(s: &Shape) -> Result<Vec<FaceInfo>>;
+
+        /// Every unique edge, in tessellation/edge_length order.
+        fn edges(s: &Shape) -> Result<Vec<EdgeInfo>>;
+
+        /// Minimum distance between two shapes (0 when they touch or overlap).
+        fn distance(a: &Shape, b: &Shape) -> Result<f64>;
 
         // --- Edge treatments ----------------------------------------------
         /// Fillet every edge of `shape` with a constant `radius`.

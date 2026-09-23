@@ -39,7 +39,7 @@ fn pairs(records: Vec<i32>) -> Vec<(u32, u32)> {
 }
 
 /// Re-export the tessellated mesh produced by [`Solid::tessellate`].
-pub use crate::ffi::Mesh;
+pub use crate::ffi::{Mesh, Topology};
 
 /// A planar face's frame as `(origin, x_dir, y_dir)` — see [`Solid::face_plane`].
 pub type PlaneBasis = ([f64; 3], [f64; 3], [f64; 3]);
@@ -415,6 +415,57 @@ impl Solid {
         Ok(ffi::edge_length(&self.0, index)?)
     }
 
+    // --- Interrogation ------------------------------------------------------
+
+    /// The tight axis-aligned bounding box `(min, max)` from the exact
+    /// geometry (not a tessellation).
+    pub fn bbox(&self) -> Result<([f64; 3], [f64; 3])> {
+        let p = ffi::body_props(&self.0)?;
+        Ok(([p.min_x, p.min_y, p.min_z], [p.max_x, p.max_y, p.max_z]))
+    }
+
+    /// Volume, surface area, centre of mass, inertia and bounding box.
+    pub fn mass_properties(&self) -> Result<MassProperties> {
+        let p = ffi::body_props(&self.0)?;
+        Ok(MassProperties {
+            volume: p.volume,
+            surface_area: p.surface_area,
+            centroid: [p.cx, p.cy, p.cz],
+            inertia: [[p.ixx, p.ixy, p.ixz], [p.iyx, p.iyy, p.iyz], [p.izx, p.izy, p.izz]],
+            bbox: ([p.min_x, p.min_y, p.min_z], [p.max_x, p.max_y, p.max_z]),
+        })
+    }
+
+    /// Sub-shape counts, closedness and validity — the typed form of
+    /// [`Self::describe`].
+    pub fn topology(&self) -> Result<Topology> {
+        Ok(ffi::topology(&self.0)?)
+    }
+
+    /// Whether OCCT's checker accepts the shape (a closed, non-self-
+    /// intersecting solid prints and booleans cleanly).
+    pub fn is_valid(&self) -> Result<bool> {
+        Ok(ffi::topology(&self.0)?.is_valid)
+    }
+
+    /// Every face, indexed the way tessellation and [`Self::face_area`] number
+    /// them, with its surface type, area, centre, outward normal and edges.
+    pub fn faces(&self) -> Result<Vec<FaceInfo>> {
+        Ok(ffi::faces(&self.0)?.into_iter().map(FaceInfo::from).collect())
+    }
+
+    /// Every unique edge, indexed the way tessellation and
+    /// [`Self::edge_length`] number them, with its curve type, endpoints, a
+    /// point on the curve (an anchor), length and adjacent faces.
+    pub fn edges(&self) -> Result<Vec<EdgeInfo>> {
+        Ok(ffi::edges(&self.0)?.into_iter().map(EdgeInfo::from).collect())
+    }
+
+    /// Minimum distance to `other`: `0.0` when the bodies touch or overlap.
+    pub fn distance_to(&self, other: &Solid) -> Result<f64> {
+        Ok(ffi::distance(&self.0, &other.0)?)
+    }
+
     // --- Edge treatments ----------------------------------------------------
 
     /// Fillet every edge with a constant `radius`. Returns an error if the
@@ -529,5 +580,146 @@ impl Solid {
     pub fn face_edge_midpoints(&self, index: u32) -> Result<Vec<[f64; 3]>> {
         let flat = ffi::face_edge_midpoints(&self.0, index)?;
         Ok(flat.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect())
+    }
+}
+
+/// Whole-body measurements from the exact geometry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MassProperties {
+    /// Enclosed volume (model units³).
+    pub volume: f64,
+    /// Total surface area (model units²).
+    pub surface_area: f64,
+    /// Centre of mass (uniform density).
+    pub centroid: [f64; 3],
+    /// Inertia matrix about the centre of mass, row-major (unit density).
+    pub inertia: [[f64; 3]; 3],
+    /// Tight axis-aligned bounding box `(min, max)`.
+    pub bbox: ([f64; 3], [f64; 3]),
+}
+
+/// The underlying surface type of a face.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SurfaceKind {
+    Plane,
+    Cylinder,
+    Cone,
+    Sphere,
+    Torus,
+    Bezier,
+    BSpline,
+    Other,
+}
+
+impl SurfaceKind {
+    fn from_code(code: u8) -> Self {
+        match code {
+            0 => SurfaceKind::Plane,
+            1 => SurfaceKind::Cylinder,
+            2 => SurfaceKind::Cone,
+            3 => SurfaceKind::Sphere,
+            4 => SurfaceKind::Torus,
+            5 => SurfaceKind::Bezier,
+            6 => SurfaceKind::BSpline,
+            _ => SurfaceKind::Other,
+        }
+    }
+}
+
+/// The underlying curve type of an edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CurveKind {
+    Line,
+    Circle,
+    Ellipse,
+    Bezier,
+    BSpline,
+    Other,
+}
+
+impl CurveKind {
+    fn from_code(code: u8) -> Self {
+        match code {
+            0 => CurveKind::Line,
+            1 => CurveKind::Circle,
+            2 => CurveKind::Ellipse,
+            3 => CurveKind::Bezier,
+            4 => CurveKind::BSpline,
+            _ => CurveKind::Other,
+        }
+    }
+}
+
+/// One face of a solid (see [`Solid::faces`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FaceInfo {
+    /// Face index — the id tessellation, picking and `face_area` use.
+    pub index: u32,
+    pub surface: SurfaceKind,
+    pub area: f64,
+    /// Centre of mass of the face (on the face for convex faces).
+    pub centroid: [f64; 3],
+    /// Outward unit normal sampled at the face's parametric middle (constant
+    /// for planes); zero if undefined.
+    pub normal: [f64; 3],
+    /// Radius for cylinders, spheres and cones (reference radius) and the
+    /// major radius for tori; `None` for other surfaces.
+    pub radius: Option<f64>,
+    /// Bounding edges, as unique-edge indices (see [`Solid::edges`]).
+    pub edges: Vec<u32>,
+}
+
+impl From<ffi::FaceInfo> for FaceInfo {
+    fn from(f: ffi::FaceInfo) -> Self {
+        let surface = SurfaceKind::from_code(f.surface);
+        let has_radius = matches!(
+            surface,
+            SurfaceKind::Cylinder | SurfaceKind::Sphere | SurfaceKind::Cone | SurfaceKind::Torus
+        );
+        FaceInfo {
+            index: f.index,
+            surface,
+            area: f.area,
+            centroid: [f.cx, f.cy, f.cz],
+            normal: [f.nx, f.ny, f.nz],
+            radius: has_radius.then_some(f.radius),
+            edges: f.edges,
+        }
+    }
+}
+
+/// One unique edge of a solid (see [`Solid::edges`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgeInfo {
+    /// Edge index — the id tessellation, picking and `edge_length` use.
+    pub index: u32,
+    pub curve: CurveKind,
+    pub length: f64,
+    /// Endpoints in the edge's own orientation.
+    pub start: [f64; 3],
+    pub end: [f64; 3],
+    /// A point genuinely on the curve at its parametric middle — what an
+    /// [`cdt_core::EdgeAnchor`] wants (the chord midpoint of a curved edge is
+    /// NOT on the edge).
+    pub midpoint: [f64; 3],
+    /// Radius for circular edges.
+    pub radius: Option<f64>,
+    /// Adjacent faces, as face indices.
+    pub faces: Vec<u32>,
+}
+
+impl From<ffi::EdgeInfo> for EdgeInfo {
+    fn from(e: ffi::EdgeInfo) -> Self {
+        let curve = CurveKind::from_code(e.curve);
+        EdgeInfo {
+            index: e.index,
+            curve,
+            length: e.length,
+            start: [e.sx, e.sy, e.sz],
+            end: [e.ex, e.ey, e.ez],
+            midpoint: [e.mx, e.my, e.mz],
+            radius: (curve == CurveKind::Circle).then_some(e.radius),
+            faces: e.faces,
+        }
     }
 }

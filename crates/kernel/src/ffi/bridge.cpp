@@ -51,6 +51,13 @@
 #include <BRep_Tool.hxx>
 #include <BRep_Builder.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepBndLib.hxx>
+#include <Bnd_Box.hxx>
+#include <BRepAdaptor_Surface.hxx>
+#include <BRepAdaptor_Curve.hxx>
+#include <BRepLProp_SLProps.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
+#include <gp_Mat.hxx>
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <Geom_Curve.hxx>
@@ -1025,26 +1032,205 @@ std::unique_ptr<Shape> common(const Shape& a, const Shape& b) {
 // validity — the first thing to look at when a boolean misbehaves: booleans
 // only classify volumes for true closed SOLIDs, so a shape that renders and
 // even measures fine (a closed SHELL) still contributes nothing to a cut/fuse.
-rust::String describe(const Shape& s) {
-  return guard("describe", [&]() -> rust::String {
+Topology topology(const Shape& s) {
+  return guard("topology", [&] {
     static const char* kinds[] = {"COMPOUND", "COMPSOLID", "SOLID",  "SHELL",
                                   "FACE",     "WIRE",      "EDGE",   "VERTEX",
                                   "SHAPE"};
-    std::string out = kinds[s.shape.ShapeType()];
-    int solids = 0, shells = 0, closed_shells = 0, faces = 0;
-    for (TopExp_Explorer ex(s.shape, TopAbs_SOLID); ex.More(); ex.Next()) solids++;
+    Topology t;
+    t.kind = rust::String(kinds[s.shape.ShapeType()]);
+    t.solids = t.shells = t.closed_shells = t.faces = 0;
+    for (TopExp_Explorer ex(s.shape, TopAbs_SOLID); ex.More(); ex.Next()) t.solids++;
     for (TopExp_Explorer ex(s.shape, TopAbs_SHELL); ex.More(); ex.Next()) {
-      shells++;
-      if (BRep_Tool::IsClosed(ex.Current())) closed_shells++;
+      t.shells++;
+      if (BRep_Tool::IsClosed(ex.Current())) t.closed_shells++;
     }
-    for (TopExp_Explorer ex(s.shape, TopAbs_FACE); ex.More(); ex.Next()) faces++;
-    BRepCheck_Analyzer check(s.shape);
-    out += ": solids=" + std::to_string(solids) +
-           " shells=" + std::to_string(shells) +
-           " (closed " + std::to_string(closed_shells) + ")" +
-           " faces=" + std::to_string(faces) +
-           (check.IsValid() ? " valid" : " INVALID");
+    for (TopExp_Explorer ex(s.shape, TopAbs_FACE); ex.More(); ex.Next()) t.faces++;
+    TopTools_IndexedMapOfShape edges, vertices;
+    TopExp::MapShapes(s.shape, TopAbs_EDGE, edges);
+    TopExp::MapShapes(s.shape, TopAbs_VERTEX, vertices);
+    t.edges = static_cast<uint32_t>(edges.Extent());
+    t.vertices = static_cast<uint32_t>(vertices.Extent());
+    t.is_valid = BRepCheck_Analyzer(s.shape).IsValid();
+    return t;
+  });
+}
+
+rust::String describe(const Shape& s) {
+  return guard("describe", [&]() -> rust::String {
+    const Topology t = topology(s);
+    std::string out(t.kind.data(), t.kind.size());
+    out += ": solids=" + std::to_string(t.solids) +
+           " shells=" + std::to_string(t.shells) +
+           " (closed " + std::to_string(t.closed_shells) + ")" +
+           " faces=" + std::to_string(t.faces) +
+           (t.is_valid ? " valid" : " INVALID");
     return rust::String(out);
+  });
+}
+
+BodyProps body_props(const Shape& s) {
+  return guard("body_props", [&] {
+    BodyProps p{};
+    GProp_GProps vol;
+    BRepGProp::VolumeProperties(s.shape, vol);
+    p.volume = vol.Mass();
+    const gp_Pnt c = vol.CentreOfMass();
+    p.cx = c.X(); p.cy = c.Y(); p.cz = c.Z();
+    const gp_Mat m = vol.MatrixOfInertia();
+    p.ixx = m(1, 1); p.ixy = m(1, 2); p.ixz = m(1, 3);
+    p.iyx = m(2, 1); p.iyy = m(2, 2); p.iyz = m(2, 3);
+    p.izx = m(3, 1); p.izy = m(3, 2); p.izz = m(3, 3);
+    GProp_GProps surf;
+    BRepGProp::SurfaceProperties(s.shape, surf);
+    p.surface_area = surf.Mass();
+    // AddOptimal computes tight bounds from the exact geometry; plain Add
+    // pads by the shape tolerance and over-estimates curved faces.
+    Bnd_Box box;
+    BRepBndLib::AddOptimal(s.shape, box, /*useTriangulation=*/false,
+                           /*useShapeTolerance=*/false);
+    if (box.IsVoid()) {
+      throw std::runtime_error("body_props: the shape has no extent");
+    }
+    box.Get(p.min_x, p.min_y, p.min_z, p.max_x, p.max_y, p.max_z);
+    return p;
+  });
+}
+
+namespace {
+
+// Faces in exploration order — the numbering tessellation, face_area and
+// face_plane use — as an indexed map for reverse lookups.
+TopTools_IndexedMapOfShape faces_in_explore_order(const TopoDS_Shape& s) {
+  TopTools_IndexedMapOfShape map;
+  for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More(); ex.Next()) {
+    map.Add(ex.Current());
+  }
+  return map;
+}
+
+uint8_t surface_code(GeomAbs_SurfaceType t) {
+  switch (t) {
+    case GeomAbs_Plane: return 0;
+    case GeomAbs_Cylinder: return 1;
+    case GeomAbs_Cone: return 2;
+    case GeomAbs_Sphere: return 3;
+    case GeomAbs_Torus: return 4;
+    case GeomAbs_BezierSurface: return 5;
+    case GeomAbs_BSplineSurface: return 6;
+    default: return 7;
+  }
+}
+
+uint8_t curve_code(GeomAbs_CurveType t) {
+  switch (t) {
+    case GeomAbs_Line: return 0;
+    case GeomAbs_Circle: return 1;
+    case GeomAbs_Ellipse: return 2;
+    case GeomAbs_BezierCurve: return 3;
+    case GeomAbs_BSplineCurve: return 4;
+    default: return 5;
+  }
+}
+
+}  // namespace
+
+rust::Vec<FaceInfo> faces(const Shape& s) {
+  return guard("faces", [&] {
+    rust::Vec<FaceInfo> out;
+    TopTools_IndexedMapOfShape edges;
+    TopExp::MapShapes(s.shape, TopAbs_EDGE, edges);
+    uint32_t index = 0;
+    for (TopExp_Explorer ex(s.shape, TopAbs_FACE); ex.More(); ex.Next(), ++index) {
+      const TopoDS_Face face = TopoDS::Face(ex.Current());
+      FaceInfo f;
+      f.index = index;
+      BRepAdaptor_Surface surf(face);
+      f.surface = surface_code(surf.GetType());
+      f.radius = 0.0;
+      switch (surf.GetType()) {
+        case GeomAbs_Cylinder: f.radius = surf.Cylinder().Radius(); break;
+        case GeomAbs_Sphere: f.radius = surf.Sphere().Radius(); break;
+        case GeomAbs_Cone: f.radius = surf.Cone().RefRadius(); break;
+        case GeomAbs_Torus: f.radius = surf.Torus().MajorRadius(); break;
+        default: break;
+      }
+      GProp_GProps props;
+      BRepGProp::SurfaceProperties(face, props);
+      f.area = props.Mass();
+      const gp_Pnt c = props.CentreOfMass();
+      f.cx = c.X(); f.cy = c.Y(); f.cz = c.Z();
+      // Outward normal at the parametric middle of the face.
+      Standard_Real umin, umax, vmin, vmax;
+      BRepTools::UVBounds(face, umin, umax, vmin, vmax);
+      BRepLProp_SLProps props_at(surf, 0.5 * (umin + umax), 0.5 * (vmin + vmax),
+                                 1, 1e-9);
+      f.nx = f.ny = f.nz = 0.0;
+      if (props_at.IsNormalDefined()) {
+        gp_Dir n = props_at.Normal();
+        if (face.Orientation() == TopAbs_REVERSED) n.Reverse();
+        f.nx = n.X(); f.ny = n.Y(); f.nz = n.Z();
+      }
+      TopTools_IndexedMapOfShape face_edges;
+      TopExp::MapShapes(face, TopAbs_EDGE, face_edges);
+      for (int k = 1; k <= face_edges.Extent(); ++k) {
+        const int ei = edges.FindIndex(face_edges(k));
+        if (ei > 0) f.edges.push_back(static_cast<uint32_t>(ei - 1));
+      }
+      out.push_back(std::move(f));
+    }
+    return out;
+  });
+}
+
+rust::Vec<EdgeInfo> edges(const Shape& s) {
+  return guard("edges", [&] {
+    rust::Vec<EdgeInfo> out;
+    TopTools_IndexedMapOfShape edges;
+    TopExp::MapShapes(s.shape, TopAbs_EDGE, edges);
+    const TopTools_IndexedMapOfShape face_map = faces_in_explore_order(s.shape);
+    TopTools_IndexedDataMapOfShapeListOfShape edge_faces;
+    TopExp::MapShapesAndAncestors(s.shape, TopAbs_EDGE, TopAbs_FACE, edge_faces);
+    for (int i = 1; i <= edges.Extent(); ++i) {
+      const TopoDS_Edge edge = TopoDS::Edge(edges(i));
+      EdgeInfo e;
+      e.index = static_cast<uint32_t>(i - 1);
+      BRepAdaptor_Curve curve(edge);
+      e.curve = curve_code(curve.GetType());
+      e.radius = curve.GetType() == GeomAbs_Circle ? curve.Circle().Radius() : 0.0;
+      GProp_GProps props;
+      BRepGProp::LinearProperties(edge, props);
+      e.length = props.Mass();
+      TopoDS_Vertex v1, v2;
+      TopExp::Vertices(edge, v1, v2);
+      if (!v1.IsNull() && !v2.IsNull()) {
+        const gp_Pnt p1 = BRep_Tool::Pnt(v1), p2 = BRep_Tool::Pnt(v2);
+        e.sx = p1.X(); e.sy = p1.Y(); e.sz = p1.Z();
+        e.ex = p2.X(); e.ey = p2.Y(); e.ez = p2.Z();
+      }
+      const gp_Pnt mid =
+          curve.Value(0.5 * (curve.FirstParameter() + curve.LastParameter()));
+      e.mx = mid.X(); e.my = mid.Y(); e.mz = mid.Z();
+      const int slot = edge_faces.FindIndex(edge);
+      if (slot > 0) {
+        for (TopTools_ListIteratorOfListOfShape it(edge_faces(slot)); it.More(); it.Next()) {
+          const int fi = face_map.FindIndex(it.Value());
+          if (fi > 0) e.faces.push_back(static_cast<uint32_t>(fi - 1));
+        }
+      }
+      out.push_back(std::move(e));
+    }
+    return out;
+  });
+}
+
+double distance(const Shape& a, const Shape& b) {
+  return guard("distance", [&] {
+    BRepExtrema_DistShapeShape probe(a.shape, b.shape);
+    if (!probe.IsDone()) {
+      throw std::runtime_error("distance: could not compute");
+    }
+    return probe.Value();
   });
 }
 

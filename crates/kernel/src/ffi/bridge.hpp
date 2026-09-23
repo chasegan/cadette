@@ -16,6 +16,10 @@ namespace cdt {
 // declarations; only the definitions (in bridge.cpp) need the full type.
 struct Mesh;
 struct PlaneFrame;
+struct BodyProps;
+struct Topology;
+struct FaceInfo;
+struct EdgeInfo;
 
 // Opaque-to-Rust handle around an OCCT B-rep shape. We store by value so the
 // UniquePtr fully owns the topology and cxx can hand ownership to Rust.
@@ -105,6 +109,13 @@ std::size_t count_edges(const Shape& s);
 double volume(const Shape& s);
 double face_area(const Shape& s, uint32_t index);
 double edge_length(const Shape& s, uint32_t index);
+
+// --- Interrogation ----------------------------------------------------------
+BodyProps body_props(const Shape& s);
+Topology topology(const Shape& s);
+rust::Vec<FaceInfo> faces(const Shape& s);
+rust::Vec<EdgeInfo> edges(const Shape& s);
+double distance(const Shape& a, const Shape& b);
 
 // --- Edge treatments --------------------------------------------------------
 std::unique_ptr<Shape> rotate(const Shape& s, double cx, double cy, double cz,
