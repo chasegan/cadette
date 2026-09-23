@@ -47,6 +47,15 @@ Edits are `DocEdit` batches — the verbs (`add`, `replace`, `suppress`,
 `remove`, `insert_transform`, `ungroup`, …) around the same `FeatureKind`
 data a `.cdt` file stores — applied all-or-nothing as one undo step.
 
+**MCP.** `cdt mcp` serves the same operations to an AI agent over the Model
+Context Protocol (stdio): tools `cadette_info`, `cadette_apply`,
+`cadette_render` (returns the image), `cadette_check`, `cadette_export_stl`,
+`cadette_new`, and — for a running window — `cadette_state`, `cadette_undo`,
+`cadette_redo`, `cadette_save`, `cadette_windows`; plus a `cadette://guide`
+resource (also the `cadette_help` tool) that teaches the edit and feature JSON.
+The repo's `.mcp.json` registers it for Claude Code; elsewhere use
+`{"command": "cdt", "args": ["mcp"]}` with a built `cdt` on your PATH.
+
 If a Cadette window has the file open, `info`, `check` and `apply` go through
 that window instead: the edit lands as an undoable step and the viewport
 updates live (`--offline` forces the file). `cdt live ...` talks to a window

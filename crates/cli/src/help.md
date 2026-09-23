@@ -1,0 +1,84 @@
+# Cadette for agents
+
+Cadette is parametric CAD. A project (`.cdt`) is a **history** of features;
+regenerating replays them in order through the OpenCASCADE kernel. Every
+feature has an integer `id` (stable), a `name`, `suppressed`, and a `kind` —
+the operation as data. Later features reference earlier ones by id; a feature
+that consumes an input (an extrude consumes its sketch, a boolean its two
+operands) makes that input invisible, so the **visible bodies** are the
+leftovers. Units are millimetres, world is Z-up, Y forward, X right.
+
+## The loop
+
+1. `cadette_info` — read the report: every feature's `status` (`built`,
+   `failed`, `suppressed`, `rolled_back`) and `error`, the visible `bodies`
+   with exact `bbox`, `volume`, `surface_area`, `centroid`, `faces`, `edges`,
+   `valid`. Ask for `detail` to get each face (surface type, area, centroid,
+   outward normal, radius) and edge (curve type, length, endpoints, an
+   on-curve `midpoint` you can use as an anchor).
+2. `cadette_apply` — send a batch of edits. It is all-or-nothing; the reply
+   carries the outcomes (new ids) and the fresh report. Read the report's
+   `ok` / `errors`: a step that fails is reported, not fatal.
+3. `cadette_render` — look, when geometry matters visually (named views, or
+   `as_seen` for the user's own camera in a running window). Prefer the
+   numbers in the report for verification; use images for sanity.
+
+If a Cadette window has the file open, `info`/`apply` go through the window:
+the edit shows up live as one undoable step. `cadette_state` tells you what
+the user has selected (`picks`: body feature id + local face/edge index) and
+whether they are mid-edit (`busy` — edits are refused then; retry).
+
+## Edits (`cadette_apply` → `edits`)
+
+Each edit is an object with an `op`:
+
+- `{"op":"add","kind":KIND}` (+ optional `"name"`) → creates a feature at the
+  end; the outcome is `{"created": id}`.
+- `{"op":"insert_transform","kind":KIND}` — for Translate/Rotate/Scale/Mirror
+  only: splices the transform into its source's chain so everything
+  downstream moves too (what dragging in the viewport does). Use `add` for a
+  transform when you want a *branch* instead.
+- `{"op":"replace","id":N,"kind":KIND}` — edit a feature's parameters.
+- `{"op":"rename","id":N,"name":"..."}`, `{"op":"set_color","id":N,"color":[r,g,b]}` (linear 0..1, or null).
+- `{"op":"suppress","id":N,"suppressed":true}`.
+- `{"op":"remove","id":N}` — dependents are rewired to the removed feature's input.
+- `{"op":"ungroup","id":N}` — dissolve a Group (transforms baked onto members).
+- `{"op":"reorder","id":N,"index":I}` — refused if a reference would point forward.
+- `{"op":"duplicate","id":N}` → a copy of the whole subtree feeding N.
+- `{"op":"set_rollback","position":P}`, `{"op":"rollback_to_tip"}`, `{"op":"tidy"}`.
+
+Ids created by `add` in one batch cannot be referenced later in the same
+batch — do two calls (add, read the id, then add the fillet on it).
+
+## Feature kinds (`KIND`)
+
+Primitives (no inputs): `{"Box":{"size":[x,y,z]}}` (corner at the origin),
+`{"Cylinder":{"radius":r,"height":h}}` (axis +Z from the origin),
+`{"Sphere":{"radius":r}}` (centred at the origin). Position them with a
+Translate.
+
+Sketch faces: `{"Sketch":{"plane":PLANE,"profile":{"Rectangle":{"width":w,"height":h}}}}`
+or `"profile":{"Circle":{"radius":r}}` (centred on the plane origin).
+`PLANE` is `"Xy"`, `"Xz"`, `"Yz"`, or
+`{"Custom":{"origin":[..],"x_dir":[..],"y_dir":[..]}}` (e.g. a face's plane
+from a face's centroid + normal). A `ConstraintSketch` holds a solved point/line
+sketch — prefer the simple profiles unless you need free shapes.
+
+Operations (reference earlier ids):
+- `{"Extrude":{"source":sketchId,"distance":d}}` — along the plane normal (negative = the other way).
+- `{"Translate":{"source":id,"offset":[x,y,z]}}`
+- `{"Rotate":{"source":id,"axis":[x,y,z],"angle":radians,"center":[x,y,z]}}`
+- `{"Scale":{"source":id,"factors":[sx,sy,sz],"anchor":[x,y,z]}}`
+- `{"Mirror":{"source":id,"origin":[x,y,z],"normal":[x,y,z]}}`
+- `{"Boolean":{"op":"Union"|"Subtract"|"Intersect","target":id,"tool":id}}`
+- `{"FilletAll":{"source":id,"radius":r}}`
+- `{"Fillet":{"source":id,"edges":[{"point":[x,y,z]}],"radius":r}}` — each point
+  must lie on the edge (within 1 mm): use an edge's `midpoint` from `detail`.
+- `{"PushPull":{"source":id,"anchor":{"point":[x,y,z],"normal":[x,y,z]},"distance":d}}`
+  — a planar face by a point on it (its `centroid`) and its normal; positive adds material.
+- `{"Revolve":{"source":sketchId,"axis":{"point":[x,y,z]},"angle":radians}}` — the axis is one of the profile's own straight edges, named by a point on it.
+- `{"Group":{"members":[ids]}}`
+
+Typical part: add a Box → add a Cylinder → insert_transform a Translate on the
+cylinder to place it → add a Boolean Subtract (target box, tool cylinder) →
+add FilletAll on the result → `cadette_info` to verify volume/bbox → render.
