@@ -8,6 +8,7 @@
 //!
 //! Layering:
 //! - [`features`] — operations as serializable data.
+//! - [`edit`] — history mutations as serializable data ([`DocEdit`]).
 //! - [`history`] — the ordered feature tree + dependency validation.
 //! - [`document`] — a named history with units and a rollback bar.
 //! - [`backend`] — the trait a kernel implements.
@@ -16,6 +17,7 @@
 
 pub mod backend;
 pub mod document;
+pub mod edit;
 pub mod features;
 pub mod build_graph;
 pub mod history;
@@ -27,6 +29,7 @@ pub mod units;
 
 pub use backend::GeometryBackend;
 pub use document::Document;
+pub use edit::{BatchError, DocEdit, EditError, EditOutcome};
 pub use features::{BooleanOp, EdgeAnchor, FaceAnchor, Feature, FeatureId, FeatureKind, SweepPath};
 pub use build_graph::{BuildGraph, BuildGraphRow, LANE_PALETTE};
 pub use glam::DVec3;

@@ -629,7 +629,7 @@ impl Controller for Modeler {
             let can_sketch = single_face && self.selection.can_sketch_on_face();
             let can_mirror = single_face && self.selection.face_plane.is_some();
             let can_ungroup = single_face
-                && self.selected_body().is_some_and(|b| self.group_and_chain(b).is_some());
+                && self.selected_body().is_some_and(|b| self.doc.group_and_chain(b).is_some());
             let edit_sketch_id = single_face.then(|| self.editable_sketch()).flatten();
             let sweep_profile_id = single_face.then(|| self.sweepable_profile()).flatten();
             // Multi-face + edge gating.

@@ -82,6 +82,18 @@ impl Document {
         self.insert_transform(format!("{base} {n}"), kind)
     }
 
+    /// Remove a feature (healing dependents, see [`History::remove`]), keeping
+    /// the rollback bar on the same features: removing an active feature
+    /// pulls the bar back by one so no rolled-back feature becomes active.
+    pub fn remove(&mut self, id: FeatureId) -> Option<Feature> {
+        let index = self.history.index_of(id)?;
+        let removed = self.history.remove(id)?;
+        if index < self.rollback {
+            self.rollback -= 1;
+        }
+        Some(removed)
+    }
+
     /// Duplicate the subtree feeding `id` (fresh ids, see
     /// [`History::clone_subtree`]) and return the new tip, leaving the rollback
     /// bar at the document tip so the clone is active. For copy/paste & mirror.

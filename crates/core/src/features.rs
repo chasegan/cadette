@@ -173,6 +173,43 @@ pub enum SweepPath {
 }
 
 impl FeatureKind {
+    /// The base of an auto-numbered name for a feature of this kind, matching
+    /// what the app calls the ones it creates (`Box 1`, `Move 2`, `Subtract 3`).
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            FeatureKind::Box { .. } => "Box",
+            FeatureKind::Cylinder { .. } => "Cylinder",
+            FeatureKind::Sphere { .. } => "Sphere",
+            FeatureKind::Sketch { .. } | FeatureKind::ConstraintSketch { .. } => "Sketch",
+            FeatureKind::Extrude { .. } => "Extrude",
+            FeatureKind::Translate { .. } => "Move",
+            FeatureKind::Boolean { op: BooleanOp::Union, .. } => "Union",
+            FeatureKind::Boolean { op: BooleanOp::Subtract, .. } => "Subtract",
+            FeatureKind::Boolean { op: BooleanOp::Intersect, .. } => "Intersect",
+            FeatureKind::FilletAll { .. } | FeatureKind::Fillet { .. } => "Fillet",
+            FeatureKind::PushPull { .. } => "Push/Pull",
+            FeatureKind::Rotate { .. } => "Rotate",
+            FeatureKind::Scale { .. } => "Scale",
+            FeatureKind::Revolve { .. } => "Revolve",
+            FeatureKind::Mirror { .. } => "Mirror",
+            FeatureKind::Group { .. } => "Group",
+            FeatureKind::Sweep { .. } => "Sweep",
+        }
+    }
+
+    /// Whether this is an in-place body transform — the kinds
+    /// [`crate::History::insert_transform`] splices into a chain (and a
+    /// group's chain bakes onto its members).
+    pub fn is_in_place_transform(&self) -> bool {
+        matches!(
+            self,
+            FeatureKind::Translate { .. }
+                | FeatureKind::Rotate { .. }
+                | FeatureKind::Scale { .. }
+                | FeatureKind::Mirror { .. }
+        )
+    }
+
     /// The feature ids this operation consumes as inputs, in dependency order.
     /// Primitives return an empty list.
     pub fn inputs(&self) -> Vec<FeatureId> {

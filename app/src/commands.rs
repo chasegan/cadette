@@ -320,56 +320,6 @@ impl Modeler {
         true
     }
 
-    /// Walk down from `tip` through any world-space transforms to the Group that
-    /// feeds them. Returns `(group_id, chain)` where `chain` is the transforms
-    /// above the group in bottom-up order (`chain[0].source == group`, the last
-    /// is `tip`); empty if `tip` is the group itself. `None` if `tip` isn't a
-    /// (possibly transformed) group, or sits under a non-transform (e.g. a
-    /// boolean) we can't cleanly bake through.
-    pub(crate) fn group_and_chain(&self, tip: FeatureId) -> Option<(FeatureId, Vec<FeatureId>)> {
-        let mut chain = Vec::new();
-        let mut cur = tip;
-        loop {
-            match &self.doc.history.get(cur)?.kind {
-                FeatureKind::Group { .. } => {
-                    chain.reverse(); // collected top-down; want bottom-up
-                    return Some((cur, chain));
-                }
-                FeatureKind::Translate { source, .. }
-                | FeatureKind::Rotate { source, .. }
-                | FeatureKind::Scale { source, .. }
-                | FeatureKind::Mirror { source, .. } => {
-                    chain.push(cur);
-                    cur = *source;
-                }
-                _ => return None,
-            }
-        }
-    }
-
-    /// Clone the transform `chain` (each step's `source` rewired to the previous
-    /// clone, the first from `group` to `base`) onto `base`, returning the new
-    /// tip. Bakes the group's accumulated transform onto one member.
-    fn bake_chain_onto(
-        &mut self,
-        group: FeatureId,
-        chain: &[FeatureId],
-        base: FeatureId,
-    ) -> Option<FeatureId> {
-        let mut prev = base;
-        let mut prev_old = group;
-        for &t in chain {
-            let feature = self.doc.history.get(t)?;
-            let name = feature.name.clone();
-            let mut kind = feature.kind.clone();
-            kind.remap_input(prev_old, prev);
-            let id = self.doc.add(name, kind);
-            prev_old = t;
-            prev = id;
-        }
-        Some(prev)
-    }
-
     /// Ungroup the selected group, freeing its members back to independent
     /// visible bodies. Any transform applied to the group (move/rotate/scale/
     /// mirror) is BAKED onto each member first, so they keep their places.
@@ -406,25 +356,14 @@ impl Modeler {
     /// Ungroup the (possibly transformed) group at `tip`; see
     /// [`Self::ungroup_selected`]. Returns true if ungrouped.
     pub(crate) fn ungroup(&mut self, tip: FeatureId) -> bool {
-        let Some((group, chain)) = self.group_and_chain(tip) else {
+        if self.doc.group_and_chain(tip).is_none() {
             return false;
-        };
-        let members = match self.doc.history.get(group).map(|f| &f.kind) {
-            Some(FeatureKind::Group { members }) => members.clone(),
-            _ => return false,
-        };
+        }
         self.record_undo(self.doc.clone());
-        // Give each member its own copy of the group's transform chain (consumes
-        // the member, so only the transformed copy stays visible).
-        for m in &members {
-            self.bake_chain_onto(group, &chain, *m);
+        if self.doc.ungroup(tip).is_none() {
+            self.undo.pop();
+            return false;
         }
-        // Drop the original chain (top-down, so each is a tip) and the group.
-        for &t in chain.iter().rev() {
-            self.doc.history.remove(t);
-        }
-        self.doc.history.remove(group);
-        self.doc.rollback_to_tip();
         self.ui.selected = None;
         self.selection.clear();
         true
