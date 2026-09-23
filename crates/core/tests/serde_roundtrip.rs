@@ -126,3 +126,38 @@ fn sanitize_repairs_a_corrupt_file() {
     assert!(!ids.contains(&fresh), "repair prevents id collisions on the next add");
     assert!(!loaded.sanitize(), "a repaired document is consistent");
 }
+
+#[test]
+fn a_hand_written_file_may_omit_the_allocator_and_the_rollback_bar() {
+    // An external writer (a script, an agent) shouldn't have to know about
+    // `next_id` or `rollback`: both are reconstructible.
+    let json = r#"{
+        "name": "hand",
+        "units": "Millimeter",
+        "history": { "features": [
+            { "id": 3, "name": "Box", "kind": { "Box": { "size": [1.0, 2.0, 3.0] } }, "suppressed": false },
+            { "id": 5, "name": "Move", "kind": { "Translate": { "source": 3, "offset": [1.0, 0.0, 0.0] } }, "suppressed": false }
+        ] }
+    }"#;
+    let mut doc: Document = serde_json::from_str(json).expect("loads without next_id/rollback");
+    doc.sanitize();
+    assert_eq!(doc.rollback(), 2, "an absent bar means the tip");
+    assert_eq!(doc.active_features().len(), 2);
+    let fresh = doc.add("New", FeatureKind::Sphere { radius: 1.0 });
+    assert!(fresh.0 > 5, "the allocator resumed past the hand-picked ids: {fresh:?}");
+    doc.history.validate().expect("valid");
+}
+
+#[test]
+fn validate_rejects_duplicate_ids() {
+    let doc = sample_document();
+    let mut value = serde_json::to_value(&doc).expect("serialize");
+    let first = value["history"]["features"][0]["id"].clone();
+    value["history"]["features"][1]["id"] = first;
+    let loaded: Document = serde_json::from_value(value).expect("deserialize");
+    let errors = loaded.history.validate().expect_err("duplicate id is an error");
+    assert!(
+        errors.iter().any(|e| matches!(e, cdt_core::DependencyError::DuplicateId { .. })),
+        "{errors:?}"
+    );
+}

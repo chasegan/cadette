@@ -3861,16 +3861,9 @@ mod tests {
     #[test]
     fn a_project_without_view_state_still_loads() {
         // Mimic a pre-view .cdt: a zip holding only document.json.
-        use std::io::Write;
         let path = std::env::temp_dir().join("cdt-no-view-test.cdt");
         let m = Modeler::new();
-        let file = std::fs::File::create(&path).unwrap();
-        let mut zip = zip::ZipWriter::new(file);
-        zip.start_file("document.json", zip::write::SimpleFileOptions::default())
-            .unwrap();
-        let wrapped = serde_json::json!({ "format_version": 1u64, "document": &m.doc });
-        zip.write_all(&serde_json::to_vec(&wrapped).unwrap()).unwrap();
-        zip.finish().unwrap();
+        cdt_project::write_path(&path, &cdt_project::ProjectFile::new(m.doc.clone())).unwrap();
 
         let mut m2 = Modeler::new();
         let (spacing, extent) = (m2.ui.grid_spacing, m2.ui.grid_extent);

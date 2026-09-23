@@ -18,13 +18,22 @@ pub enum DependencyError {
     UnknownInput { feature: FeatureId, input: FeatureId },
     #[error("feature {feature:?} references {input:?}, which comes later in history")]
     ForwardReference { feature: FeatureId, input: FeatureId },
+    #[error("feature id {id:?} is used more than once")]
+    DuplicateId { id: FeatureId },
 }
 
 /// An ordered collection of features with monotonic id allocation.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct History {
     features: Vec<Feature>,
+    /// `#[serde(default)]` so a hand-written file can omit the allocator;
+    /// [`Self::repair`] then raises it past the existing ids.
+    #[serde(default = "first_id")]
     next_id: u64,
+}
+
+fn first_id() -> u64 {
+    1
 }
 
 impl History {
@@ -296,6 +305,13 @@ impl History {
 
     fn validate_slice(features: &[Feature]) -> Vec<DependencyError> {
         let mut errors = Vec::new();
+        // Duplicate ids (only a hand-edited file can produce them) would make
+        // every lookup silently pick the first match.
+        for (index, feature) in features.iter().enumerate() {
+            if features[..index].iter().any(|f| f.id == feature.id) {
+                errors.push(DependencyError::DuplicateId { id: feature.id });
+            }
+        }
         for (index, feature) in features.iter().enumerate() {
             for input in feature.kind.inputs() {
                 match features.iter().position(|f| f.id == input) {

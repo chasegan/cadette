@@ -4,6 +4,7 @@ members = [
     "crates/core",
     "crates/kernel",
     "crates/solver",
+    "crates/project",
     "crates/render",
     "crates/interaction",
     "crates/ui",
@@ -22,6 +23,7 @@ rust-version = "1.85"
 cdt-core = { path = "crates/core" }
 cdt-kernel = { path = "crates/kernel" }
 cdt-solver = { path = "crates/solver" }
+cdt-project = { path = "crates/project" }
 cdt-render = { path = "crates/render" }
 cdt-interaction = { path = "crates/interaction" }
 cdt-ui = { path = "crates/ui" }

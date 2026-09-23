@@ -3,21 +3,23 @@
 
 use cdt_core::{Document, RegenCache};
 use cdt_kernel::Solid;
+use cdt_project::ProjectFile;
 use cdt_render::CameraPose;
 
 use crate::Modeler;
 
 /// Finer mesh tolerance for STL export than for the on-screen preview.
 const EXPORT_DEFLECTION_MM: f64 = 0.05;
-/// Version stamped into `.cdt` project files (a zip holding `document.json`).
-const PROJECT_FORMAT_VERSION: u64 = 1;
+/// The archive entry holding the viewport state (see [`ViewFile`]).
+const VIEW_ENTRY: &str = "view.json";
 
 /// The `view.json` zip entry: viewport state that travels with the project —
 /// camera pose + grid settings. Deliberately SEPARATE from `document.json` so
 /// the model document (and its dirty/undo tracking) stays pure: orbiting the
-/// camera must never mark the file unsaved. Read leniently — an absent or
-/// malformed entry never fails a load (pre-view files have none), and old
-/// builds simply ignore the extra entry.
+/// camera must never mark the file unsaved. It rides in the archive as one of
+/// `cdt-project`'s opaque extras: read leniently — an absent or malformed
+/// entry never fails a load (pre-view files have none), and other readers
+/// simply ignore it.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ViewFile {
     #[serde(default)]
@@ -85,20 +87,7 @@ impl Modeler {
 
     /// Write the project (the parametric document) to `path` as a `.cdt` zip.
     pub(crate) fn save_project_to(&self, path: &str) -> Result<(), String> {
-        use std::io::Write;
-        let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-        let mut zip = zip::ZipWriter::new(file);
-        let opts = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
-        zip.start_file("document.json", opts).map_err(|e| e.to_string())?;
-        // Embedded STL imports (resources/) will join this archive later.
-        let wrapped = serde_json::json!({
-            "format_version": PROJECT_FORMAT_VERSION,
-            "document": &self.doc,
-        });
-        let bytes = serde_json::to_vec_pretty(&wrapped).map_err(|e| e.to_string())?;
-        zip.write_all(&bytes).map_err(|e| e.to_string())?;
-
+        let mut project = ProjectFile::new(self.doc.clone());
         // The viewport state rides along in its own entry (see [`ViewFile`]).
         let view = ViewFile {
             camera: self.camera_pose.map(|p| CameraJson {
@@ -116,43 +105,19 @@ impl Modeler {
                 snap: self.ui.snap_to_grid,
             }),
         };
-        zip.start_file("view.json", opts).map_err(|e| e.to_string())?;
-        let bytes = serde_json::to_vec_pretty(&view).map_err(|e| e.to_string())?;
-        zip.write_all(&bytes).map_err(|e| e.to_string())?;
-        zip.finish().map_err(|e| e.to_string())?;
-        Ok(())
+        project.set_json_extra(VIEW_ENTRY, &view).map_err(|e| e.to_string())?;
+        cdt_project::write_path(path, &project).map_err(|e| e.to_string())
     }
 
     /// Load a `.cdt` project from `path`, replacing the current document and
     /// resetting transient state. Returns the loaded document.
     pub(crate) fn load_project_from(&mut self, path: &str) -> Result<(), String> {
-        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-        let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-        let entry = archive
-            .by_name("document.json")
-            .map_err(|e| format!("not a Cadette project: {e}"))?;
-        let value: serde_json::Value =
-            serde_json::from_reader(entry).map_err(|e| e.to_string())?;
-        let version = value.get("format_version").and_then(|v| v.as_u64()).unwrap_or(0);
-        if version != PROJECT_FORMAT_VERSION {
-            return Err(format!("unsupported project version {version}"));
-        }
-        let doc_value = value.get("document").cloned().ok_or("missing document")?;
-        let mut document: Document =
-            serde_json::from_value(doc_value).map_err(|e| e.to_string())?;
-        // Defensive: repair invariants a corrupt/hand-edited file may violate
-        // (id allocator behind existing ids, rollback bar out of range).
-        // Repair is safe, so a repaired document just loads.
-        document.sanitize();
-
+        let project = cdt_project::read_path(path).map_err(|e| e.to_string())?;
         // Viewport state, if the file carries it (lenient: never fails a load).
-        let view: Option<ViewFile> = archive
-            .by_name("view.json")
-            .ok()
-            .and_then(|e| serde_json::from_reader(e).ok());
+        let view: Option<ViewFile> = project.json_extra(VIEW_ENTRY);
 
         // Swap in the new document and drop all state tied to the old one.
-        self.reset_to(document);
+        self.reset_to(project.document);
         if let Some(view) = view {
             if let Some(g) = view.grid {
                 // Take only sane finite values (matching the panel's ranges) so

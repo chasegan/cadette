@@ -18,7 +18,14 @@ pub struct Document {
     pub history: History,
     /// Number of leading features that are active. Invariant: `<= history.len()`.
     /// Equals `history.len()` when the bar is at the tip (the common case).
+    /// A file that omits it loads at the tip: the default is "everything",
+    /// which [`Self::sanitize`] clamps to the history's length.
+    #[serde(default = "at_tip")]
     rollback: usize,
+}
+
+fn at_tip() -> usize {
+    usize::MAX
 }
 
 impl Document {
