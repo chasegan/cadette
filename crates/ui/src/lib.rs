@@ -127,6 +127,9 @@ pub struct HistoryResponse {
     /// "Tidy history" was clicked — the host merges stacked Translates (one
     /// undo entry) and reports the result in the status bar.
     pub tidy: bool,
+    /// A step's delete button was clicked — the host removes it (ungrouping a
+    /// Group so its members keep their places).
+    pub delete: Option<FeatureId>,
     /// The body-tint dial moved — `state.body_tint` changed and the host
     /// should persist it (rendering picks it up per frame, no regen needed).
     pub tint_changed: bool,
@@ -281,7 +284,7 @@ pub fn history_panel(
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    resp.changed |= build_graph(ui, doc, state);
+                    resp.changed |= build_graph(ui, doc, state, &mut resp);
                 });
         });
 
@@ -497,7 +500,12 @@ fn linear_to_color32(c: [f32; 3]) -> Color32 {
 /// feature, lanes converging at a merge (boolean/group) and splitting at a
 /// branch. Each row keeps the list's interactions (suppress / select / delete /
 /// reorder); the gutter on the left is the graph.
-fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> bool {
+fn build_graph(
+    ui: &mut Ui,
+    doc: &mut Document,
+    state: &mut HistoryState,
+    resp: &mut HistoryResponse,
+) -> bool {
     let mut changed = false;
     // Recompute the hovered row from scratch each frame — but only while a
     // pointer exists, so a headless pass (screenshots) keeps a pre-arranged
@@ -640,11 +648,10 @@ fn build_graph(ui: &mut Ui, doc: &mut Document, state: &mut HistoryState) -> boo
             // header (they act on the selected step); only delete stays per-row.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("🗑").on_hover_text("Delete").clicked() {
-                    doc.history.remove(id);
-                    if state.selected == Some(id) {
-                        state.selected = None;
-                    }
-                    changed = true;
+                    // The host deletes: a Group needs its transform chain baked
+                    // onto the members first (see the app's ungroup command),
+                    // which a bare `history.remove` would silently skip.
+                    resp.delete = Some(id);
                 }
             });
         });

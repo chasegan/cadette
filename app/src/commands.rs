@@ -378,6 +378,34 @@ impl Modeler {
         let Some(tip) = self.selected_body() else {
             return false;
         };
+        self.ungroup(tip)
+    }
+
+    /// Delete a history step (one undo entry). A Group is ungrouped instead —
+    /// its members get the group's transforms baked on and become independent
+    /// bodies again — because `History::remove` would otherwise rewire every
+    /// dependent onto the first member alone. Returns true if the document
+    /// changed.
+    pub(crate) fn delete_feature(&mut self, id: FeatureId) -> bool {
+        let is_group =
+            matches!(self.doc.history.get(id).map(|f| &f.kind), Some(FeatureKind::Group { .. }));
+        if is_group {
+            return self.ungroup(id);
+        }
+        if self.doc.history.get(id).is_none() {
+            return false;
+        }
+        self.record_undo(self.doc.clone());
+        self.doc.history.remove(id);
+        if self.ui.selected == Some(id) {
+            self.ui.selected = None;
+        }
+        true
+    }
+
+    /// Ungroup the (possibly transformed) group at `tip`; see
+    /// [`Self::ungroup_selected`]. Returns true if ungrouped.
+    pub(crate) fn ungroup(&mut self, tip: FeatureId) -> bool {
         let Some((group, chain)) = self.group_and_chain(tip) else {
             return false;
         };

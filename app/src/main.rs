@@ -999,6 +999,9 @@ impl Controller for Modeler {
         if let Some(op) = resp.boolean {
             changed |= self.apply_boolean(op);
         }
+        if let Some(id) = resp.delete {
+            changed |= self.delete_feature(id);
+        }
         if resp.tidy {
             let before = self.doc.clone();
             let merged = self.doc.tidy();
@@ -3000,6 +3003,40 @@ mod tests {
         assert!((min[2] - 5.0).abs() < 0.2, "both kept the baked move: z min {}", min[2]);
         assert!((max[2] - 15.0).abs() < 0.2, "z max {}", max[2]);
         assert!(min[0].abs() < 0.2 && (max[0] - 30.0).abs() < 0.2, "both members present: {min:?}..{max:?}");
+    }
+
+    #[test]
+    fn deleting_a_group_step_ungroups_instead_of_rewiring_dependents() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("two");
+        let a = m.doc.add("A", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let b0 = m.doc.add("B0", FeatureKind::Box { size: DVec3::splat(10.0) });
+        m.doc.add("B", FeatureKind::Translate { source: b0, offset: DVec3::new(20.0, 0.0, 0.0) });
+        let b = m.doc.history.features().last().unwrap().id;
+        let g = m.doc.add("Group", FeatureKind::Group { members: vec![a, b] });
+        let _ = m.mesh();
+        assert_eq!(m.ui.visible.len(), 1);
+
+        // The history panel's delete button on the Group row.
+        assert!(m.delete_feature(g));
+        let _ = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        assert_eq!(m.ui.visible.len(), 2, "both members are independent bodies again");
+        assert!(m.doc.history.get(g).is_none());
+        // One undo entry restores the group.
+        assert!(m.undo());
+        let _ = m.mesh();
+        assert_eq!(m.ui.visible.len(), 1);
+
+        // Deleting an ordinary step heals dependents onto its input as before.
+        m.doc = Document::new("one");
+        let bx = m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let f = m.doc.add("Fillet", FeatureKind::FilletAll { source: bx, radius: 1.0 });
+        m.doc.add("Move", FeatureKind::Translate { source: f, offset: DVec3::new(1.0, 0.0, 0.0) });
+        assert!(m.delete_feature(f));
+        let _ = m.mesh();
+        assert!(m.ui.errors.is_empty(), "the move now reads the box directly");
+        assert!(!m.delete_feature(f), "already gone");
     }
 
     #[test]
