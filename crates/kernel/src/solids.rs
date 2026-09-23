@@ -420,8 +420,8 @@ impl Solid {
     /// The tight axis-aligned bounding box `(min, max)` from the exact
     /// geometry (not a tessellation).
     pub fn bbox(&self) -> Result<([f64; 3], [f64; 3])> {
-        let p = ffi::body_props(&self.0)?;
-        Ok(([p.min_x, p.min_y, p.min_z], [p.max_x, p.max_y, p.max_z]))
+        let b = ffi::bbox(&self.0)?;
+        Ok(([b[0], b[1], b[2]], [b[3], b[4], b[5]]))
     }
 
     /// Volume, surface area, centre of mass, inertia and bounding box.

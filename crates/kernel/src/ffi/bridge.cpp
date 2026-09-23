@@ -1083,6 +1083,22 @@ rust::String describe(const Shape& s) {
   });
 }
 
+rust::Vec<double> bbox(const Shape& s) {
+  return guard("bbox", [&] {
+    Bnd_Box box;
+    BRepBndLib::AddOptimal(s.shape, box, /*useTriangulation=*/false,
+                           /*useShapeTolerance=*/false);
+    if (box.IsVoid()) {
+      throw std::runtime_error("bbox: the shape has no extent");
+    }
+    double xmin, ymin, zmin, xmax, ymax, zmax;
+    box.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+    rust::Vec<double> out;
+    for (double v : {xmin, ymin, zmin, xmax, ymax, zmax}) out.push_back(v);
+    return out;
+  });
+}
+
 BodyProps body_props(const Shape& s) {
   return guard("body_props", [&] {
     BodyProps p{};

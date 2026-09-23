@@ -111,6 +111,7 @@ double face_area(const Shape& s, uint32_t index);
 double edge_length(const Shape& s, uint32_t index);
 
 // --- Interrogation ----------------------------------------------------------
+rust::Vec<double> bbox(const Shape& s);
 BodyProps body_props(const Shape& s);
 Topology topology(const Shape& s);
 rust::Vec<FaceInfo> faces(const Shape& s);

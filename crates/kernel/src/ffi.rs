@@ -370,6 +370,10 @@ mod bridge {
         fn edge_length(s: &Shape, index: u32) -> Result<f64>;
 
         // --- Interrogation ------------------------------------------------
+        /// The tight axis-aligned bounding box alone (`[min xyz, max xyz]`) —
+        /// cheap enough to ask every frame.
+        fn bbox(s: &Shape) -> Result<Vec<f64>>;
+
         /// Volume, surface area, centre of mass, inertia and the tight
         /// axis-aligned bounding box, in one pass.
         fn body_props(s: &Shape) -> Result<BodyProps>;

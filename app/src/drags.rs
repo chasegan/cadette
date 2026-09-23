@@ -98,6 +98,33 @@ pub(crate) fn axis_set(v: &mut DVec3, axis: Axis3, val: f64) {
     }
 }
 
+/// Axis-aligned bounds `(min, max)` of a flat `[x,y,z,...]` position array —
+/// the per-frame bounds for grips and gizmo origins (within the mesh
+/// deflection of exact; the status bar uses `Solid::bbox` for its numbers).
+pub(crate) fn positions_bounds(positions: &[f32]) -> ([f64; 3], [f64; 3]) {
+    if positions.is_empty() {
+        return ([0.0; 3], [0.0; 3]);
+    }
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for p in positions.chunks_exact(3) {
+        for k in 0..3 {
+            min[k] = min[k].min(p[k]);
+            max[k] = max[k].max(p[k]);
+        }
+    }
+    (
+        [min[0] as f64, min[1] as f64, min[2] as f64],
+        [max[0] as f64, max[1] as f64, max[2] as f64],
+    )
+}
+
+/// Bounding-box center of a flat `[x,y,z,...]` position array.
+pub(crate) fn positions_center(positions: &[f32]) -> [f64; 3] {
+    let (min, max) = positions_bounds(positions);
+    [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5, (min[2] + max[2]) * 0.5]
+}
+
 impl Modeler {
     /// A short readout for an in-progress gizmo drag (angle / distance), shown
     /// floating next to the gizmo so the manipulation has a numeric value.

@@ -36,7 +36,7 @@ mod drags;
 mod prefs;
 mod project;
 mod sketch;
-use drags::{axis_get, axis_set};
+use drags::{axis_get, axis_set, positions_bounds, positions_center};
 use drags::{Manipulation, ResizeDrag, ResizeMode, TransformDrag};
 use prefs::Prefs;
 use sketch::{SketchAction, SketchSession};
@@ -178,9 +178,11 @@ struct Modeler {
     /// World-space AABB `(min, max)` of each visible body (aligned with
     /// `ui.visible`) — drives the resize grips' placement and extents.
     body_bounds: Vec<([f64; 3], [f64; 3])>,
-    /// Memoized OCCT volumes by visible-body id, so the selection read-out
-    /// doesn't call GProp every frame. Cleared whenever geometry regenerates.
+    /// Memoized OCCT volumes and exact bounding boxes by visible-body id, so
+    /// the selection read-out doesn't call GProp / BndLib every frame.
+    /// Cleared whenever geometry regenerates.
     volume_cache: HashMap<FeatureId, f64>,
+    bbox_cache: HashMap<FeatureId, ([f64; 3], [f64; 3])>,
     /// World-space anchor point for each selected edge (keyed by its global pick
     /// id), captured at click time so each edge in a multi-selection keeps its
     /// own durable fillet anchor.
@@ -260,6 +262,7 @@ impl Modeler {
             body_centers: Vec::new(),
             body_bounds: Vec::new(),
             volume_cache: HashMap::new(),
+            bbox_cache: HashMap::new(),
             edge_anchors: HashMap::new(),
             tape: None,
             graph_hover: None,
@@ -317,7 +320,22 @@ impl Modeler {
                 (self.ui.visible.iter().position(|&f| f == sel)?, None)
             }
         };
-        let (min, max) = self.body_bounds.get(idx).copied()?;
+        // Exact bounds for the numbers the user reads (memoized: BndLib on a
+        // curved body is milliseconds); the mesh-derived per-frame bounds are
+        // the fallback.
+        let id = self.ui.visible.get(idx).copied();
+        let exact = id.and_then(|id| match self.bbox_cache.get(&id) {
+            Some(&b) => Some(b),
+            None => {
+                let b = self.bodies.get(idx).and_then(|b| b.bbox().ok())?;
+                self.bbox_cache.insert(id, b);
+                Some(b)
+            }
+        });
+        let (min, max) = match exact {
+            Some(b) => b,
+            None => self.body_bounds.get(idx).copied()?,
+        };
         let (w, h, d) = (max[0] - min[0], max[1] - min[1], max[2] - min[2]);
         // Ignore a truly empty body (a sketch's flat face still has useful W×H).
         if w.max(h).max(d) < 1e-6 {
@@ -1122,17 +1140,14 @@ impl Controller for Modeler {
                 }),
                 None => cdt_render::NO_COLOR,
             };
-            // Exact bounds from the geometry (not the deflection-dependent
-            // mesh), so the status bar's W×H×D and the resize grips are true.
-            let (bmin, bmax) = body.bbox().unwrap_or(([0.0; 3], [0.0; 3]));
-            self.body_centers.push([
-                (bmin[0] + bmax[0]) * 0.5,
-                (bmin[1] + bmax[1]) * 0.5,
-                (bmin[2] + bmax[2]) * 0.5,
-            ]);
-            self.body_bounds.push((bmin, bmax));
             match body.tessellate(DEFLECTION_MM) {
                 Ok(part) => {
+                    // Mesh-derived bounds are within the deflection of exact and
+                    // cheap enough for every drag frame (the exact bbox costs
+                    // milliseconds per curved body); the status bar's numbers
+                    // come from `Solid::bbox`, memoized, instead.
+                    self.body_centers.push(positions_center(&part.positions));
+                    self.body_bounds.push(positions_bounds(&part.positions));
                     let base = mesh.vertices.len() as u32;
                     let face_ids: Vec<u32> =
                         part.face_ids.iter().map(|f| f + face_offset).collect();
@@ -1158,13 +1173,16 @@ impl Controller for Modeler {
                     edge_offset += part.edge_ids.iter().copied().max().unwrap_or(0) + 1;
                 }
                 Err(e) => {
+                    self.body_centers.push([0.0; 3]); // keep aligned with visible
+                    self.body_bounds.push(([0.0; 3], [0.0; 3]));
                     let id = self.ui.visible.get(idx).copied().unwrap_or(cdt_core::FeatureId(0));
                     self.ui.errors.push((id, format!("could not tessellate: {e}")));
                 }
             }
         }
         self.bodies = bodies;
-        self.volume_cache.clear(); // geometry changed — stale volumes
+        self.volume_cache.clear(); // geometry changed — stale volumes/bounds
+        self.bbox_cache.clear();
         // Ghost previews are stale too; the key bump clears the viewport now,
         // and a still-held hover re-tessellates on the next frame.
         self.ghost_cache.clear();
@@ -2012,6 +2030,7 @@ mod tests {
             body_centers: Vec::new(),
             body_bounds: Vec::new(),
             volume_cache: HashMap::new(),
+            bbox_cache: HashMap::new(),
             edge_anchors: HashMap::new(),
             tape: None,
             graph_hover: None,
@@ -3958,6 +3977,7 @@ mod tests {
             body_centers: Vec::new(),
             body_bounds: Vec::new(),
             volume_cache: HashMap::new(),
+            bbox_cache: HashMap::new(),
             edge_anchors: HashMap::new(),
             tape: None,
             graph_hover: None,
