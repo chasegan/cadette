@@ -1,0 +1,20 @@
+[package]
+name = "cdt-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "cdt: the Cadette command line — inspect, edit, check, render and export .cdt projects headlessly. JSON in, JSON out."
+
+[[bin]]
+name = "cdt"
+path = "src/main.rs"
+
+[dependencies]
+cdt-core = { workspace = true }
+cdt-session = { workspace = true }
+cdt-render = { workspace = true, default-features = false }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }

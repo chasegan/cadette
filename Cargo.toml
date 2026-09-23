@@ -6,6 +6,7 @@ members = [
     "crates/solver",
     "crates/project",
     "crates/session",
+    "crates/cli",
     "crates/render",
     "crates/interaction",
     "crates/ui",
