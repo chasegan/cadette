@@ -455,6 +455,36 @@ void track_generated(Maker& mk, const TopoDS_Shape& profile,
   }
 }
 
+// The heal-or-error validity gate every solid-producing operation shares.
+// OCCT will happily hand back an IsDone() result that BRepCheck rejects (a
+// fillet whose rolling surfaces overlap, a fuse along tangent walls, a revolve
+// whose profile crosses the axis): it renders and even measures, but every
+// downstream boolean silently classifies it as nothing and the STL is broken.
+// So: accept a valid shape as-is; otherwise let ShapeFix recover tolerance-
+// level defects, then REQUIRE a valid shape that still contains a solid, and
+// fail loudly with the operation's own hint if it doesn't. `healed` tells the
+// caller lineage is gone (ShapeFix rebuilds sub-shapes without history).
+TopoDS_Shape require_valid_solid(TopoDS_Shape result, const char* op,
+                                 const char* hint, bool& healed) {
+  healed = false;
+  if (BRepCheck_Analyzer(result).IsValid()) {
+    return result;
+  }
+  ShapeFix_Shape fixer(result);
+  fixer.Perform();
+  result = fixer.Shape();
+  healed = true;
+  bool has_solid = false;
+  for (TopExp_Explorer ex(result, TopAbs_SOLID); ex.More(); ex.Next()) {
+    has_solid = true;
+    break;
+  }
+  if (!has_solid || !BRepCheck_Analyzer(result).IsValid()) {
+    throw std::runtime_error(std::string(op) + ": " + hint);
+  }
+  return result;
+}
+
 }  // namespace
 
 std::unique_ptr<Shape> extrude_tracked(const Shape& s, double distance,
@@ -530,8 +560,18 @@ std::unique_ptr<Shape> revolve_tracked(const Shape& s, double ax, double ay,
     }
     const gp_Ax1 axis(p1, gp_Dir(dir));
     BRepPrimAPI_MakeRevol revol(s.shape, axis, angle);
-    const TopoDS_Shape solid = revol.Shape();
-    track_generated(revol, s.shape, solid, records);
+    // A profile that crosses its own axis revolves into a self-intersecting
+    // solid; the gate rejects it (or heals a tolerance-level defect, in which
+    // case the lineage is dropped).
+    bool healed = false;
+    const TopoDS_Shape solid = require_valid_solid(
+        revol.Shape(), "revolve",
+        "the revolved solid self-intersects (the profile crosses the axis) — "
+        "keep the profile on one side of the axis",
+        healed);
+    if (!healed) {
+      track_generated(revol, s.shape, solid, records);
+    }
     return std::make_unique<Shape>(solid);
   });
 }
@@ -598,28 +638,16 @@ std::unique_ptr<Shape> sweep_tracked(const Shape& profile, const Shape& spine,
     if (!shell.MakeSolid()) {
       throw std::runtime_error("sweep: could not cap the swept shell into a solid");
     }
-    TopoDS_Shape result = shell.Shape();
     // PipeShell output — especially RoundCorner transitions over bezier
-    // profiles — is routinely slightly invalid (tolerance gaps, bad pcurves).
-    // It renders and even measures fine, but booleans silently classify an
-    // invalid solid as nothing (empty cut, fuse that drops it). Heal it here
-    // so downstream ops see a genuinely valid solid.
+    // profiles — is routinely slightly invalid (tolerance gaps, bad pcurves);
+    // a sweep that stays invalid after healing is typically a bend tighter
+    // than the profile is wide, self-intersecting at the elbow.
     bool healed = false;
-    if (!BRepCheck_Analyzer(result).IsValid()) {
-      ShapeFix_Shape fixer(result);
-      fixer.Perform();
-      result = fixer.Shape();
-      healed = true;
-      // A sweep that stays invalid after healing (typically a bend tighter
-      // than the profile is wide, self-intersecting at the elbow) must be an
-      // error, not a silently broken body: it renders fine but corrupts every
-      // downstream boolean and STL.
-      if (!BRepCheck_Analyzer(result).IsValid()) {
-        throw std::runtime_error(
-            "sweep: the swept solid self-intersects (the bend is too tight "
-            "for this profile size) — widen the bend or shrink the profile");
-      }
-    }
+    TopoDS_Shape result = require_valid_solid(
+        shell.Shape(), "sweep",
+        "the swept solid self-intersects (the bend is too tight for this "
+        "profile size) — widen the bend or shrink the profile",
+        healed);
     // Lineage — only when the shape was NOT healed: ShapeFix rebuilds
     // sub-shapes without history, so records against a healed result would
     // point at stale topology. An unhealed sweep reports side faces via
@@ -781,27 +809,13 @@ std::unique_ptr<Shape> push_pull_tracked(const Shape& s, double px, double py,
 
     // A pull whose prism runs tangent along existing walls (e.g. raising a
     // pocket floor beside its own fillets) can make the fuse emit a
-    // self-intersecting body: IsDone, renders, even measures — but corrupts
-    // every downstream boolean and STL. Same heal-or-error policy as the
-    // swept-solid and fillet paths: recover tolerance-level defects, REQUIRE
-    // a valid closed solid, fail loudly otherwise.
+    // self-intersecting body.
     bool healed = false;
-    if (!BRepCheck_Analyzer(result).IsValid()) {
-      ShapeFix_Shape fixer(result);
-      fixer.Perform();
-      result = fixer.Shape();
-      healed = true;
-      bool has_solid = false;
-      for (TopExp_Explorer ex(result, TopAbs_SOLID); ex.More(); ex.Next()) {
-        has_solid = true;
-        break;
-      }
-      if (!has_solid || !BRepCheck_Analyzer(result).IsValid()) {
-        throw std::runtime_error(
-            "push_pull: the result self-intersects (the moved face collides "
-            "with nearby walls or fillets) — reduce the distance");
-      }
-    }
+    result = require_valid_solid(
+        result, "push_pull",
+        "the result self-intersects (the moved face collides with nearby "
+        "walls or fillets) — reduce the distance",
+        healed);
 
     // Lineage: where the pushed face sits in `s`, where its offset image (the
     // prism's far cap) sits in the prism, and how everything flowed through
@@ -952,12 +966,23 @@ std::unique_ptr<Shape> boolean_tracked(const Shape& a, const Shape& b, int32_t o
                                      /*unifyFaces=*/true,
                                      /*concatBSplines=*/false);
     usd.Build();
-    const TopoDS_Shape result = usd.Shape();
     const Handle(BRepTools_History) uhist = usd.History();
 
-    track_elements(*bop, uhist, {&a.shape, &b.shape}, result, TopAbs_FACE, face_records);
-    track_elements(*bop, uhist, {&a.shape, &b.shape}, result, TopAbs_EDGE, edge_records);
-    track_sections(*bop, uhist, a.shape, b.shape, result, section_records);
+    // Operands meeting along tangent faces or edges can make the boolean emit
+    // a self-intersecting body — the same failure push_pull's fuse guards
+    // against. A healed result keeps its geometry but loses lineage, so the
+    // records stay empty (every element unnamed; anchors still resolve).
+    bool healed = false;
+    const TopoDS_Shape result = require_valid_solid(
+        usd.Shape(), "boolean",
+        "the result self-intersects (the bodies meet along a tangent face "
+        "or edge) — move one body slightly so they overlap or clear",
+        healed);
+    if (!healed) {
+      track_elements(*bop, uhist, {&a.shape, &b.shape}, result, TopAbs_FACE, face_records);
+      track_elements(*bop, uhist, {&a.shape, &b.shape}, result, TopAbs_EDGE, edge_records);
+      track_sections(*bop, uhist, a.shape, b.shape, result, section_records);
+    }
 
     return std::make_unique<Shape>(result);
   });
@@ -1203,27 +1228,15 @@ std::unique_ptr<Shape> fillet_edges_tracked(const Shape& s,
     // silently corrupts every downstream boolean and STL. Try to heal it (the
     // same policy as the swept-solid path) — minor tolerance/pcurve defects
     // recover into a clean solid.
-    bool healed = false;
-    if (!BRepCheck_Analyzer(result).IsValid()) {
-      ShapeFix_Shape fixer(result);
-      fixer.Perform();
-      result = fixer.Shape();
-      healed = true;
-    }
     // A genuine radius-too-large overlap can't be made watertight: ShapeFix
     // strips the tangled faces and leaves an OPEN shell (valid per BRepCheck,
-    // but no solid and not closed). Require a real closed solid, else fail
-    // loudly with an actionable message rather than emit an unprintable body.
-    bool has_solid = false;
-    for (TopExp_Explorer ex(result, TopAbs_SOLID); ex.More(); ex.Next()) {
-      has_solid = true;
-      break;
-    }
-    if (!has_solid || !BRepCheck_Analyzer(result).IsValid()) {
-      throw std::runtime_error(
-          "fillet: the rounded edges overlap (the radius is too large for the "
-          "face between them) — reduce the fillet radius");
-    }
+    // but no solid and not closed) — which the gate rejects.
+    bool healed = false;
+    result = require_valid_solid(
+        result, "fillet",
+        "the rounded edges overlap (the radius is too large for the face "
+        "between them) — reduce the fillet radius",
+        healed);
     // Lineage — only when the shape was NOT healed: ShapeFix rebuilds
     // sub-shapes without history, so records against a healed result would
     // point at stale topology (its elements stay unnamed, anchor fallback).
