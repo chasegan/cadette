@@ -115,6 +115,10 @@ impl GeometryBackend for Counting {
         self.ops += 1;
         Ok(format!("group({})", members.len()))
     }
+    fn sweep_helix(&mut self, profile: &String, _helix: cdt_core::Helix) -> Result<String, String> {
+        self.ops += 1;
+        Ok(format!("coil({profile})"))
+    }
     fn helix_sweep(
         &mut self,
         profile: &[cdt_core::ProfileElem],

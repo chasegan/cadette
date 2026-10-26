@@ -298,22 +298,34 @@ pub fn kind_summary(kind: &FeatureKind) -> String {
         FeatureKind::Group { members } => {
             format!("Group of {}", members.iter().map(|m| format!("#{}", m.0)).collect::<Vec<_>>().join(", "))
         }
-        FeatureKind::Sweep { profile, .. } => format!("Sweep #{} along a path", profile.0),
-        FeatureKind::Thread { source, helix, internal, .. } => format!(
-            "{} thread on #{} pitch {} × {:.1} turns",
+        FeatureKind::Sweep { profile, path: cdt_core::SweepPath::Planar { .. } } => {
+            format!("Sweep #{} along a path", profile.0)
+        }
+        FeatureKind::Sweep { profile, path: cdt_core::SweepPath::Helix { helix } } => {
+            format!("Sweep #{} along a helix, {:.1} turns", profile.0, helix.turns())
+        }
+        FeatureKind::Thread { source, helix, internal, starts, .. } => format!(
+            "{} thread on #{} pitch {} × {:.1} turns{}",
             if *internal { "Internal" } else { "External" },
             source.0,
             helix.pitch,
-            helix.turns()
+            helix.turns(),
+            if *starts > 1 { format!(", {starts} starts") } else { String::new() }
         ),
-        FeatureKind::Pattern { source, layout, count } => match layout {
-            cdt_core::PatternLayout::Linear { step } => {
-                format!("Pattern #{} ×{count} every ({}, {}, {})", source.0, step.x, step.y, step.z)
+        FeatureKind::Pattern { source, layout, count, skip } => {
+            let skipped = if skip.is_empty() { String::new() } else { format!(" ({} skipped)", skip.len()) };
+            match layout {
+                cdt_core::PatternLayout::Linear { step } => {
+                    format!("Pattern #{} ×{count} every ({}, {}, {}){skipped}", source.0, step.x, step.y, step.z)
+                }
+                cdt_core::PatternLayout::Circular { angle, .. } => {
+                    format!("Pattern #{} ×{count} every {:.1}°{skipped}", source.0, angle.to_degrees())
+                }
+                cdt_core::PatternLayout::Helical { angle, rise, .. } => {
+                    format!("Pattern #{} ×{count} every {:.1}° and {rise} along the axis{skipped}", source.0, angle.to_degrees())
+                }
             }
-            cdt_core::PatternLayout::Circular { angle, .. } => {
-                format!("Pattern #{} ×{count} every {:.1}°", source.0, angle.to_degrees())
-            }
-        },
+        }
     }
 }
 

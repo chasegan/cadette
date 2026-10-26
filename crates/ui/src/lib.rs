@@ -812,26 +812,35 @@ pub fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> Editor
         FeatureKind::Group { members } => {
             ui.label(RichText::new(format!("{} members", members.len())).small().weak());
         }
-        FeatureKind::Sweep { path, .. } => {
-            let cdt_core::SweepPath::Planar { sketch, .. } = path;
+        FeatureKind::Sweep { path: cdt_core::SweepPath::Planar { sketch, .. }, .. } => {
             let segs = sketch.lines.len() + sketch.beziers.len();
             ui.label(RichText::new(format!("path: {segs} segments")).small().weak());
             // The path is a line the user can go back and reshape.
             edit_label = Some("Edit path");
         }
-        FeatureKind::Thread { helix, depth, internal, .. } => {
+        FeatureKind::Sweep { path: cdt_core::SweepPath::Helix { helix }, .. } => {
+            changed |= helix_editor(ui, helix);
+        }
+        FeatureKind::Thread { helix, depth, internal, starts, .. } => {
             changed |= drag(ui, "Pitch", &mut helix.pitch);
             changed |= drag(ui, "Depth", depth);
             changed |= drag(ui, "Length", &mut helix.length);
             changed |= drag(ui, "Radius", &mut helix.radius);
+            ui.horizontal(|ui| {
+                ui.label("Starts");
+                changed |= ui
+                    .add(egui::DragValue::new(starts).speed(0.1).range(1..=cdt_core::MAX_THREAD_STARTS))
+                    .on_hover_text("Grooves around the axis; many, with a steep pitch, cut both ways, make a knurl")
+                    .changed();
+            });
             ui.horizontal(|ui| {
                 if ui
                     .small_button("ISO")
                     .on_hover_text("Coarse pitch for this diameter, and the ISO depth for it")
                     .clicked()
                 {
-                    helix.pitch = Helix::iso_pitch(2.0 * helix.radius);
-                    *depth = Helix::iso_depth(helix.pitch);
+                    helix.pitch = Helix::iso_pitch(2.0 * helix.radius) * f64::from(*starts);
+                    *depth = Helix::iso_depth(helix.pitch / f64::from(*starts));
                     changed = true;
                 }
                 changed |= ui.checkbox(internal, "Internal").on_hover_text("Cut outward into a hole's wall rather than inward into a shaft").changed();
@@ -839,8 +848,18 @@ pub fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> Editor
             });
             ui.label(RichText::new(format!("{:.1} turns", helix.turns())).small().weak());
         }
-        FeatureKind::Pattern { layout, count, .. } => {
+        FeatureKind::Pattern { layout, count, skip, .. } => {
             changed |= count_drag(ui, "Count", count);
+            if !skip.is_empty() {
+                ui.horizontal(|ui| {
+                    let list: Vec<String> = skip.iter().map(|i| i.to_string()).collect();
+                    ui.label(RichText::new(format!("skipped: {}", list.join(", "))).small().weak());
+                    if ui.small_button("Restore").on_hover_text("Bring back every skipped instance").clicked() {
+                        skip.clear();
+                        changed = true;
+                    }
+                });
+            }
             match layout {
                 PatternLayout::Linear { step } => {
                     // The per-instance step; signed so a pattern can run either way.
@@ -870,6 +889,24 @@ pub fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> Editor
                             changed = true;
                         }
                     });
+                    changed |= drag_signed(ui, "Center X", &mut center.x);
+                    changed |= drag_signed(ui, "Center Y", &mut center.y);
+                    changed |= drag_signed(ui, "Center Z", &mut center.z);
+                    changed |= axis_combo(ui, axis);
+                }
+                PatternLayout::Helical { center, axis, angle, rise } => {
+                    let mut deg = angle.to_degrees();
+                    ui.horizontal(|ui| {
+                        ui.label("Angle");
+                        if ui
+                            .add(egui::DragValue::new(&mut deg).speed(1.0).range(-360.0..=360.0).suffix("°"))
+                            .changed()
+                        {
+                            *angle = deg.to_radians();
+                            changed = true;
+                        }
+                    });
+                    changed |= drag_signed(ui, "Rise", rise);
                     changed |= drag_signed(ui, "Center X", &mut center.x);
                     changed |= drag_signed(ui, "Center Y", &mut center.y);
                     changed |= drag_signed(ui, "Center Z", &mut center.z);
@@ -938,6 +975,22 @@ fn drag(ui: &mut Ui, label: &str, value: &mut f64) -> bool {
 /// distance, translate offset).
 fn drag_signed(ui: &mut Ui, label: &str, value: &mut f64) -> bool {
     drag_ranged(ui, label, value, -10_000.0..=10_000.0)
+}
+
+/// The fields of a helix (a coil's path): pitch, length, radius, hand, and
+/// the axis — centre plus a world direction.
+fn helix_editor(ui: &mut Ui, helix: &mut Helix) -> bool {
+    let mut changed = false;
+    changed |= drag(ui, "Pitch", &mut helix.pitch);
+    changed |= drag(ui, "Length", &mut helix.length);
+    changed |= drag(ui, "Radius", &mut helix.radius);
+    changed |= ui.checkbox(&mut helix.left_handed, "Left-hand").changed();
+    changed |= drag_signed(ui, "Center X", &mut helix.center.x);
+    changed |= drag_signed(ui, "Center Y", &mut helix.center.y);
+    changed |= drag_signed(ui, "Center Z", &mut helix.center.z);
+    changed |= axis_combo(ui, &mut helix.axis);
+    ui.label(RichText::new(format!("{:.1} turns", helix.turns())).small().weak());
+    changed
 }
 
 /// An instance count: a whole number from 1 to the regen limit.

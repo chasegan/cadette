@@ -672,6 +672,7 @@ impl Controller for Modeler {
             let can_sketch = single_face && self.selection.can_sketch_on_face();
             let can_mirror = single_face && self.selection.face_plane.is_some();
             let can_thread = single_face && self.selection.face_cylinder.is_some();
+            let pattern_instance = single_face.then(|| self.selected_pattern_instance()).flatten();
             let can_ungroup = single_face
                 && self.selected_body().is_some_and(|b| self.doc.group_and_chain(b).is_some());
             let edit_sketch_id = single_face.then(|| self.editable_sketch()).flatten();
@@ -683,6 +684,7 @@ impl Controller for Modeler {
             let (mut sketch, mut edit, mut fillet_face, mut mirror, mut ungroup) =
                 (false, false, false, false, false);
             let mut thread = false;
+            let (mut sweep_helix, mut skip_instance) = (false, false);
             // "Fillet every edge" of the selected body (was a toolbar button).
             let mut fillet_body = false;
             // A sweep request carries the path plane chosen at that moment.
@@ -732,6 +734,15 @@ impl Controller for Modeler {
                                         ui.close_menu();
                                     }
                                 }
+                                ui.separator();
+                                if ui
+                                    .button(format!("{}  Helix — a coil", phi::SPIRAL))
+                                    .on_hover_text("Carry this section round a helix about the sketch's in-plane Y axis (edit the helix in Properties)")
+                                    .clicked()
+                                {
+                                    sweep_helix = true;
+                                    ui.close_menu();
+                                }
                             })
                             .response
                             .on_hover_text("Sweep this profile along a path you draw — choose the path's plane");
@@ -740,6 +751,10 @@ impl Controller for Modeler {
                         fillet_body = action_btn(ui, phi::BOUNDING_BOX, "Fillet every edge", "Round every edge of this body", true);
                         if can_mirror {
                             mirror = action_btn(ui, phi::FLIP_HORIZONTAL, "Mirror across face", "Reflect this body across the face — keeps the original", true);
+                        }
+                        if let Some((_, instance)) = pattern_instance {
+                            skip_instance = action_btn(ui, phi::DOTS_THREE_OUTLINE, &format!("Skip instance {instance}"),
+                                "Leave this instance out of the pattern (Restore in Properties brings them all back)", true);
                         }
                         if can_thread {
                             let shaft = self.selection.face_cylinder.is_some_and(|c| c.convex);
@@ -880,6 +895,14 @@ impl Controller for Modeler {
                 if let Some(p) = sweep_profile_id {
                     self.start_sweep_path(p, plane);
                 }
+            }
+            if sweep_helix {
+                if let Some(p) = sweep_profile_id {
+                    changed |= self.sweep_along_helix(p);
+                }
+            }
+            if skip_instance {
+                changed |= self.skip_selected_instance();
             }
             if fillet_face {
                 changed |= self.fillet_selected_face_edges();
@@ -2861,6 +2884,7 @@ mod tests {
                     angle: std::f64::consts::PI,
                 },
                 count: 2,
+                skip: Vec::new(),
             },
         );
         let _ = m.mesh();
@@ -2870,6 +2894,67 @@ mod tests {
             other => panic!("hole is {other:?}"),
         }
         assert!(m.undo(), "the GUI pattern is one undo step");
+    }
+
+    #[test]
+    fn skipping_a_pattern_instance_removes_the_picked_one() {
+        use commands::PatternKind;
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        m.doc.add("Cube", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let _ = m.mesh();
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        assert!(m.pattern_selected_body(PatternKind::Linear));
+        let pat = m.ui.selected.unwrap();
+        let _ = m.mesh();
+        // Each cube has 6 faces; pick a face of the third instance (index 2).
+        let third = m.face_ranges[0] + 2 * 6 + 1;
+        m.on_pick(Some(Pick::Face(third)), None, false);
+        assert_eq!(m.selected_pattern_instance(), Some((pat, 2)));
+        assert!(m.skip_selected_instance());
+        let _ = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        match m.doc.history.get(pat).map(|f| &f.kind) {
+            Some(FeatureKind::Pattern { skip, .. }) => assert_eq!(skip, &vec![2]),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(m.bodies[0].face_count().unwrap(), 12, "two cubes remain");
+        // With #2 gone, the face that was instance 1's is still instance 1's.
+        m.on_pick(Some(Pick::Face(m.face_ranges[0] + 6)), None, false);
+        assert_eq!(m.selected_pattern_instance(), Some((pat, 1)));
+    }
+
+    #[test]
+    fn sweeping_a_sketch_along_a_helix_makes_a_coil() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        // A 2 mm square on the front plane, centred 10 mm out along X: a
+        // coil of radius 10 about Z.
+        let mut square = Sketch2d::new();
+        let p: Vec<_> = [[9.0, -1.0], [11.0, -1.0], [11.0, 1.0], [9.0, 1.0]]
+            .iter()
+            .map(|[x, y]| square.add_point(*x, *y))
+            .collect();
+        for i in 0..4 {
+            square.add_line(p[i], p[(i + 1) % 4]);
+        }
+        let profile = m.doc.add("Square", FeatureKind::ConstraintSketch { plane: SketchPlane::Xz, sketch: square });
+        let _ = m.mesh();
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        assert!(m.sweep_along_helix(profile));
+        let _ = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        let coil = m.ui.selected.unwrap();
+        match m.doc.history.get(coil).map(|f| &f.kind) {
+            Some(FeatureKind::Sweep { path: cdt_core::SweepPath::Helix { helix }, .. }) => {
+                assert!((helix.radius - 10.0).abs() < 0.1, "radius from the profile's offset: {}", helix.radius);
+                assert!((helix.axis - DVec3::Z).length() < 1e-9, "front plane → Z axis");
+            }
+            other => panic!("{other:?}"),
+        }
+        let (min, max) = m.body_bounds[0];
+        assert!((max[0] - 11.0).abs() < 0.2 && (min[0] + 11.0).abs() < 0.2, "a coil of outer radius 11: {min:?}..{max:?}");
+        assert!(m.bodies[0].volume().unwrap() > 0.0);
     }
 
     #[test]

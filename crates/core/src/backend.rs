@@ -8,7 +8,8 @@
 
 use glam::DVec3;
 
-use crate::features::{BooleanOp, EdgeAnchor, FaceAnchor, FeatureId, Helix};
+#[allow(unused_imports)] // SweepPath: doc link
+use crate::features::{BooleanOp, EdgeAnchor, FaceAnchor, FeatureId, Helix, SweepPath};
 use crate::sketch::{ProfileElem, Profile, SketchPlane};
 
 /// A geometry engine capable of producing and combining solid bodies.
@@ -67,6 +68,10 @@ pub trait GeometryBackend {
         profile: &[ProfileElem],
         helix: Helix,
     ) -> Result<Self::Body, Self::Error>;
+
+    /// Sweep a planar face body (`profile`, wherever it sits) along `helix`
+    /// with the helix axis as binormal — the [`SweepPath::Helix`] case.
+    fn sweep_helix(&mut self, profile: &Self::Body, helix: Helix) -> Result<Self::Body, Self::Error>;
 
     /// Revolve a planar `profile` by `angle` radians about the straight edge
     /// nearest `axis_point` (one of the profile's own segments or a model edge).

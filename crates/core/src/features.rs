@@ -157,8 +157,9 @@ pub enum FeatureKind {
     /// this feature, and the members become independently visible again.
     Group { members: Vec<FeatureId> },
 
-    /// Sweep the planar profile `profile` (a sketch face) along an open `path`,
-    /// keeping the profile normal to the path.
+    /// Sweep the planar profile `profile` (a sketch face) along `path`: an
+    /// open planar chain (the profile kept normal to it) or a helix (the
+    /// profile carried round in the axial plane — a coil or a spring).
     Sweep { profile: FeatureId, path: SweepPath },
 
     /// Repeat `source` `count` times on a `layout` (the seed stays in place as
@@ -170,6 +171,10 @@ pub enum FeatureKind {
         source: FeatureId,
         layout: PatternLayout,
         count: u32,
+        /// Instance indices (0 = the seed) left out — a bolt circle with one
+        /// bolt missing. Out-of-range entries are ignored.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        skip: Vec<u32>,
     },
 
     /// Cut a screw thread into `source`: a 60° V-groove (ISO basic profile:
@@ -183,7 +188,18 @@ pub enum FeatureKind {
         helix: Helix,
         depth: f64,
         internal: bool,
+        /// Thread starts: the groove is repeated `starts` times around the axis
+        /// (`2π / starts` apart), each on the same helix, so the helix pitch is
+        /// the lead and adjacent grooves sit `pitch / starts` apart (which sizes
+        /// the groove). 1 for an ordinary screw; many, with a steep pitch, cut
+        /// in both hands, make a knurl.
+        #[serde(default = "one_start")]
+        starts: u32,
     },
+}
+
+fn one_start() -> u32 {
+    1
 }
 
 /// A helix: the spine of a thread or a coil. It winds around the axis through
@@ -275,6 +291,15 @@ pub enum PatternLayout {
         axis: DVec3,
         angle: f64,
     },
+    /// Instances along a helix (a screw motion): instance `i` is the seed
+    /// rotated by `i * angle` about the axis AND moved `i * rise` along it.
+    /// Bumps spiralling up a knob; with `rise = 0` it is a circular pattern.
+    Helical {
+        center: DVec3,
+        axis: DVec3,
+        angle: f64,
+        rise: f64,
+    },
 }
 
 impl PatternLayout {
@@ -282,6 +307,7 @@ impl PatternLayout {
         match self {
             PatternLayout::Linear { .. } => "Linear",
             PatternLayout::Circular { .. } => "Circular",
+            PatternLayout::Helical { .. } => "Helical",
         }
     }
 }
@@ -294,6 +320,11 @@ pub enum SweepPath {
     /// An open chain drawn on `plane` (the current MVP). The kernel still sweeps
     /// along a generic spine, so a 3D variant needs no kernel change.
     Planar { plane: SketchPlane, sketch: Sketch2d },
+    /// A helix. The profile is swept from wherever it was sketched with the
+    /// helix axis as binormal, so a profile drawn in a plane containing the
+    /// axis stays in that axial plane all the way round: sketch a circle at
+    /// the coil radius on a plane through the axis and you get a spring.
+    Helix { helix: Helix },
 }
 
 impl FeatureKind {

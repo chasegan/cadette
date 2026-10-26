@@ -435,13 +435,20 @@ where
         }
         FeatureKind::Sweep { profile, path } => {
             let face = input(*profile)?;
-            let crate::SweepPath::Planar { plane, sketch } = path;
-            match sketch.path_elements() {
-                Some(elements) => backend.sweep(face, *plane, &elements).map_err(backend_err),
-                None => Err(RegenError::Invalid {
-                    feature,
-                    reason: "sweep path is not a single open chain",
-                }),
+            match path {
+                crate::SweepPath::Planar { plane, sketch } => match sketch.path_elements() {
+                    Some(elements) => backend.sweep(face, *plane, &elements).map_err(backend_err),
+                    None => Err(RegenError::Invalid {
+                        feature,
+                        reason: "sweep path is not a single open chain",
+                    }),
+                },
+                crate::SweepPath::Helix { helix } => {
+                    if let Some(reason) = helix_problem(helix) {
+                        return Err(RegenError::Invalid { feature, reason });
+                    }
+                    backend.sweep_helix(face, *helix).map_err(backend_err)
+                }
             }
         }
         FeatureKind::Translate { source, offset } => {
@@ -523,38 +530,47 @@ where
             source,
             layout,
             count,
+            skip,
         } => {
             let seed = input(*source)?;
-            if *count == 0 {
-                return Err(RegenError::Invalid {
-                    feature,
-                    reason: "a pattern needs at least one instance",
-                });
-            }
             if *count > MAX_PATTERN_COUNT {
                 return Err(RegenError::Invalid {
                     feature,
                     reason: "a pattern is limited to 1000 instances",
                 });
             }
-            // Instance 0 is the seed in place; the rest are the seed moved by
-            // i steps, all bundled into one compound (like a group).
-            let mut moved = Vec::with_capacity(*count as usize - 1);
-            for i in 1..*count {
+            let instances = pattern_instances(*count, skip);
+            if instances.is_empty() {
+                return Err(RegenError::Invalid {
+                    feature,
+                    reason: "a pattern needs at least one instance that isn't skipped",
+                });
+            }
+            // Instance 0 is the seed in place; instance i is the seed moved by
+            // i steps. The kept instances are bundled into one compound (like
+            // a group), in instance order.
+            let mut moved = Vec::with_capacity(instances.len());
+            for &i in &instances {
+                if i == 0 {
+                    continue;
+                }
+                let n = f64::from(i);
                 let body = match *layout {
-                    crate::PatternLayout::Linear { step } => {
-                        backend.translate(seed, step * f64::from(i))
+                    crate::PatternLayout::Linear { step } => backend.translate(seed, step * n),
+                    crate::PatternLayout::Circular { center, axis, angle } => {
+                        backend.rotate(seed, center, axis, angle * n)
                     }
-                    crate::PatternLayout::Circular {
-                        center,
-                        axis,
-                        angle,
-                    } => backend.rotate(seed, center, axis, angle * f64::from(i)),
+                    crate::PatternLayout::Helical { center, axis, angle, rise } => {
+                        let turned = backend.rotate(seed, center, axis, angle * n).map_err(backend_err)?;
+                        backend.translate(&turned, axis.normalize_or_zero() * (rise * n))
+                    }
                 };
                 moved.push(body.map_err(backend_err)?);
             }
-            let mut members: Vec<&B::Body> = Vec::with_capacity(*count as usize);
-            members.push(seed);
+            let mut members: Vec<&B::Body> = Vec::with_capacity(instances.len());
+            if instances[0] == 0 {
+                members.push(seed);
+            }
             members.extend(moved.iter());
             backend.compound(&members).map_err(backend_err)
         }
@@ -563,21 +579,18 @@ where
             helix,
             depth,
             internal,
+            starts,
         } => {
             let body = input(*source)?;
             let positive = |x: f64| x.is_finite() && x > 0.0;
-            let reason = if !positive(helix.pitch) {
-                Some("a thread needs a positive pitch")
-            } else if !positive(helix.length) {
-                Some("a thread needs a positive length")
+            let reason = if let Some(r) = helix_problem(helix) {
+                Some(r)
             } else if !positive(*depth) {
                 Some("a thread needs a positive depth")
-            } else if !positive(helix.radius) || (!*internal && *depth >= helix.radius) {
+            } else if !*internal && *depth >= helix.radius {
                 Some("a thread's depth must be less than its radius")
-            } else if helix.axis.length() < 1e-9 {
-                Some("a thread needs an axis direction")
-            } else if helix.turns() > MAX_THREAD_TURNS {
-                Some("a thread is limited to 500 turns")
+            } else if *starts == 0 || *starts > MAX_THREAD_STARTS {
+                Some("a thread has between 1 and 200 starts")
             } else {
                 None
             };
@@ -586,19 +599,64 @@ where
             }
             // The groove, swept along the helix, is cut from the body: a shaft
             // is threaded inward from its major diameter, a hole outward from
-            // its minor diameter.
-            let groove = crate::thread_profile(helix.pitch, *depth, helix.radius, *internal);
+            // its minor diameter. Extra starts are the same groove turned
+            // about the axis, cut together as one compound tool. The helix
+            // pitch is the LEAD (advance per turn); adjacent grooves of a
+            // multi-start thread sit lead/starts apart, which sizes the groove.
+            let spacing = helix.pitch / f64::from(*starts);
+            let groove = crate::thread_profile(spacing, *depth, helix.radius, *internal);
             let tool = backend.helix_sweep(&groove, *helix).map_err(backend_err)?;
+            let mut turned = Vec::with_capacity(*starts as usize - 1);
+            for s in 1..*starts {
+                let angle = std::f64::consts::TAU * f64::from(s) / f64::from(*starts);
+                turned.push(backend.rotate(&tool, helix.center, helix.axis, angle).map_err(backend_err)?);
+            }
+            let cut_with = if turned.is_empty() {
+                tool
+            } else {
+                let mut members: Vec<&B::Body> = Vec::with_capacity(*starts as usize);
+                members.push(&tool);
+                members.extend(turned.iter());
+                backend.compound(&members).map_err(backend_err)?
+            };
             backend
-                .boolean(BooleanOp::Subtract, body, &tool)
+                .boolean(BooleanOp::Subtract, body, &cut_with)
                 .map_err(backend_err)
         }
     }
 }
 
-/// The most turns one [`FeatureKind::Thread`] will sweep — a guard against a
-/// mistyped pitch stalling regeneration.
+/// The most turns one helix (a [`FeatureKind::Thread`] or a
+/// [`crate::SweepPath::Helix`]) will sweep — a guard against a mistyped pitch
+/// stalling regeneration.
 pub const MAX_THREAD_TURNS: f64 = 500.0;
+
+/// The most starts one [`FeatureKind::Thread`] will cut.
+pub const MAX_THREAD_STARTS: u32 = 200;
+
+/// Why a helix can't be swept, if it can't.
+fn helix_problem(helix: &crate::Helix) -> Option<&'static str> {
+    let positive = |x: f64| x.is_finite() && x > 0.0;
+    if !positive(helix.pitch) {
+        Some("a helix needs a positive pitch")
+    } else if !positive(helix.length) {
+        Some("a helix needs a positive length")
+    } else if !positive(helix.radius) {
+        Some("a helix needs a positive radius")
+    } else if helix.axis.length() < 1e-9 {
+        Some("a helix needs an axis direction")
+    } else if helix.turns() > MAX_THREAD_TURNS {
+        Some("a helix is limited to 500 turns")
+    } else {
+        None
+    }
+}
+
+/// The instances a [`FeatureKind::Pattern`] builds: `0..count` minus `skip`,
+/// in order.
+pub fn pattern_instances(count: u32, skip: &[u32]) -> Vec<u32> {
+    (0..count).filter(|i| !skip.contains(i)).collect()
+}
 
 /// The most instances one [`FeatureKind::Pattern`] will build — a guard
 /// against a mistyped count stalling regeneration.

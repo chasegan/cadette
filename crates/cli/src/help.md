@@ -86,11 +86,23 @@ Operations (reference earlier ids):
   The helix runs `length` along the axis from `center`; let it overshoot the
   ends by a pitch (it only cuts air). ISO coarse pitches: M3 0.5, M4 0.7,
   M5 0.8, M6 1.0, M8 1.25, M10 1.5, M12 1.75; `depth` = 0.541 × pitch.
-- `{"Pattern":{"source":id,"count":n,"layout":{"Linear":{"step":[x,y,z]}}}}` or
-  `"layout":{"Circular":{"center":[x,y,z],"axis":[x,y,z],"angle":radians}}` —
-  `count` instances (the seed in place plus `count-1` copies, each moved one
-  more `step` / `angle`), bundled as one body like a Group. For a bolt circle
-  use `angle = 2π/count`. To repeat a *cut*, `insert_transform` the Pattern on
+  Optional `"starts":n` repeats the groove `n` times around the axis; the
+  helix `pitch` is then the lead (advance per turn) and the grooves sit
+  `pitch/n` apart, which sizes them. A **knurl** is two steep multi-start
+  threads: e.g. on a 20 mm knob `pitch: 60, starts: 30, depth: 0.5`, once
+  right-handed and once with `left_handed: true`.
+- `{"Sweep":{"profile":sketchId,"path":{"Helix":{"helix":HELIX}}}}` — a coil
+  or spring: the sketch face is carried along the helix (same `HELIX` object
+  as Thread) keeping its orientation relative to the axis, so sketch the
+  section on a plane through the axis, at the coil radius.
+- `{"Pattern":{"source":id,"count":n,"layout":{"Linear":{"step":[x,y,z]}}}}`,
+  `"layout":{"Circular":{"center":[x,y,z],"axis":[x,y,z],"angle":radians}}` or
+  `"layout":{"Helical":{"center":[..],"axis":[..],"angle":radians,"rise":d}}`
+  (each instance turned `angle` AND moved `rise` along the axis — bumps up a
+  knob) — `count` instances (the seed in place plus `count-1` copies, each
+  moved one more step), bundled as one body like a Group. Optional
+  `"skip":[i,..]` leaves instances out (0 = the seed). For a bolt circle use
+  `angle = 2π/count`. To repeat a *cut*, `insert_transform` the Pattern on
   the boolean's tool: the Subtract then removes every instance.
 
 Typical part: add a Box → add a Cylinder → insert_transform a Translate on the

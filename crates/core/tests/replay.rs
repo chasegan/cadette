@@ -106,6 +106,9 @@ impl GeometryBackend for Recording {
     fn mirror(&mut self, body: &String, _origin: DVec3, normal: DVec3) -> Result<String, String> {
         Ok(format!("mirror({body},{:.0},{:.0},{:.0})", normal.x, normal.y, normal.z))
     }
+    fn sweep_helix(&mut self, profile: &String, helix: cdt_core::Helix) -> Result<String, String> {
+        Ok(format!("coil({profile},r={},p={},l={})", helix.radius, helix.pitch, helix.length))
+    }
     fn helix_sweep(&mut self, profile: &[cdt_core::ProfileElem], helix: cdt_core::Helix) -> Result<String, String> {
         Ok(format!("helix({} segs,r={},p={},l={})", profile.len(), helix.radius, helix.pitch, helix.length))
     }
@@ -392,6 +395,7 @@ fn a_pattern_repeats_its_seed_and_splices_into_a_cut() {
             source: pin,
             layout: PatternLayout::Linear { step: DVec3::new(20.0, 0.0, 0.0) },
             count: 3,
+            skip: Vec::new(),
         },
     );
     assert!(doc.history.validate().is_ok());
@@ -411,13 +415,30 @@ fn a_pattern_repeats_its_seed_and_splices_into_a_cut() {
         source: pin,
         layout: PatternLayout::Circular { center: DVec3::ZERO, axis: DVec3::Z, angle: 1.0 },
         count: 2,
+        skip: Vec::new(),
     };
     let regen = regenerate(&doc, &mut Recording);
     assert_eq!(regen.body(pat).unwrap(), "group(cyl(2,10),rotate(cyl(2,10),1.00))");
+    // Helical: each instance is turned AND lifted along the axis; skipped
+    // instances (here the seed and #2) are left out, keeping the others' places.
+    doc.history.get_mut(pat).unwrap().kind = FeatureKind::Pattern {
+        source: pin,
+        layout: PatternLayout::Helical { center: DVec3::ZERO, axis: DVec3::Z, angle: 0.5, rise: 3.0 },
+        count: 4,
+        skip: vec![0, 2, 99],
+    };
+    let regen = regenerate(&doc, &mut Recording);
+    assert!(regen.is_ok(), "{:?}", regen.errors());
+    assert_eq!(
+        regen.body(pat).unwrap(),
+        "group(xlat(rotate(cyl(2,10),0.50),0,0,3),xlat(rotate(cyl(2,10),1.50),0,0,9))"
+    );
+    assert_eq!(cdt_core::pattern_instances(4, &[0, 2, 99]), vec![1, 3]);
     doc.history.get_mut(pat).unwrap().kind = FeatureKind::Pattern {
         source: pin,
         layout: PatternLayout::Linear { step: DVec3::X },
         count: 0,
+        skip: Vec::new(),
     };
     let regen = regenerate(&doc, &mut Recording);
     assert!(!regen.is_ok(), "an empty pattern is reported");
@@ -438,7 +459,7 @@ fn a_thread_cuts_a_helical_groove_from_its_body() {
     };
     let thread = doc.add(
         "Thread",
-        FeatureKind::Thread { source: shaft, helix, depth: Helix::iso_depth(1.5), internal: false },
+        FeatureKind::Thread { source: shaft, helix, depth: Helix::iso_depth(1.5), internal: false, starts: 1 },
     );
     let regen = regenerate(&doc, &mut Recording);
     assert!(regen.is_ok(), "{:?}", regen.errors());
@@ -472,8 +493,35 @@ fn a_thread_cuts_a_helical_groove_from_its_body() {
         helix: Helix { pitch: 0.0, ..helix },
         depth: 0.9,
         internal: false,
+        starts: 1,
     };
     assert!(!regenerate(&doc, &mut Recording).is_ok(), "zero pitch is an error");
+
+    // A multi-start thread turns the groove about the axis and cuts the lot
+    // as one compound tool — a 3-start is the seed plus two rotated copies.
+    doc.history.get_mut(thread).unwrap().kind = FeatureKind::Thread {
+        source: shaft,
+        helix,
+        depth: 0.9,
+        internal: false,
+        starts: 3,
+    };
+    let regen = regenerate(&doc, &mut Recording);
+    assert!(regen.is_ok(), "{:?}", regen.errors());
+    assert_eq!(
+        regen.body(thread).unwrap(),
+        "sub(cyl(5,20),group(helix(4 segs,r=5,p=1.5,l=20),rotate(helix(4 segs,r=5,p=1.5,l=20),2.09),rotate(helix(4 segs,r=5,p=1.5,l=20),4.19)))",
+        "the groove itself is sized for pitch/starts, but the helix is the full lead"
+    );
+
+    // A coil: a sketched circle swept along a helix.
+    let mut doc = Document::new("coil");
+    let ring = doc.add("Ring", FeatureKind::Sketch { plane: SketchPlane::Xz, profile: Profile::Circle { radius: 1.0 } });
+    let coil = doc.add("Coil", FeatureKind::Sweep { profile: ring, path: cdt_core::SweepPath::Helix { helix } });
+    let regen = regenerate(&doc, &mut Recording);
+    assert!(regen.is_ok(), "{:?}", regen.errors());
+    assert_eq!(regen.visible(), &[coil]);
+    assert!(regen.body(coil).unwrap().starts_with("coil(sketch("), "{}", regen.body(coil).unwrap());
 }
 
 #[test]

@@ -242,6 +242,23 @@ impl GeometryBackend for KernelBackend {
         Body::generated(profile, solid, &records)
     }
 
+    fn sweep_helix(&mut self, profile: &Body, helix: Helix) -> Result<Body, KernelError> {
+        let axis = helix.axis.normalize();
+        let spine = Solid::helix_wire(
+            helix.center.to_array(),
+            axis.to_array(),
+            perpendicular_to(axis).to_array(),
+            helix.radius,
+            helix.pitch,
+            helix.length,
+            helix.left_handed,
+        )?;
+        // The profile is carried from where it was sketched; with the axis as
+        // binormal its offset from the helix start rides round unchanged.
+        let (solid, records) = profile.solid.sweep_tracked(&spine, axis.to_array())?;
+        Body::generated(profile, solid, &records)
+    }
+
     fn helix_sweep(&mut self, profile: &[ProfileElem], helix: Helix) -> Result<Body, KernelError> {
         // The helix's own frame: any unit x_dir ⊥ axis. The profile's (u, v)
         // live on the plane spanned by (x_dir, axis) through the centre, and

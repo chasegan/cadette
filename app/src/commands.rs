@@ -255,8 +255,86 @@ impl Modeler {
                 helix,
                 depth: Helix::iso_depth(pitch),
                 internal: !cyl.convex,
+                starts: 1,
             },
         );
+        self.ui.selected = Some(id);
+        self.selection.clear();
+        true
+    }
+
+    /// Sweep the selected sketch profile along a helix into a coil. The helix
+    /// axis is the sketch plane's in-plane Y (so a section drawn on the front
+    /// plane coils about Z), through the plane origin, at the profile's
+    /// distance from that axis; the pitch is twice the profile's size and the
+    /// coil five turns long — all editable in Properties. Returns true if added.
+    pub(crate) fn sweep_along_helix(&mut self, profile: FeatureId) -> bool {
+        let plane = match self.doc.history.get(profile).map(|f| &f.kind) {
+            Some(FeatureKind::Sketch { plane, .. })
+            | Some(FeatureKind::ConstraintSketch { plane, .. }) => *plane,
+            _ => return false,
+        };
+        let Some(idx) = self.ui.visible.iter().position(|&f| f == profile) else {
+            return false;
+        };
+        let Some((min, max)) = self.body_bounds.get(idx).copied() else {
+            return false;
+        };
+        let center_of = DVec3::new(0.5 * (min[0] + max[0]), 0.5 * (min[1] + max[1]), 0.5 * (min[2] + max[2]));
+        let axis = plane.y_dir().normalize();
+        let origin = plane.origin();
+        let to_body = center_of - origin;
+        let radial = to_body - axis * to_body.dot(axis);
+        let size = (max[0] - min[0]).max(max[1] - min[1]).max(max[2] - min[2]).max(1.0);
+        let radius = if radial.length() > 1e-6 { radial.length() } else { 2.0 * size };
+        let pitch = 2.0 * size;
+        let helix = Helix { center: origin, axis, radius, pitch, length: 5.0 * pitch, left_handed: false };
+        self.record_undo(self.doc.clone());
+        let id = self.doc.add_numbered(
+            "Coil",
+            FeatureKind::Sweep { profile, path: cdt_core::SweepPath::Helix { helix } },
+        );
+        self.ui.selected = Some(id);
+        self.selection.clear();
+        true
+    }
+
+    /// The pattern instance behind the selected face, if the selected body is
+    /// a Pattern: `(pattern id, instance index)`. Instances are compounded in
+    /// order, each with the seed's face count, so the local face index maps to
+    /// the k-th built instance, which maps back through the skip list.
+    pub(crate) fn selected_pattern_instance(&self) -> Option<(FeatureId, u32)> {
+        let Pick::Face(global) = self.selection.primary()? else {
+            return None;
+        };
+        let (body_index, local) = self.locate_face(global)?;
+        let id = *self.ui.visible.get(body_index)?;
+        let (count, skip) = match self.doc.history.get(id).map(|f| &f.kind) {
+            Some(FeatureKind::Pattern { count, skip, .. }) => (*count, skip.clone()),
+            _ => return None,
+        };
+        let built = cdt_core::pattern_instances(count, &skip);
+        let faces = self.bodies.get(body_index)?.face_count().ok()? as u32;
+        if built.is_empty() || faces == 0 || faces % built.len() as u32 != 0 {
+            return None;
+        }
+        let per_instance = faces / built.len() as u32;
+        built.get((local / per_instance) as usize).map(|&i| (id, i))
+    }
+
+    /// Leave the pattern instance behind the selected face out of the pattern.
+    /// Returns true if an instance was skipped.
+    pub(crate) fn skip_selected_instance(&mut self) -> bool {
+        let Some((id, instance)) = self.selected_pattern_instance() else {
+            return false;
+        };
+        self.record_undo(self.doc.clone());
+        if let Some(FeatureKind::Pattern { skip, .. }) = self.doc.history.get_mut(id).map(|f| &mut f.kind) {
+            if !skip.contains(&instance) {
+                skip.push(instance);
+                skip.sort_unstable();
+            }
+        }
         self.ui.selected = Some(id);
         self.selection.clear();
         true
@@ -294,10 +372,24 @@ impl Modeler {
                 (PatternLayout::Linear { step: dir * (along * 1.5) }, 3)
             }
             PatternKind::Circular => {
+                // Around the world Z axis through the origin — unless the body
+                // sits on that axis, where every instance would coincide; then
+                // orbit it about a centre off to its side instead.
                 let count = 6;
+                let body_center = DVec3::new(
+                    0.5 * (min[0] + max[0]),
+                    0.5 * (min[1] + max[1]),
+                    0.5 * (min[2] + max[2]),
+                );
+                let on_axis = body_center.truncate().length() < 1e-6;
+                let center = if on_axis {
+                    DVec3::new(body_center.x + 1.5 * (max[0] - min[0]).max(1.0), body_center.y, 0.0)
+                } else {
+                    DVec3::ZERO
+                };
                 (
                     PatternLayout::Circular {
-                        center: DVec3::ZERO,
+                        center,
                         axis: DVec3::Z,
                         angle: std::f64::consts::TAU / f64::from(count),
                     },
@@ -308,7 +400,7 @@ impl Modeler {
         self.record_undo(self.doc.clone());
         let id = self.doc.insert_transform_numbered(
             "Pattern",
-            FeatureKind::Pattern { source: body, layout, count },
+            FeatureKind::Pattern { source: body, layout, count, skip: Vec::new() },
         );
         self.ui.selected = Some(id);
         self.selection.clear();

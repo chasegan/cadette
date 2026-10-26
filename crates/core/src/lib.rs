@@ -38,7 +38,7 @@ pub use build_graph::{BuildGraph, BuildGraphRow, LANE_PALETTE};
 pub use glam::DVec3;
 pub use history::{DependencyError, History};
 pub use regen::{
-    regenerate, regenerate_solved, MissingReason, RegenCache, RegenError, Regeneration, MAX_PATTERN_COUNT, MAX_THREAD_TURNS,
+    regenerate, regenerate_solved, MissingReason, RegenCache, RegenError, Regeneration, pattern_instances, MAX_PATTERN_COUNT, MAX_THREAD_STARTS, MAX_THREAD_TURNS,
 };
 pub use selection::Pick;
 pub use sketch::{
