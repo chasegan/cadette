@@ -257,6 +257,28 @@ impl Solid {
         )?))
     }
 
+    /// A helix wire on the cylinder of `radius` about the axis through
+    /// `center` with direction `axis`, starting at `center + radius * x_dir`
+    /// (`x_dir` ⊥ `axis`) and climbing `pitch` per turn for `length` along the
+    /// axis. The natural spine for a thread or a coil: sweep a profile drawn on
+    /// the frame `(center, x_dir, axis)` along it with the axis as binormal and
+    /// the profile stays in the axial plane all the way round.
+    #[allow(clippy::too_many_arguments)]
+    pub fn helix_wire(
+        center: [f64; 3],
+        axis: [f64; 3],
+        x_dir: [f64; 3],
+        radius: f64,
+        pitch: f64,
+        length: f64,
+        left_handed: bool,
+    ) -> Result<Self> {
+        Ok(Self::wrap(ffi::helix_wire(
+            center[0], center[1], center[2], axis[0], axis[1], axis[2], x_dir[0], x_dir[1],
+            x_dir[2], radius, pitch, length, left_handed,
+        )?))
+    }
+
     /// Sweep this planar face along `spine` into a solid, keeping it normal to
     /// the path with its roll locked to `binormal` (the path plane's normal).
     pub fn sweep(&self, spine: &Solid, binormal: [f64; 3]) -> Result<Self> {
@@ -575,6 +597,20 @@ impl Solid {
         )))
     }
 
+    /// The cylinder behind the face at `index` (TopExp order), or `None` if
+    /// the index is out of range or the face isn't cylindrical.
+    pub fn face_cylinder(&self, index: u32) -> Result<Option<CylinderFace>> {
+        let cf = ffi::face_cylinder(&self.0, index)?;
+        Ok(cf.ok.then_some(CylinderFace {
+            location: [cf.lx, cf.ly, cf.lz],
+            axis: [cf.ax, cf.ay, cf.az],
+            radius: cf.radius,
+            v0: cf.v0,
+            v1: cf.v1,
+            convex: cf.convex,
+        }))
+    }
+
     /// Midpoints of the edges bounding face `index` (TopExp order) — a point on
     /// each edge, for filleting a whole face's edges.
     pub fn face_edge_midpoints(&self, index: u32) -> Result<Vec<[f64; 3]>> {
@@ -650,6 +686,19 @@ impl CurveKind {
     }
 }
 
+/// A cylindrical face's geometry (see [`Solid::face_cylinder`]): the axis is
+/// `location + v * axis` and the face spans `v0..v1` along it. `convex` means
+/// the material is inside the cylinder (a shaft) rather than outside (a hole).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CylinderFace {
+    pub location: [f64; 3],
+    pub axis: [f64; 3],
+    pub radius: f64,
+    pub v0: f64,
+    pub v1: f64,
+    pub convex: bool,
+}
+
 /// One face of a solid (see [`Solid::faces`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct FaceInfo {
@@ -665,6 +714,9 @@ pub struct FaceInfo {
     /// Radius for cylinders, spheres and cones (reference radius) and the
     /// major radius for tori; `None` for other surfaces.
     pub radius: Option<f64>,
+    /// The surface axis for cylinders, cones and tori, as `(point on it,
+    /// unit direction)`; `None` for other surfaces.
+    pub axis: Option<([f64; 3], [f64; 3])>,
     /// Bounding edges, as unique-edge indices (see [`Solid::edges`]).
     pub edges: Vec<u32>,
 }
@@ -683,6 +735,8 @@ impl From<ffi::FaceInfo> for FaceInfo {
             centroid: [f.cx, f.cy, f.cz],
             normal: [f.nx, f.ny, f.nz],
             radius: has_radius.then_some(f.radius),
+            axis: matches!(surface, SurfaceKind::Cylinder | SurfaceKind::Cone | SurfaceKind::Torus)
+                .then_some(([f.lx, f.ly, f.lz], [f.ax, f.ay, f.az])),
             edges: f.edges,
         }
     }

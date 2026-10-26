@@ -299,6 +299,13 @@ pub fn kind_summary(kind: &FeatureKind) -> String {
             format!("Group of {}", members.iter().map(|m| format!("#{}", m.0)).collect::<Vec<_>>().join(", "))
         }
         FeatureKind::Sweep { profile, .. } => format!("Sweep #{} along a path", profile.0),
+        FeatureKind::Thread { source, helix, internal, .. } => format!(
+            "{} thread on #{} pitch {} × {:.1} turns",
+            if *internal { "Internal" } else { "External" },
+            source.0,
+            helix.pitch,
+            helix.turns()
+        ),
         FeatureKind::Pattern { source, layout, count } => match layout {
             cdt_core::PatternLayout::Linear { step } => {
                 format!("Pattern #{} ×{count} every ({}, {}, {})", source.0, step.x, step.y, step.z)

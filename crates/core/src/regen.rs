@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::backend::GeometryBackend;
 use crate::document::Document;
-use crate::features::{FeatureId, FeatureKind};
+use crate::features::{BooleanOp, FeatureId, FeatureKind};
 use crate::solver::{SketchSolver, SolveStatus};
 
 /// A single feature's failure during regeneration.
@@ -558,8 +558,47 @@ where
             members.extend(moved.iter());
             backend.compound(&members).map_err(backend_err)
         }
+        FeatureKind::Thread {
+            source,
+            helix,
+            depth,
+            internal,
+        } => {
+            let body = input(*source)?;
+            let positive = |x: f64| x.is_finite() && x > 0.0;
+            let reason = if !positive(helix.pitch) {
+                Some("a thread needs a positive pitch")
+            } else if !positive(helix.length) {
+                Some("a thread needs a positive length")
+            } else if !positive(*depth) {
+                Some("a thread needs a positive depth")
+            } else if !positive(helix.radius) || (!*internal && *depth >= helix.radius) {
+                Some("a thread's depth must be less than its radius")
+            } else if helix.axis.length() < 1e-9 {
+                Some("a thread needs an axis direction")
+            } else if helix.turns() > MAX_THREAD_TURNS {
+                Some("a thread is limited to 500 turns")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                return Err(RegenError::Invalid { feature, reason });
+            }
+            // The groove, swept along the helix, is cut from the body: a shaft
+            // is threaded inward from its major diameter, a hole outward from
+            // its minor diameter.
+            let groove = crate::thread_profile(helix.pitch, *depth, helix.radius, *internal);
+            let tool = backend.helix_sweep(&groove, *helix).map_err(backend_err)?;
+            backend
+                .boolean(BooleanOp::Subtract, body, &tool)
+                .map_err(backend_err)
+        }
     }
 }
+
+/// The most turns one [`FeatureKind::Thread`] will sweep — a guard against a
+/// mistyped pitch stalling regeneration.
+pub const MAX_THREAD_TURNS: f64 = 500.0;
 
 /// The most instances one [`FeatureKind::Pattern`] will build — a guard
 /// against a mistyped count stalling regeneration.

@@ -16,7 +16,7 @@ pub use backend::{Body, KernelBackend};
 pub use elements::{ElemKind, ElementMap, ElementName, GenRecord, Lineage};
 pub use solids::{
     CurveKind, EdgeInfo, FaceInfo, MassProperties, Mesh, PushPullInfo, PushPullTracking, Solid,
-    SurfaceKind, Topology, TrackedBoolOp, TrackedBoolean, TrackedModify, TrackedPushPull,
+    SurfaceKind, Topology, TrackedBoolOp, TrackedBoolean, TrackedModify, TrackedPushPull, CylinderFace,
 };
 
 /// Error raised when an OCCT operation fails. Wraps the message OCCT threw

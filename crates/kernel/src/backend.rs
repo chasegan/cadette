@@ -10,8 +10,8 @@
 use std::sync::Arc;
 
 use cdt_core::{
-    BooleanOp, DVec3, EdgeAnchor, FaceAnchor, FeatureId, GeometryBackend, Profile, ProfileElem,
-    SketchPlane,
+    BooleanOp, DVec3, EdgeAnchor, FaceAnchor, FeatureId, GeometryBackend, Helix, Profile,
+    ProfileElem, SketchPlane,
 };
 
 use crate::elements::{ElementMap, GenRecord};
@@ -242,6 +242,44 @@ impl GeometryBackend for KernelBackend {
         Body::generated(profile, solid, &records)
     }
 
+    fn helix_sweep(&mut self, profile: &[ProfileElem], helix: Helix) -> Result<Body, KernelError> {
+        // The helix's own frame: any unit x_dir ⊥ axis. The profile's (u, v)
+        // live on the plane spanned by (x_dir, axis) through the centre, and
+        // the helix starts on that plane at u = radius — so they line up.
+        let axis = helix.axis.normalize();
+        let x_dir = perpendicular_to(axis);
+        let mut points: Vec<f64> = Vec::with_capacity(profile.len() * 2);
+        let mut segs: Vec<f64> = Vec::with_capacity(profile.len() * 5);
+        for e in profile {
+            let [u, v] = e.start();
+            points.push(u);
+            points.push(v);
+            match *e {
+                ProfileElem::Line { .. } => segs.extend([0.0, 0.0, 0.0, 0.0, 0.0]),
+                ProfileElem::Bezier { c1, c2, .. } => segs.extend([1.0, c1[0], c1[1], c2[0], c2[1]]),
+            }
+        }
+        let face = Solid::profile_face(
+            helix.center.to_array(),
+            x_dir.to_array(),
+            axis.to_array(),
+            &points,
+            &segs,
+        )?;
+        let spine = Solid::helix_wire(
+            helix.center.to_array(),
+            axis.to_array(),
+            x_dir.to_array(),
+            helix.radius,
+            helix.pitch,
+            helix.length,
+            helix.left_handed,
+        )?;
+        // The axis as binormal keeps the section in the axial plane all the
+        // way round (see `Solid::helix_wire`).
+        Ok(Body::untracked(face.sweep(&spine, axis.to_array())?))
+    }
+
     fn translate(&mut self, body: &Body, offset: DVec3) -> Result<Body, KernelError> {
         Ok(body.transformed(body.solid.translate(offset.x, offset.y, offset.z)?))
     }
@@ -397,4 +435,11 @@ impl GeometryBackend for KernelBackend {
         }
         Ok(Body::untracked(acc))
     }
+}
+
+/// A unit vector perpendicular to unit `axis` — deterministic, so a helix and
+/// the profile drawn on its frame agree.
+fn perpendicular_to(axis: DVec3) -> DVec3 {
+    let seed = if axis.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
+    axis.cross(seed).normalize()
 }

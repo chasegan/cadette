@@ -14,7 +14,7 @@
 use glam::DVec3;
 use serde::{Deserialize, Serialize};
 
-use crate::sketch::{Profile, Sketch2d, SketchPlane};
+use crate::sketch::{Profile, ProfileElem, Sketch2d, SketchPlane};
 
 /// Stable identity for a feature, independent of its position in history.
 /// Survives reordering, so references never dangle when steps move.
@@ -171,6 +171,90 @@ pub enum FeatureKind {
         layout: PatternLayout,
         count: u32,
     },
+
+    /// Cut a screw thread into `source`: a 60° V-groove (ISO basic profile:
+    /// flat crest and root) swept along `helix` and subtracted. The helix
+    /// radius is the surface being threaded — a shaft at its major diameter
+    /// (`internal: false`, the groove cuts inward) or a hole at its minor
+    /// diameter (`internal: true`, the groove cuts outward). `depth` is the
+    /// groove depth; [`Helix::iso_depth`] gives the ISO value for a pitch.
+    Thread {
+        source: FeatureId,
+        helix: Helix,
+        depth: f64,
+        internal: bool,
+    },
+}
+
+/// A helix: the spine of a thread or a coil. It winds around the axis through
+/// `center` with direction `axis` at `radius`, climbing `pitch` per turn for
+/// `length` along the axis (so `length / pitch` turns), right-handed unless
+/// `left_handed`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Helix {
+    pub center: DVec3,
+    pub axis: DVec3,
+    pub radius: f64,
+    pub pitch: f64,
+    pub length: f64,
+    pub left_handed: bool,
+}
+
+impl Helix {
+    /// The ISO 261 coarse pitch for a nominal `diameter` (mm), by nearest
+    /// standard size — the default a thread tool offers for a picked cylinder.
+    pub fn iso_pitch(diameter: f64) -> f64 {
+        const COARSE: [(f64, f64); 16] = [
+            (1.6, 0.35), (2.0, 0.4), (2.5, 0.45), (3.0, 0.5), (4.0, 0.7), (5.0, 0.8),
+            (6.0, 1.0), (8.0, 1.25), (10.0, 1.5), (12.0, 1.75), (16.0, 2.0), (20.0, 2.5),
+            (24.0, 3.0), (30.0, 3.5), (36.0, 4.0), (42.0, 4.5),
+        ];
+        COARSE
+            .iter()
+            .min_by(|a, b| (a.0 - diameter).abs().total_cmp(&(b.0 - diameter).abs()))
+            .map_or(1.0, |&(_, p)| p)
+    }
+
+    /// The ISO basic-profile thread depth for `pitch`: 5/8 of the fundamental
+    /// triangle height (H = 0.866 p), between the crest and root flats.
+    pub fn iso_depth(pitch: f64) -> f64 {
+        0.625 * 0.866_025_4 * pitch
+    }
+
+    /// The number of turns.
+    pub fn turns(&self) -> f64 {
+        self.length / self.pitch
+    }
+}
+
+/// The groove a [`FeatureKind::Thread`] cuts, as a closed loop in the helix's
+/// axial plane: `u` is the distance from the axis, `v` the position along it
+/// (0 at the helix point, so the groove is centred on the helix). ISO basic
+/// profile: a crest flat of `p/8` is left standing at the surface and the root
+/// flat is `p/4`, which with the ISO depth gives 60° flanks. The groove's base
+/// is pushed a little past the surface (into air) so the cut is clean.
+pub fn thread_profile(pitch: f64, depth: f64, radius: f64, internal: bool) -> Vec<ProfileElem> {
+    let overlap = 0.05 * pitch;
+    // Half-widths: at the surface the groove is p - p/8 wide; the flank
+    // continues through the overlap at the same slope.
+    let flank = (0.4375 - 0.125) / Helix::iso_depth(1.0); // Δu per Δv at ISO depth
+    let half_base = 0.4375 * pitch + overlap * flank;
+    let half_root = 0.125 * pitch;
+    // The groove points INTO the material: inward on a shaft, outward in a hole.
+    let (u_base, u_root) = if internal {
+        (radius - overlap, radius + depth)
+    } else {
+        (radius + overlap, radius - depth)
+    };
+    let pts = [
+        [u_base, -half_base],
+        [u_root, -half_root],
+        [u_root, half_root],
+        [u_base, half_base],
+    ];
+    (0..4)
+        .map(|i| ProfileElem::Line { a: pts[i], b: pts[(i + 1) % 4] })
+        .collect()
 }
 
 /// Where a [`FeatureKind::Pattern`] puts its instances. Instance `i` (from 0)
@@ -235,6 +319,7 @@ impl FeatureKind {
             FeatureKind::Group { .. } => "Group",
             FeatureKind::Sweep { .. } => "Sweep",
             FeatureKind::Pattern { .. } => "Pattern",
+            FeatureKind::Thread { .. } => "Thread",
         }
     }
 
@@ -279,7 +364,9 @@ impl FeatureKind {
             FeatureKind::Boolean { target, tool, .. } => vec![*target, *tool],
             FeatureKind::Group { members } => members.clone(),
             FeatureKind::Sweep { profile, .. } => vec![*profile],
-            FeatureKind::Pattern { source, .. } => vec![*source],
+            FeatureKind::Pattern { source, .. } | FeatureKind::Thread { source, .. } => {
+                vec![*source]
+            }
         }
     }
 
@@ -298,7 +385,8 @@ impl FeatureKind {
             | FeatureKind::Revolve { source, .. }
             | FeatureKind::Mirror { source, .. }
             | FeatureKind::Sweep { profile: source, .. }
-            | FeatureKind::Pattern { source, .. } => Some(*source),
+            | FeatureKind::Pattern { source, .. }
+            | FeatureKind::Thread { source, .. } => Some(*source),
             // Heal to the kept body of a boolean.
             FeatureKind::Boolean { target, .. } => Some(*target),
             // Heal to the first member (ungroup proper bakes any group transform
@@ -326,7 +414,8 @@ impl FeatureKind {
             | FeatureKind::Revolve { source, .. }
             | FeatureKind::Mirror { source, .. }
             | FeatureKind::Sweep { profile: source, .. }
-            | FeatureKind::Pattern { source, .. } => swap(source),
+            | FeatureKind::Pattern { source, .. }
+            | FeatureKind::Thread { source, .. } => swap(source),
             FeatureKind::Boolean { target, tool, .. } => {
                 swap(target);
                 swap(tool);
@@ -357,6 +446,7 @@ impl FeatureKind {
             FeatureKind::Group { .. } => "Group",
             FeatureKind::Sweep { .. } => "Sweep",
             FeatureKind::Pattern { .. } => "Pattern",
+            FeatureKind::Thread { .. } => "Thread",
         }
     }
 }

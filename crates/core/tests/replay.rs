@@ -106,6 +106,9 @@ impl GeometryBackend for Recording {
     fn mirror(&mut self, body: &String, _origin: DVec3, normal: DVec3) -> Result<String, String> {
         Ok(format!("mirror({body},{:.0},{:.0},{:.0})", normal.x, normal.y, normal.z))
     }
+    fn helix_sweep(&mut self, profile: &[cdt_core::ProfileElem], helix: cdt_core::Helix) -> Result<String, String> {
+        Ok(format!("helix({} segs,r={},p={},l={})", profile.len(), helix.radius, helix.pitch, helix.length))
+    }
     fn compound(&mut self, members: &[&String]) -> Result<String, String> {
         let parts: Vec<&str> = members.iter().map(|m| m.as_str()).collect();
         Ok(format!("group({})", parts.join(",")))
@@ -418,6 +421,59 @@ fn a_pattern_repeats_its_seed_and_splices_into_a_cut() {
     };
     let regen = regenerate(&doc, &mut Recording);
     assert!(!regen.is_ok(), "an empty pattern is reported");
+}
+
+#[test]
+fn a_thread_cuts_a_helical_groove_from_its_body() {
+    use cdt_core::{thread_profile, Helix};
+    let mut doc = Document::new("thr");
+    let shaft = doc.add("Shaft", FeatureKind::Cylinder { radius: 5.0, height: 20.0 });
+    let helix = Helix {
+        center: DVec3::ZERO,
+        axis: DVec3::Z,
+        radius: 5.0,
+        pitch: 1.5,
+        length: 20.0,
+        left_handed: false,
+    };
+    let thread = doc.add(
+        "Thread",
+        FeatureKind::Thread { source: shaft, helix, depth: Helix::iso_depth(1.5), internal: false },
+    );
+    let regen = regenerate(&doc, &mut Recording);
+    assert!(regen.is_ok(), "{:?}", regen.errors());
+    assert_eq!(regen.visible(), &[thread], "the thread consumes the shaft");
+    assert_eq!(regen.body(thread).unwrap(), "sub(cyl(5,20),helix(4 segs,r=5,p=1.5,l=20))");
+
+    // The groove: four straight segments closing on themselves, centred on
+    // v=0, base just outside the surface (external) and root `depth` inside.
+    let groove = thread_profile(1.5, Helix::iso_depth(1.5), 5.0, false);
+    assert_eq!(groove.len(), 4);
+    for w in groove.windows(2) {
+        assert_eq!(w[0].end(), w[1].start(), "segments chain");
+    }
+    assert_eq!(groove[3].end(), groove[0].start(), "the loop closes");
+    let us: Vec<f64> = groove.iter().map(|e| e.start()[0]).collect();
+    assert!(us.iter().cloned().fold(f64::MIN, f64::max) > 5.0, "base is past the surface: {us:?}");
+    assert!((us.iter().cloned().fold(f64::MAX, f64::min) - (5.0 - Helix::iso_depth(1.5))).abs() < 1e-9);
+    let vs: Vec<f64> = groove.iter().map(|e| e.start()[1]).collect();
+    assert!(vs.iter().all(|v| v.abs() < 0.75), "narrower than the pitch: {vs:?}");
+    // Internal threads cut outward instead.
+    let groove = thread_profile(1.5, 0.9, 5.0, true);
+    assert!(groove.iter().map(|e| e.start()[0]).fold(f64::MIN, f64::max) > 5.5);
+
+    // ISO defaults: M6 is 1.0 mm coarse; M10 is 1.5.
+    assert_eq!(Helix::iso_pitch(6.0), 1.0);
+    assert_eq!(Helix::iso_pitch(10.2), 1.5);
+
+    // Bad parameters are reported, not swept.
+    doc.history.get_mut(thread).unwrap().kind = FeatureKind::Thread {
+        source: shaft,
+        helix: Helix { pitch: 0.0, ..helix },
+        depth: 0.9,
+        internal: false,
+    };
+    assert!(!regenerate(&doc, &mut Recording).is_ok(), "zero pitch is an error");
 }
 
 #[test]

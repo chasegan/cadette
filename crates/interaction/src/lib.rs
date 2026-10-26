@@ -10,4 +10,4 @@
 
 pub mod selection;
 
-pub use selection::Selection;
+pub use selection::{CylinderPick, Selection};

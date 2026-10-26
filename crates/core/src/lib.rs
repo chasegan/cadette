@@ -31,13 +31,14 @@ pub use backend::GeometryBackend;
 pub use document::Document;
 pub use edit::{BatchError, DocEdit, EditError, EditOutcome};
 pub use features::{
-    BooleanOp, EdgeAnchor, FaceAnchor, Feature, FeatureId, FeatureKind, PatternLayout, SweepPath,
+    thread_profile, BooleanOp, EdgeAnchor, FaceAnchor, Feature, FeatureId, FeatureKind, Helix,
+    PatternLayout, SweepPath,
 };
 pub use build_graph::{BuildGraph, BuildGraphRow, LANE_PALETTE};
 pub use glam::DVec3;
 pub use history::{DependencyError, History};
 pub use regen::{
-    regenerate, regenerate_solved, MissingReason, RegenCache, RegenError, Regeneration, MAX_PATTERN_COUNT,
+    regenerate, regenerate_solved, MissingReason, RegenCache, RegenError, Regeneration, MAX_PATTERN_COUNT, MAX_THREAD_TURNS,
 };
 pub use selection::Pick;
 pub use sketch::{

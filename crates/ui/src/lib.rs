@@ -13,7 +13,7 @@
 use egui::{Color32, Context, RichText, Ui};
 use egui_phosphor::regular as icon;
 use cdt_core::{
-    BooleanOp, Constraint, Document, FeatureId, FeatureKind, PatternLayout, Profile, SketchPlane, DVec3,
+    BooleanOp, Constraint, Document, FeatureId, FeatureKind, Helix, PatternLayout, Profile, SketchPlane, DVec3,
 };
 
 mod theme;
@@ -818,6 +818,26 @@ pub fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> Editor
             ui.label(RichText::new(format!("path: {segs} segments")).small().weak());
             // The path is a line the user can go back and reshape.
             edit_label = Some("Edit path");
+        }
+        FeatureKind::Thread { helix, depth, internal, .. } => {
+            changed |= drag(ui, "Pitch", &mut helix.pitch);
+            changed |= drag(ui, "Depth", depth);
+            changed |= drag(ui, "Length", &mut helix.length);
+            changed |= drag(ui, "Radius", &mut helix.radius);
+            ui.horizontal(|ui| {
+                if ui
+                    .small_button("ISO")
+                    .on_hover_text("Coarse pitch for this diameter, and the ISO depth for it")
+                    .clicked()
+                {
+                    helix.pitch = Helix::iso_pitch(2.0 * helix.radius);
+                    *depth = Helix::iso_depth(helix.pitch);
+                    changed = true;
+                }
+                changed |= ui.checkbox(internal, "Internal").on_hover_text("Cut outward into a hole's wall rather than inward into a shaft").changed();
+                changed |= ui.checkbox(&mut helix.left_handed, "Left-hand").changed();
+            });
+            ui.label(RichText::new(format!("{:.1} turns", helix.turns())).small().weak());
         }
         FeatureKind::Pattern { layout, count, .. } => {
             changed |= count_drag(ui, "Count", count);

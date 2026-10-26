@@ -49,6 +49,25 @@ mod bridge {
         yz: f64,
     }
 
+    /// The cylinder behind a face, for threading. `ok` is false if the face
+    /// index is out of range or the face isn't cylindrical. The axis is
+    /// `(lx,ly,lz) + v * (ax,ay,az)`; the face spans `v0..v1` along it.
+    /// `convex` = the material is inside the cylinder (a shaft, not a hole).
+    #[derive(Clone, Copy, Debug, Default)]
+    struct CylinderFrame {
+        ok: bool,
+        lx: f64,
+        ly: f64,
+        lz: f64,
+        ax: f64,
+        ay: f64,
+        az: f64,
+        radius: f64,
+        v0: f64,
+        v1: f64,
+        convex: bool,
+    }
+
     /// Exact whole-body measurements (see `Solid::mass_properties` /
     /// `Solid::bbox`). Inertia is the 3×3 matrix about the centre of mass,
     /// row-major.
@@ -106,6 +125,14 @@ mod bridge {
         ny: f64,
         nz: f64,
         radius: f64,
+        /// The surface axis for cylinders, cones and tori: a point on it
+        /// `(lx,ly,lz)` and its direction `(ax,ay,az)`; all zero otherwise.
+        lx: f64,
+        ly: f64,
+        lz: f64,
+        ax: f64,
+        ay: f64,
+        az: f64,
         /// Bounding edges, as unique-edge indices.
         edges: Vec<u32>,
     }
@@ -206,6 +233,20 @@ mod bridge {
             yx: f64, yy: f64, yz: f64,
             points: &[f64],
             segs: &[f64],
+        ) -> Result<UniquePtr<Shape>>;
+        /// A helix wire on the cylinder of `radius` about the axis through
+        /// `(cx,cy,cz)` with direction `(ax,ay,az)`, starting at
+        /// `center + radius * (xx,xy,xz)` and climbing `pitch` per turn for
+        /// `length` along the axis. `left_handed` winds the other way.
+        #[allow(clippy::too_many_arguments)]
+        fn helix_wire(
+            cx: f64, cy: f64, cz: f64,
+            ax: f64, ay: f64, az: f64,
+            xx: f64, xy: f64, xz: f64,
+            radius: f64,
+            pitch: f64,
+            length: f64,
+            left_handed: bool,
         ) -> Result<UniquePtr<Shape>>;
         /// Sweep the planar `profile` face along the `spine` wire into a solid,
         /// keeping it normal to the path with its roll locked to the constant
@@ -435,6 +476,9 @@ mod bridge {
 
         /// The plane of the face at `index` (TopExp order), for sketch-on-face.
         fn face_plane(shape: &Shape, index: u32) -> Result<PlaneFrame>;
+
+        /// The cylinder of the face at `index` (TopExp order), for threading.
+        fn face_cylinder(shape: &Shape, index: u32) -> Result<CylinderFrame>;
 
         /// Midpoints (flat x,y,z) of the edges bounding face `index`, for
         /// filleting a whole face's edges.

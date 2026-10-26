@@ -5,7 +5,19 @@
 //! replaces. A set is kept homogeneous (all faces, or all edges) — picking a
 //! different kind replaces, since mixed selections map to no real operation.
 
-use cdt_core::{Pick, SketchPlane};
+use cdt_core::{DVec3, Pick, SketchPlane};
+
+/// The cylinder behind a selected round face, for threading: the face runs
+/// `length` along `axis` from `start` at `radius`. `convex` = a shaft (the
+/// material is inside the cylinder); otherwise a hole.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CylinderPick {
+    pub start: DVec3,
+    pub axis: DVec3,
+    pub radius: f64,
+    pub length: f64,
+    pub convex: bool,
+}
 
 /// What the user has selected and is hovering in the viewport.
 #[derive(Clone, Default)]
@@ -17,6 +29,9 @@ pub struct Selection {
     /// The plane of the (single) selected face, if exactly one planar face is
     /// selected — the host computes this (it needs the kernel) and stores it.
     pub face_plane: Option<SketchPlane>,
+    /// The cylinder of the (single) selected face, if exactly one cylindrical
+    /// face is selected — set by the host after [`Self::select`], which clears it.
+    pub face_cylinder: Option<CylinderPick>,
 }
 
 /// Two picks are the same kind if both are faces or both are edges.
@@ -59,6 +74,8 @@ impl Selection {
             [Pick::Face(_)] => face_plane,
             _ => None,
         };
+        // The host re-derives the cylinder for a lone round face after this.
+        self.face_cylinder = None;
     }
 
     /// Set the hovered entity.

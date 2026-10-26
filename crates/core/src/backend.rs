@@ -8,7 +8,7 @@
 
 use glam::DVec3;
 
-use crate::features::{BooleanOp, EdgeAnchor, FaceAnchor, FeatureId};
+use crate::features::{BooleanOp, EdgeAnchor, FaceAnchor, FeatureId, Helix};
 use crate::sketch::{ProfileElem, Profile, SketchPlane};
 
 /// A geometry engine capable of producing and combining solid bodies.
@@ -55,6 +55,17 @@ pub trait GeometryBackend {
         profile: &Self::Body,
         path_plane: SketchPlane,
         path: &[ProfileElem],
+    ) -> Result<Self::Body, Self::Error>;
+
+    /// Sweep a closed `profile` along `helix` into a solid. The profile is a
+    /// loop in the helix's axial plane — `(u, v)` = (distance from the axis,
+    /// position along it from the helix centre) — placed at the helix start
+    /// and carried round with the axis as binormal, so it stays in the axial
+    /// plane all the way: a thread groove, a coil, a spring.
+    fn helix_sweep(
+        &mut self,
+        profile: &[ProfileElem],
+        helix: Helix,
     ) -> Result<Self::Body, Self::Error>;
 
     /// Revolve a planar `profile` by `angle` radians about the straight edge

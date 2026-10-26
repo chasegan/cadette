@@ -2,7 +2,7 @@
 //! booleans, extrude, fillets, mirror/flip, group/ungroup, revolve, and
 //! copy/paste of bodies.
 
-use cdt_core::{BooleanOp, EdgeAnchor, FeatureId, FeatureKind, PatternLayout, DVec3};
+use cdt_core::{BooleanOp, EdgeAnchor, FeatureId, FeatureKind, Helix, PatternLayout, DVec3};
 use cdt_render::{Axis3, Pick};
 
 use crate::Modeler;
@@ -220,6 +220,42 @@ impl Modeler {
         let id = self.doc.insert_transform_numbered(
             "Flip",
             FeatureKind::Mirror { source: body, origin: DVec3::from_array(center), normal },
+        );
+        self.ui.selected = Some(id);
+        self.selection.clear();
+        true
+    }
+
+    /// Cut an ISO thread into the selected cylindrical face: the coarse pitch
+    /// for its diameter, the ISO depth for that pitch, inward on a shaft and
+    /// outward in a hole. The helix overshoots the face by a pitch at each end
+    /// so the groove runs cleanly off (it only cuts air there). Returns true if
+    /// a feature was added.
+    pub(crate) fn thread_selected_face(&mut self) -> bool {
+        let Some(cyl) = self.selection.face_cylinder else {
+            return false;
+        };
+        let Some(body) = self.selected_body() else {
+            return false;
+        };
+        let pitch = Helix::iso_pitch(2.0 * cyl.radius);
+        let helix = Helix {
+            center: cyl.start - cyl.axis * pitch,
+            axis: cyl.axis,
+            radius: cyl.radius,
+            pitch,
+            length: cyl.length + 2.0 * pitch,
+            left_handed: false,
+        };
+        self.record_undo(self.doc.clone());
+        let id = self.doc.add_numbered(
+            "Thread",
+            FeatureKind::Thread {
+                source: body,
+                helix,
+                depth: Helix::iso_depth(pitch),
+                internal: !cyl.convex,
+            },
         );
         self.ui.selected = Some(id);
         self.selection.clear();

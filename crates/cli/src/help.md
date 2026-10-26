@@ -15,7 +15,8 @@ leftovers. Units are millimetres, world is Z-up, Y forward, X right.
    with exact `bbox`, `volume`, `surface_area`, `centroid`, `faces`, `edges`,
    `valid`. Ask for `detail` to get each face (surface type, area, centroid,
    outward normal, radius) and edge (curve type, length, endpoints, an
-   on-curve `midpoint` you can use as an anchor).
+   on-curve `midpoint` you can use as an anchor; cylindrical faces also carry
+   `axis_point` + `axis`).
 2. `cadette_apply` — send a batch of edits. It is all-or-nothing; the reply
    carries the outcomes (new ids) and the fresh report. Read the report's
    `ok` / `errors`: a step that fails is reported, not fatal.
@@ -78,6 +79,13 @@ Operations (reference earlier ids):
   — a planar face by a point on it (its `centroid`) and its normal; positive adds material.
 - `{"Revolve":{"source":sketchId,"axis":{"point":[x,y,z]},"angle":radians}}` — the axis is one of the profile's own straight edges, named by a point on it.
 - `{"Group":{"members":[ids]}}`
+- `{"Thread":{"source":id,"helix":{"center":[x,y,z],"axis":[x,y,z],"radius":r,"pitch":p,"length":l,"left_handed":false},"depth":d,"internal":false}}`
+  — cut an ISO 60° thread into a cylindrical face: `radius` is that face's
+  (a shaft at its major diameter, or with `internal: true` a hole at its minor
+  diameter), `center` + `axis` from the face's `axis_point`/`axis` in `detail`.
+  The helix runs `length` along the axis from `center`; let it overshoot the
+  ends by a pitch (it only cuts air). ISO coarse pitches: M3 0.5, M4 0.7,
+  M5 0.8, M6 1.0, M8 1.25, M10 1.5, M12 1.75; `depth` = 0.541 × pitch.
 - `{"Pattern":{"source":id,"count":n,"layout":{"Linear":{"step":[x,y,z]}}}}` or
   `"layout":{"Circular":{"center":[x,y,z],"axis":[x,y,z],"angle":radians}}` —
   `count` instances (the seed in place plus `count-1` copies, each moved one

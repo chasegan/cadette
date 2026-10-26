@@ -186,3 +186,58 @@ fn an_unhealable_self_intersecting_sweep_is_an_error() {
         "the error explains the cause: {err}"
     );
 }
+
+#[test]
+fn sweeping_an_axial_section_along_a_helix_has_the_pappus_volume() {
+    // A rectangle in the (radial, axial) plane: u ∈ [9.5, 11], v ∈ [-0.3, 0.3].
+    // Swept along a helix with the axis as binormal, the section stays in the
+    // axial plane, so the volume is area × 2π × r_centroid × turns (the axial
+    // climb moves the section within its own plane and sweeps nothing).
+    let center = [0.0, 0.0, 0.0];
+    let axis = [0.0, 0.0, 1.0];
+    let x_dir = [1.0, 0.0, 0.0];
+    let profile = Solid::profile_face(
+        center,
+        x_dir,
+        axis,
+        &[9.5, -0.3, 11.0, -0.3, 11.0, 0.3, 9.5, 0.3],
+        &[0.0; 20],
+    )
+    .unwrap();
+    let helix = Solid::helix_wire(center, axis, x_dir, 10.0, 1.0, 2.0, false).unwrap();
+    let coil = profile.sweep(&helix, axis).unwrap();
+    let expected = 0.9 * 2.0 * PI * 10.25 * 2.0;
+    let v = coil.volume().unwrap();
+    assert!((v - expected).abs() < 0.01 * expected, "helical sweep volume {v} vs {expected}");
+    let (min, max) = coil.bbox().unwrap();
+    assert!((max[2] - min[2] - 2.6).abs() < 0.05, "two turns of pitch 1 plus the section: z span {}", max[2] - min[2]);
+    assert!((max[0] - 11.0).abs() < 0.05 && (min[0] + 11.0).abs() < 0.05, "outer radius 11: x span {min:?}..{max:?}");
+
+    // Left-handed winds the other way: same volume, mirrored.
+    let helix_l = Solid::helix_wire(center, axis, x_dir, 10.0, 1.0, 2.0, true).unwrap();
+    let coil_l = profile.sweep(&helix_l, axis).unwrap();
+    assert!((coil_l.volume().unwrap() - expected).abs() < 0.01 * expected);
+}
+
+#[test]
+fn face_cylinder_reports_a_shaft_and_a_hole() {
+    let shaft = Solid::cylinder(5.0, 20.0).unwrap();
+    let faces = shaft.faces().unwrap();
+    let round = faces.iter().find(|f| f.surface == cdt_kernel::SurfaceKind::Cylinder).unwrap();
+    let cf = shaft.face_cylinder(round.index).unwrap().expect("the round face is a cylinder");
+    assert!((cf.radius - 5.0).abs() < 1e-9);
+    assert!(cf.convex, "a shaft's round face is convex");
+    assert!((cf.axis[2].abs() - 1.0).abs() < 1e-9, "axis along Z: {:?}", cf.axis);
+    assert!(((cf.v1 - cf.v0).abs() - 20.0).abs() < 1e-6, "spans the full height: {}..{}", cf.v0, cf.v1);
+    assert_eq!(round.axis.map(|(_, d)| d[2].abs()), Some(1.0), "FaceInfo carries the axis too");
+    // A planar cap is not a cylinder.
+    let cap = faces.iter().find(|f| f.surface == cdt_kernel::SurfaceKind::Plane).unwrap();
+    assert!(shaft.face_cylinder(cap.index).unwrap().is_none());
+
+    // A hole: the block minus the shaft. Its round face is concave.
+    let block = Solid::cuboid(30.0, 30.0, 20.0).unwrap().translate(-15.0, -15.0, 0.0).unwrap();
+    let holed = block.cut(&shaft).unwrap();
+    let round = holed.faces().unwrap().into_iter().find(|f| f.surface == cdt_kernel::SurfaceKind::Cylinder).unwrap();
+    let cf = holed.face_cylinder(round.index).unwrap().unwrap();
+    assert!(!cf.convex, "a hole's round face is concave");
+}

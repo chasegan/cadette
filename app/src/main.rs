@@ -519,6 +519,24 @@ impl Modeler {
     }
 
 
+    /// The cylinder of a picked face, if it is cylindrical — what a thread
+    /// needs: where the face starts along its axis, how far it runs, and
+    /// whether it's a shaft or a hole.
+    fn face_cylinder(&self, global: u32) -> Option<cdt_interaction::CylinderPick> {
+        let (i, local) = self.locate_face(global)?;
+        let cf = self.bodies.get(i)?.face_cylinder(local).ok().flatten()?;
+        let axis = DVec3::from_array(cf.axis);
+        let location = DVec3::from_array(cf.location);
+        let (v0, v1) = (cf.v0.min(cf.v1), cf.v0.max(cf.v1));
+        Some(cdt_interaction::CylinderPick {
+            start: location + axis * v0,
+            axis,
+            radius: cf.radius,
+            length: v1 - v0,
+            convex: cf.convex,
+        })
+    }
+
     /// The plane of a picked face, if it is planar.
     fn face_plane(&self, global: u32) -> Option<SketchPlane> {
         let (i, local) = self.locate_face(global)?;
@@ -653,6 +671,7 @@ impl Controller for Modeler {
             // Single-face gating.
             let can_sketch = single_face && self.selection.can_sketch_on_face();
             let can_mirror = single_face && self.selection.face_plane.is_some();
+            let can_thread = single_face && self.selection.face_cylinder.is_some();
             let can_ungroup = single_face
                 && self.selected_body().is_some_and(|b| self.doc.group_and_chain(b).is_some());
             let edit_sketch_id = single_face.then(|| self.editable_sketch()).flatten();
@@ -663,6 +682,7 @@ impl Controller for Modeler {
 
             let (mut sketch, mut edit, mut fillet_face, mut mirror, mut ungroup) =
                 (false, false, false, false, false);
+            let mut thread = false;
             // "Fillet every edge" of the selected body (was a toolbar button).
             let mut fillet_body = false;
             // A sweep request carries the path plane chosen at that moment.
@@ -720,6 +740,13 @@ impl Controller for Modeler {
                         fillet_body = action_btn(ui, phi::BOUNDING_BOX, "Fillet every edge", "Round every edge of this body", true);
                         if can_mirror {
                             mirror = action_btn(ui, phi::FLIP_HORIZONTAL, "Mirror across face", "Reflect this body across the face — keeps the original", true);
+                        }
+                        if can_thread {
+                            let shaft = self.selection.face_cylinder.is_some_and(|c| c.convex);
+                            thread = action_btn(ui, phi::SPIRAL, "Thread",
+                                if shaft { "Cut an ISO thread into this shaft (pitch by diameter; edit in Properties)" }
+                                else { "Cut an ISO thread into this hole (pitch by diameter; edit in Properties)" },
+                                true);
                         }
                         if can_ungroup {
                             ungroup = action_btn(ui, phi::STACK_MINUS, "Ungroup", "Split this group back into its members (⇧⌘G)", true);
@@ -862,6 +889,9 @@ impl Controller for Modeler {
             }
             if mirror {
                 changed |= self.mirror_across_selected_face();
+            }
+            if thread {
+                changed |= self.thread_selected_face();
             }
             if ungroup {
                 changed |= self.ungroup_selected();
@@ -1244,6 +1274,10 @@ impl Controller for Modeler {
             _ => None,
         };
         self.selection.select(pick, additive, face_plane);
+        // A lone round face carries its cylinder, for threading.
+        if let ([Pick::Face(global)], None) = (self.selection.selected(), face_plane) {
+            self.selection.face_cylinder = self.face_cylinder(*global);
+        }
         // Remember the clicked point on a picked edge as its durable fillet
         // anchor, then drop anchors for edges no longer in the selection.
         if let (Some(Pick::Edge(g)), Some(p)) = (pick, point) {
@@ -2836,6 +2870,39 @@ mod tests {
             other => panic!("hole is {other:?}"),
         }
         assert!(m.undo(), "the GUI pattern is one undo step");
+    }
+
+    #[test]
+    fn thread_action_cuts_a_thread_into_the_picked_shaft() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        m.doc.add("Shaft", FeatureKind::Cylinder { radius: 5.0, height: 20.0 });
+        let _ = m.mesh();
+        // Find the round face: the one whose pick yields a cylinder.
+        let round = (0..3).find(|&f| m.face_cylinder(f).is_some()).expect("a cylinder has a round face");
+        m.on_pick(Some(Pick::Face(round)), None, false);
+        let cyl = m.selection.face_cylinder.expect("the selection carries the cylinder");
+        assert!(cyl.convex && (cyl.radius - 5.0).abs() < 1e-9 && (cyl.length - 20.0).abs() < 1e-6);
+        assert!(m.selection.face_plane.is_none(), "a round face has no sketch plane");
+
+        let volume_before = m.bodies[0].volume().unwrap();
+        let n0 = m.doc.history.len();
+        assert!(m.thread_selected_face());
+        assert_eq!(m.doc.history.len(), n0 + 1, "one Thread feature");
+        let _ = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        assert_eq!(m.ui.visible.len(), 1, "the thread consumes the shaft");
+        let volume_after = m.bodies[0].volume().unwrap();
+        assert!(volume_after < volume_before, "the groove removed material: {volume_before} → {volume_after}");
+        match m.doc.history.get(m.ui.selected.unwrap()).map(|f| &f.kind) {
+            Some(FeatureKind::Thread { helix, internal, .. }) => {
+                assert!(!internal, "a shaft gets an external thread");
+                assert_eq!(helix.pitch, 1.5, "M10 coarse pitch");
+                assert!(helix.length > 20.0, "the helix overshoots the ends");
+            }
+            other => panic!("selected {other:?}"),
+        }
+        assert!(m.undo(), "one undo step");
     }
 
     #[test]

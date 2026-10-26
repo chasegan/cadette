@@ -92,6 +92,12 @@ pub struct FaceReport {
     pub normal: [f64; 3],
     #[serde(skip_serializing_if = "Option::is_none")]
     pub radius: Option<f64>,
+    /// For cylinders, cones and tori: a point on the surface axis and its
+    /// unit direction — what a Thread's helix takes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub axis_point: Option<[f64; 3]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub axis: Option<[f64; 3]>,
     pub edges: Vec<u32>,
 }
 
@@ -197,6 +203,8 @@ pub fn body_detail(id: FeatureId, solid: &Solid) -> Result<BodyDetail, SessionEr
             centroid: f.centroid,
             normal: f.normal,
             radius: f.radius,
+            axis_point: f.axis.map(|(p, _)| p),
+            axis: f.axis.map(|(_, d)| d),
             edges: f.edges,
         })
         .collect();

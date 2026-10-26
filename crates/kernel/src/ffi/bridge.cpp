@@ -36,6 +36,12 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <Geom_Plane.hxx>
+#include <Geom_CylindricalSurface.hxx>
+#include <Geom2d_Line.hxx>
+#include <Geom2d_TrimmedCurve.hxx>
+#include <BRepLib.hxx>
+#include <gp_Ax3.hxx>
+#include <gp_Lin2d.hxx>
 #include <GeomLib_IsPlanarSurface.hxx>
 #include <Geom_BezierCurve.hxx>
 #include <TColgp_Array1OfPnt.hxx>
@@ -423,6 +429,51 @@ std::unique_ptr<Shape> path_wire(double ox, double oy, double oz,
       } else {
         wire.Add(BRepBuilderAPI_MakeEdge(a, b).Edge());
       }
+    }
+    return std::make_unique<Shape>(wire.Wire());
+  });
+}
+
+// A helix wire on the cylinder of `radius` about the axis through `center`
+// with direction `axis`: it starts at `center + radius * xdir` and climbs
+// `pitch` per turn along the axis for `length`. Built the canonical OCCT way —
+// a straight 2D line on the cylinder's parametric (angle, height) surface,
+// trimmed per turn and lifted to 3D — so the curve is exact, not a polyline.
+// `left_handed` winds the other way. One edge per turn keeps the 3D
+// approximation tight over long threads.
+std::unique_ptr<Shape> helix_wire(double cx, double cy, double cz,
+                                  double ax, double ay, double az,
+                                  double xx, double xy, double xz,
+                                  double radius, double pitch, double length,
+                                  bool left_handed) {
+  return guard("helix_wire", [&] {
+    if (!(radius > 0.0) || !(pitch > 0.0) || !(length > 0.0)) {
+      throw std::runtime_error("helix_wire: radius, pitch and length must be positive");
+    }
+    const gp_Ax3 frame(gp_Pnt(cx, cy, cz), gp_Dir(ax, ay, az), gp_Dir(xx, xy, xz));
+    Handle(Geom_CylindricalSurface) cyl = new Geom_CylindricalSurface(frame, radius);
+    // In (u, v) = (angle, height): one turn is u += 2π (or -2π, left-handed)
+    // while v += pitch.
+    const double du = left_handed ? -2.0 * M_PI : 2.0 * M_PI;
+    const gp_Dir2d slope(du, pitch);
+    const gp_Lin2d line(gp_Pnt2d(0.0, 0.0), slope);
+    Handle(Geom2d_Line) line2d = new Geom2d_Line(line);
+    // Parameter along the line per unit height: |(du, pitch)| / pitch.
+    const double per_height = std::sqrt(du * du + pitch * pitch) / pitch;
+    const double total = length * per_height;
+    const double per_turn = pitch * per_height;
+    BRepBuilderAPI_MakeWire wire;
+    double t = 0.0;
+    while (t < total - 1e-9) {
+      const double t1 = std::min(t + per_turn, total);
+      Handle(Geom2d_TrimmedCurve) seg = new Geom2d_TrimmedCurve(line2d, t, t1);
+      TopoDS_Edge edge = BRepBuilderAPI_MakeEdge(seg, cyl).Edge();
+      BRepLib::BuildCurves3d(edge, 1e-6);
+      wire.Add(edge);
+      t = t1;
+    }
+    if (!wire.IsDone()) {
+      throw std::runtime_error("helix_wire: could not chain the turns into a wire");
     }
     return std::make_unique<Shape>(wire.Wire());
   });
@@ -1178,11 +1229,26 @@ rust::Vec<FaceInfo> faces(const Shape& s) {
       BRepAdaptor_Surface surf(face);
       f.surface = surface_code(surf.GetType());
       f.radius = 0.0;
+      f.ax = f.ay = f.az = 0.0;
+      f.lx = f.ly = f.lz = 0.0;
+      auto set_axis = [&](const gp_Ax1& a) {
+        f.lx = a.Location().X(); f.ly = a.Location().Y(); f.lz = a.Location().Z();
+        f.ax = a.Direction().X(); f.ay = a.Direction().Y(); f.az = a.Direction().Z();
+      };
       switch (surf.GetType()) {
-        case GeomAbs_Cylinder: f.radius = surf.Cylinder().Radius(); break;
+        case GeomAbs_Cylinder:
+          f.radius = surf.Cylinder().Radius();
+          set_axis(surf.Cylinder().Axis());
+          break;
         case GeomAbs_Sphere: f.radius = surf.Sphere().Radius(); break;
-        case GeomAbs_Cone: f.radius = surf.Cone().RefRadius(); break;
-        case GeomAbs_Torus: f.radius = surf.Torus().MajorRadius(); break;
+        case GeomAbs_Cone:
+          f.radius = surf.Cone().RefRadius();
+          set_axis(surf.Cone().Axis());
+          break;
+        case GeomAbs_Torus:
+          f.radius = surf.Torus().MajorRadius();
+          set_axis(surf.Torus().Axis());
+          break;
         default: break;
       }
       GProp_GProps props;
@@ -1627,6 +1693,51 @@ PlaneFrame face_plane(const Shape& s, uint32_t index) {
       break;
     }
     return pf;
+  });
+}
+
+// The cylinder behind face `index` (TopExp order), for threading: `ok` only
+// if the face's surface is a cylinder. `(lx,ly,lz)` + `v * (ax,ay,az)` is the
+// axis; the face spans `v0..v1` along it (the surface's own v parameter is
+// axial distance from the location). `convex` says the material is INSIDE the
+// cylinder (a shaft: outward normal points away from the axis) rather than
+// outside it (a hole).
+CylinderFrame face_cylinder(const Shape& s, uint32_t index) {
+  return guard("face_cylinder", [&] {
+    CylinderFrame cf{};
+    cf.ok = false;
+    uint32_t i = 0;
+    for (TopExp_Explorer ex(s.shape, TopAbs_FACE); ex.More(); ex.Next(), ++i) {
+      if (i != index) continue;
+      const TopoDS_Face face = TopoDS::Face(ex.Current());
+      BRepAdaptor_Surface surf(face);
+      if (surf.GetType() != GeomAbs_Cylinder) break;
+      const gp_Cylinder cyl = surf.Cylinder();
+      const gp_Pnt loc = cyl.Location();
+      const gp_Dir dir = cyl.Axis().Direction();
+      Standard_Real umin, umax, vmin, vmax;
+      BRepTools::UVBounds(face, umin, umax, vmin, vmax);
+      // Outward normal at the middle vs. the radial direction there.
+      BRepLProp_SLProps props_at(surf, 0.5 * (umin + umax), 0.5 * (vmin + vmax),
+                                 1, 1e-9);
+      bool convex = true;
+      if (props_at.IsNormalDefined()) {
+        gp_Dir n = props_at.Normal();
+        if (face.Orientation() == TopAbs_REVERSED) n.Reverse();
+        const gp_Pnt at = props_at.Value();
+        gp_Vec radial(loc, at);
+        radial -= gp_Vec(dir) * radial.Dot(gp_Vec(dir));
+        convex = radial.Dot(gp_Vec(n)) >= 0.0;
+      }
+      cf.ok = true;
+      cf.lx = loc.X(); cf.ly = loc.Y(); cf.lz = loc.Z();
+      cf.ax = dir.X(); cf.ay = dir.Y(); cf.az = dir.Z();
+      cf.radius = cyl.Radius();
+      cf.v0 = vmin; cf.v1 = vmax;
+      cf.convex = convex;
+      break;
+    }
+    return cf;
   });
 }
 

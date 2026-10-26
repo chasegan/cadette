@@ -16,6 +16,7 @@ namespace cdt {
 // declarations; only the definitions (in bridge.cpp) need the full type.
 struct Mesh;
 struct PlaneFrame;
+struct CylinderFrame;
 struct BodyProps;
 struct Topology;
 struct FaceInfo;
@@ -65,6 +66,11 @@ std::unique_ptr<Shape> path_wire(double ox, double oy, double oz,
                                  double yx, double yy, double yz,
                                  rust::Slice<const double> points,
                                  rust::Slice<const double> segs);
+std::unique_ptr<Shape> helix_wire(double cx, double cy, double cz,
+                                  double ax, double ay, double az,
+                                  double xx, double xy, double xz,
+                                  double radius, double pitch, double length,
+                                  bool left_handed);
 std::unique_ptr<Shape> sweep(const Shape& profile, const Shape& spine,
                              double bnx, double bny, double bnz);
 std::unique_ptr<Shape> sweep_tracked(const Shape& profile, const Shape& spine,
@@ -150,6 +156,7 @@ std::unique_ptr<Shape> fillet_edges_tracked(const Shape& s,
 Mesh tessellate(const Shape& s, double deflection);
 void write_stl(const Shape& s, rust::Str path, double deflection);
 PlaneFrame face_plane(const Shape& s, uint32_t index);
+CylinderFrame face_cylinder(const Shape& s, uint32_t index);
 rust::Vec<double> face_edge_midpoints(const Shape& s, uint32_t index);
 
 }  // namespace cdt
