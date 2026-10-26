@@ -35,9 +35,9 @@ Each edit is an object with an `op`:
 - `{"op":"add","kind":KIND}` (+ optional `"name"`) → creates a feature at the
   end; the outcome is `{"created": id}`.
 - `{"op":"insert_transform","kind":KIND}` — for Translate/Rotate/Scale/Mirror
-  only: splices the transform into its source's chain so everything
-  downstream moves too (what dragging in the viewport does). Use `add` for a
-  transform when you want a *branch* instead.
+  and Pattern only: splices the transform into its source's chain so
+  everything downstream moves too (what dragging in the viewport does). Use
+  `add` for a transform when you want a *branch* instead.
 - `{"op":"replace","id":N,"kind":KIND}` — edit a feature's parameters.
 - `{"op":"rename","id":N,"name":"..."}`, `{"op":"set_color","id":N,"color":[r,g,b]}` (linear 0..1, or null).
 - `{"op":"suppress","id":N,"suppressed":true}`.
@@ -78,7 +78,16 @@ Operations (reference earlier ids):
   — a planar face by a point on it (its `centroid`) and its normal; positive adds material.
 - `{"Revolve":{"source":sketchId,"axis":{"point":[x,y,z]},"angle":radians}}` — the axis is one of the profile's own straight edges, named by a point on it.
 - `{"Group":{"members":[ids]}}`
+- `{"Pattern":{"source":id,"count":n,"layout":{"Linear":{"step":[x,y,z]}}}}` or
+  `"layout":{"Circular":{"center":[x,y,z],"axis":[x,y,z],"angle":radians}}` —
+  `count` instances (the seed in place plus `count-1` copies, each moved one
+  more `step` / `angle`), bundled as one body like a Group. For a bolt circle
+  use `angle = 2π/count`. To repeat a *cut*, `insert_transform` the Pattern on
+  the boolean's tool: the Subtract then removes every instance.
 
 Typical part: add a Box → add a Cylinder → insert_transform a Translate on the
 cylinder to place it → add a Boolean Subtract (target box, tool cylinder) →
 add FilletAll on the result → `cadette_info` to verify volume/bbox → render.
+Four holes instead of one: insert_transform a Linear Pattern (count 4) on the
+placed cylinder before the Subtract, or on it afterwards — the splice rewires
+the Subtract's tool to the pattern either way.

@@ -160,6 +160,46 @@ pub enum FeatureKind {
     /// Sweep the planar profile `profile` (a sketch face) along an open `path`,
     /// keeping the profile normal to the path.
     Sweep { profile: FeatureId, path: SweepPath },
+
+    /// Repeat `source` `count` times on a `layout` (the seed stays in place as
+    /// instance 0) and bundle the instances into one compound body, like a
+    /// [`FeatureKind::Group`]. Splicing a pattern into a chain (see
+    /// [`crate::History::insert_transform`]) repeats the body for everything
+    /// downstream — pattern a boolean's tool and the cut repeats with it.
+    Pattern {
+        source: FeatureId,
+        layout: PatternLayout,
+        count: u32,
+    },
+}
+
+/// Where a [`FeatureKind::Pattern`] puts its instances. Instance `i` (from 0)
+/// is the seed moved by `i` steps; the step is stored per instance so the
+/// layout is independent of `count`. An enum so a path layout (along a sketch
+/// curve or a helix) can be added as a variant without breaking saved projects.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum PatternLayout {
+    /// Instances along a straight line: instance `i` is the seed translated by
+    /// `i * step`.
+    Linear { step: DVec3 },
+    /// Instances around an axis: instance `i` is the seed rotated by
+    /// `i * angle` radians about the line through `center` with direction
+    /// `axis`. Spread `count` instances over a full turn with
+    /// `angle = 2π / count`.
+    Circular {
+        center: DVec3,
+        axis: DVec3,
+        angle: f64,
+    },
+}
+
+impl PatternLayout {
+    pub fn type_name(self) -> &'static str {
+        match self {
+            PatternLayout::Linear { .. } => "Linear",
+            PatternLayout::Circular { .. } => "Circular",
+        }
+    }
 }
 
 /// The path a [`FeatureKind::Sweep`] follows. An enum so future path *sources* —
@@ -194,6 +234,7 @@ impl FeatureKind {
             FeatureKind::Mirror { .. } => "Mirror",
             FeatureKind::Group { .. } => "Group",
             FeatureKind::Sweep { .. } => "Sweep",
+            FeatureKind::Pattern { .. } => "Pattern",
         }
     }
 
@@ -208,6 +249,13 @@ impl FeatureKind {
                 | FeatureKind::Scale { .. }
                 | FeatureKind::Mirror { .. }
         )
+    }
+
+    /// Whether [`crate::History::insert_transform`] may splice this kind into
+    /// its source's chain: the in-place transforms, plus a pattern (the same
+    /// body, repeated — so a patterned tool repeats its cut downstream).
+    pub fn can_splice(&self) -> bool {
+        self.is_in_place_transform() || matches!(self, FeatureKind::Pattern { .. })
     }
 
     /// The feature ids this operation consumes as inputs, in dependency order.
@@ -231,6 +279,7 @@ impl FeatureKind {
             FeatureKind::Boolean { target, tool, .. } => vec![*target, *tool],
             FeatureKind::Group { members } => members.clone(),
             FeatureKind::Sweep { profile, .. } => vec![*profile],
+            FeatureKind::Pattern { source, .. } => vec![*source],
         }
     }
 
@@ -248,7 +297,8 @@ impl FeatureKind {
             | FeatureKind::Scale { source, .. }
             | FeatureKind::Revolve { source, .. }
             | FeatureKind::Mirror { source, .. }
-            | FeatureKind::Sweep { profile: source, .. } => Some(*source),
+            | FeatureKind::Sweep { profile: source, .. }
+            | FeatureKind::Pattern { source, .. } => Some(*source),
             // Heal to the kept body of a boolean.
             FeatureKind::Boolean { target, .. } => Some(*target),
             // Heal to the first member (ungroup proper bakes any group transform
@@ -275,7 +325,8 @@ impl FeatureKind {
             | FeatureKind::Scale { source, .. }
             | FeatureKind::Revolve { source, .. }
             | FeatureKind::Mirror { source, .. }
-            | FeatureKind::Sweep { profile: source, .. } => swap(source),
+            | FeatureKind::Sweep { profile: source, .. }
+            | FeatureKind::Pattern { source, .. } => swap(source),
             FeatureKind::Boolean { target, tool, .. } => {
                 swap(target);
                 swap(tool);
@@ -305,6 +356,7 @@ impl FeatureKind {
             FeatureKind::Mirror { .. } => "Mirror",
             FeatureKind::Group { .. } => "Group",
             FeatureKind::Sweep { .. } => "Sweep",
+            FeatureKind::Pattern { .. } => "Pattern",
         }
     }
 }

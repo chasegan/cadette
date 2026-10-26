@@ -299,6 +299,14 @@ pub fn kind_summary(kind: &FeatureKind) -> String {
             format!("Group of {}", members.iter().map(|m| format!("#{}", m.0)).collect::<Vec<_>>().join(", "))
         }
         FeatureKind::Sweep { profile, .. } => format!("Sweep #{} along a path", profile.0),
+        FeatureKind::Pattern { source, layout, count } => match layout {
+            cdt_core::PatternLayout::Linear { step } => {
+                format!("Pattern #{} ×{count} every ({}, {}, {})", source.0, step.x, step.y, step.z)
+            }
+            cdt_core::PatternLayout::Circular { angle, .. } => {
+                format!("Pattern #{} ×{count} every {:.1}°", source.0, angle.to_degrees())
+            }
+        },
     }
 }
 

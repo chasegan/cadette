@@ -116,7 +116,7 @@ impl DocEdit {
                 None => doc.add_numbered(kind.display_name(), kind.clone()),
             }),
             DocEdit::InsertTransform { name, kind } => {
-                if !kind.is_in_place_transform() {
+                if !kind.can_splice() {
                     return Err(EditError::NotATransform { kind: kind.display_name().to_string() });
                 }
                 if let Some(source) = kind.primary_input() {

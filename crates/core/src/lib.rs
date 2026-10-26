@@ -30,12 +30,14 @@ pub mod units;
 pub use backend::GeometryBackend;
 pub use document::Document;
 pub use edit::{BatchError, DocEdit, EditError, EditOutcome};
-pub use features::{BooleanOp, EdgeAnchor, FaceAnchor, Feature, FeatureId, FeatureKind, SweepPath};
+pub use features::{
+    BooleanOp, EdgeAnchor, FaceAnchor, Feature, FeatureId, FeatureKind, PatternLayout, SweepPath,
+};
 pub use build_graph::{BuildGraph, BuildGraphRow, LANE_PALETTE};
 pub use glam::DVec3;
 pub use history::{DependencyError, History};
 pub use regen::{
-    regenerate, regenerate_solved, MissingReason, RegenCache, RegenError, Regeneration,
+    regenerate, regenerate_solved, MissingReason, RegenCache, RegenError, Regeneration, MAX_PATTERN_COUNT,
 };
 pub use selection::Pick;
 pub use sketch::{

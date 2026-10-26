@@ -2,7 +2,7 @@
 //! booleans, extrude, fillets, mirror/flip, group/ungroup, revolve, and
 //! copy/paste of bodies.
 
-use cdt_core::{BooleanOp, EdgeAnchor, FeatureId, FeatureKind, DVec3};
+use cdt_core::{BooleanOp, EdgeAnchor, FeatureId, FeatureKind, PatternLayout, DVec3};
 use cdt_render::{Axis3, Pick};
 
 use crate::Modeler;
@@ -10,6 +10,13 @@ use crate::Modeler;
 /// How far (mm, in X and Y) a paste is offset from its original so it's visibly
 /// a separate body, ready to be moved.
 pub(crate) const PASTE_OFFSET: f64 = 10.0;
+
+/// Which starting layout a "Pattern" action uses (refined in Properties).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PatternKind {
+    Linear,
+    Circular,
+}
 
 /// Which part of the combined bounding box aligned bodies come to share on an
 /// axis: the low edge, the center, or the high edge.
@@ -213,6 +220,59 @@ impl Modeler {
         let id = self.doc.insert_transform_numbered(
             "Flip",
             FeatureKind::Mirror { source: body, origin: DVec3::from_array(center), normal },
+        );
+        self.ui.selected = Some(id);
+        self.selection.clear();
+        true
+    }
+
+    /// Repeat the selected body in a pattern, spliced into its chain so a
+    /// patterned tool repeats its cut downstream. `Linear` steps along the
+    /// selected face's normal by the body's own extent plus a gap, so the
+    /// instances land side by side; `Circular` spreads them around the world
+    /// Z axis through the origin. Both are starting points for the Properties
+    /// pane. Returns true if a feature was added.
+    pub(crate) fn pattern_selected_body(&mut self, kind: PatternKind) -> bool {
+        let Some(body) = self.selected_body() else {
+            return false;
+        };
+        let Some(idx) = self.ui.visible.iter().position(|&f| f == body) else {
+            return false;
+        };
+        let Some((min, max)) = self.body_bounds.get(idx).copied() else {
+            return false;
+        };
+        let (layout, count) = match kind {
+            PatternKind::Linear => {
+                // Along the picked face's normal (falling back to +X), by the
+                // body's extent on that axis plus a half-extent gap.
+                let dir = self
+                    .selection
+                    .face_plane
+                    .map(|p| p.normal())
+                    .filter(|n| n.length() > 1e-9)
+                    .unwrap_or(DVec3::X)
+                    .normalize();
+                let extent = DVec3::new(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
+                let along = extent.abs().dot(dir.abs()).max(1.0);
+                (PatternLayout::Linear { step: dir * (along * 1.5) }, 3)
+            }
+            PatternKind::Circular => {
+                let count = 6;
+                (
+                    PatternLayout::Circular {
+                        center: DVec3::ZERO,
+                        axis: DVec3::Z,
+                        angle: std::f64::consts::TAU / f64::from(count),
+                    },
+                    count,
+                )
+            }
+        };
+        self.record_undo(self.doc.clone());
+        let id = self.doc.insert_transform_numbered(
+            "Pattern",
+            FeatureKind::Pattern { source: body, layout, count },
         );
         self.ui.selected = Some(id);
         self.selection.clear();

@@ -519,5 +519,48 @@ where
             }
             backend.compound(&bodies).map_err(backend_err)
         }
+        FeatureKind::Pattern {
+            source,
+            layout,
+            count,
+        } => {
+            let seed = input(*source)?;
+            if *count == 0 {
+                return Err(RegenError::Invalid {
+                    feature,
+                    reason: "a pattern needs at least one instance",
+                });
+            }
+            if *count > MAX_PATTERN_COUNT {
+                return Err(RegenError::Invalid {
+                    feature,
+                    reason: "a pattern is limited to 1000 instances",
+                });
+            }
+            // Instance 0 is the seed in place; the rest are the seed moved by
+            // i steps, all bundled into one compound (like a group).
+            let mut moved = Vec::with_capacity(*count as usize - 1);
+            for i in 1..*count {
+                let body = match *layout {
+                    crate::PatternLayout::Linear { step } => {
+                        backend.translate(seed, step * f64::from(i))
+                    }
+                    crate::PatternLayout::Circular {
+                        center,
+                        axis,
+                        angle,
+                    } => backend.rotate(seed, center, axis, angle * f64::from(i)),
+                };
+                moved.push(body.map_err(backend_err)?);
+            }
+            let mut members: Vec<&B::Body> = Vec::with_capacity(*count as usize);
+            members.push(seed);
+            members.extend(moved.iter());
+            backend.compound(&members).map_err(backend_err)
+        }
     }
 }
+
+/// The most instances one [`FeatureKind::Pattern`] will build — a guard
+/// against a mistyped count stalling regeneration.
+pub const MAX_PATTERN_COUNT: u32 = 1000;

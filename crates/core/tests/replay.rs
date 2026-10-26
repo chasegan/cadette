@@ -372,6 +372,55 @@ fn clone_subtree_duplicates_a_body_independently() {
 }
 
 #[test]
+fn a_pattern_repeats_its_seed_and_splices_into_a_cut() {
+    use cdt_core::PatternLayout;
+    let mut doc = Document::new("pat");
+    let block = doc.add("Block", FeatureKind::Box { size: DVec3::new(100.0, 20.0, 10.0) });
+    let pin = doc.add("Pin", FeatureKind::Cylinder { radius: 2.0, height: 10.0 });
+    let hole = doc.add(
+        "Hole",
+        FeatureKind::Boolean { op: BooleanOp::Subtract, target: block, tool: pin },
+    );
+    // Splice a linear pattern onto the pin: the Subtract's tool becomes the
+    // pattern, so every instance is cut.
+    let pat = doc.insert_transform(
+        "Pattern",
+        FeatureKind::Pattern {
+            source: pin,
+            layout: PatternLayout::Linear { step: DVec3::new(20.0, 0.0, 0.0) },
+            count: 3,
+        },
+    );
+    assert!(doc.history.validate().is_ok());
+
+    let regen = regenerate(&doc, &mut Recording);
+    assert!(regen.is_ok(), "{:?}", regen.errors());
+    assert_eq!(regen.visible(), &[hole], "the pattern is consumed by the cut");
+    assert_eq!(
+        regen.body(pat).unwrap(),
+        "group(cyl(2,10),xlat(cyl(2,10),20,0,0),xlat(cyl(2,10),40,0,0))",
+        "instance 0 is the seed in place; the rest step along +X"
+    );
+    assert_eq!(*regen.body(hole).unwrap(), format!("sub(box(100,20,10),{})", regen.body(pat).unwrap()));
+
+    // A circular layout rotates by i × angle; a count of zero is an error, not a hang.
+    doc.history.get_mut(pat).unwrap().kind = FeatureKind::Pattern {
+        source: pin,
+        layout: PatternLayout::Circular { center: DVec3::ZERO, axis: DVec3::Z, angle: 1.0 },
+        count: 2,
+    };
+    let regen = regenerate(&doc, &mut Recording);
+    assert_eq!(regen.body(pat).unwrap(), "group(cyl(2,10),rotate(cyl(2,10),1.00))");
+    doc.history.get_mut(pat).unwrap().kind = FeatureKind::Pattern {
+        source: pin,
+        layout: PatternLayout::Linear { step: DVec3::X },
+        count: 0,
+    };
+    let regen = regenerate(&doc, &mut Recording);
+    assert!(!regen.is_ok(), "an empty pattern is reported");
+}
+
+#[test]
 fn grouping_merges_lanes_and_ungroup_splits_them() {
     let mut doc = Document::new("grp");
     let a = doc.add("A", FeatureKind::Box { size: DVec3::splat(10.0) });

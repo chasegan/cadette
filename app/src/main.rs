@@ -675,6 +675,8 @@ impl Controller for Modeler {
             let mut edit_step = false;
             // A multi-body alignment request (axis + which box edge/center).
             let mut align: Option<(Axis3, commands::AlignMode)> = None;
+            // A pattern request: which layout to start from.
+            let mut pattern: Option<commands::PatternKind> = None;
 
             // Top-level `Panel::show` is deprecated in favor of `show_inside`,
             // but migrating means restructuring the whole frame layout — done
@@ -722,6 +724,28 @@ impl Controller for Modeler {
                         if can_ungroup {
                             ungroup = action_btn(ui, phi::STACK_MINUS, "Ungroup", "Split this group back into its members (⇧⌘G)", true);
                         }
+                        // Pattern: repeat this body; the layout is chosen here and
+                        // refined (count, step, angle, axis) in Properties.
+                        ui.menu_button(format!("{}  Pattern", phi::DOTS_SIX), |ui| {
+                            if ui
+                                .button("Linear — along this face's normal")
+                                .on_hover_text("Repeat the body in a row, instances side by side")
+                                .clicked()
+                            {
+                                pattern = Some(commands::PatternKind::Linear);
+                                ui.close_menu();
+                            }
+                            if ui
+                                .button("Circular — around the Z axis")
+                                .on_hover_text("Repeat the body around the world Z axis through the origin")
+                                .clicked()
+                            {
+                                pattern = Some(commands::PatternKind::Circular);
+                                ui.close_menu();
+                            }
+                        })
+                        .response
+                        .on_hover_text("Repeat this body along a line or around an axis");
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
                             ui.label("Flip").on_hover_text("Mirror this body in place about its center");
@@ -850,6 +874,9 @@ impl Controller for Modeler {
             }
             if let Some((axis, mode)) = align {
                 changed |= self.align_selected(axis, mode);
+            }
+            if let Some(kind) = pattern {
+                changed |= self.pattern_selected_body(kind);
             }
             if fillet_edges {
                 changed |= if multi_face {
@@ -2743,6 +2770,72 @@ mod tests {
         assert!(m.undo());
         let _ = m.mesh();
         assert_eq!(m.ui.visible.len(), 1, "undo removes the whole mirror");
+    }
+
+    #[test]
+    fn pattern_action_repeats_the_selected_body_and_splices_its_chain() {
+        use commands::PatternKind;
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        let block = m.doc.add("Block", FeatureKind::Box { size: DVec3::new(60.0, 20.0, 10.0) });
+        let pin = m.doc.add("Pin", FeatureKind::Cylinder { radius: 2.0, height: 10.0 });
+        let pin = m.doc.add(
+            "Place",
+            FeatureKind::Translate { source: pin, offset: DVec3::new(10.0, 10.0, 0.0) },
+        );
+        let hole = m.doc.add(
+            "Hole",
+            FeatureKind::Boolean { op: BooleanOp::Subtract, target: block, tool: pin },
+        );
+        let _ = m.mesh();
+        assert_eq!(m.ui.visible, vec![hole]);
+
+        // Pattern a lone box from the GUI: its picked face sets the direction,
+        // and the three instances sit side by side as one body.
+        m.doc.add("Lone", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let _ = m.mesh();
+        let lone_idx = m.ui.visible.len() - 1;
+        let first_face = m.bodies[..lone_idx].iter().map(|b| b.face_count().unwrap_or(0) as u32).sum::<u32>();
+        m.on_pick(Some(Pick::Face(first_face)), None, false);
+        assert!(m.selection.face_plane.is_some(), "picked a planar face of the lone box");
+        let n0 = m.doc.history.len();
+        assert!(m.pattern_selected_body(PatternKind::Linear));
+        assert_eq!(m.doc.history.len(), n0 + 1, "one Pattern feature");
+        let pat_id = m.ui.selected.expect("the new pattern is selected");
+        let _ = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        assert_eq!(m.ui.visible.len(), 2, "the hole body and the pattern (seed consumed)");
+        // Three 10mm cubes stepped by 1.5× their extent: a 40mm row on one
+        // axis, 10mm on the other two.
+        let idx = m.ui.visible.iter().position(|&f| f == pat_id).unwrap();
+        let (min, max) = m.body_bounds[idx];
+        let spans: Vec<f64> = (0..3).map(|a| max[a] - min[a]).collect();
+        let long = spans.iter().filter(|&&s| (s - 40.0).abs() < 0.5).count();
+        let short = spans.iter().filter(|&&s| (s - 10.0).abs() < 0.5).count();
+        assert!(long == 1 && short == 2, "a row of three along one axis: {spans:?}");
+
+        // The Properties pane can retarget the layout: a circular pattern of
+        // the hole's tool about the block's centre, spliced so the subtract
+        // cuts every instance (a second pin lands at x=50).
+        let pat = m.doc.insert_transform(
+            "Bolt circle",
+            FeatureKind::Pattern {
+                source: pin,
+                layout: cdt_core::PatternLayout::Circular {
+                    center: DVec3::new(30.0, 10.0, 0.0),
+                    axis: DVec3::Z,
+                    angle: std::f64::consts::PI,
+                },
+                count: 2,
+            },
+        );
+        let _ = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
+        match m.doc.history.get(hole).map(|f| &f.kind) {
+            Some(FeatureKind::Boolean { tool, .. }) => assert_eq!(*tool, pat, "the cut's tool is now the pattern"),
+            other => panic!("hole is {other:?}"),
+        }
+        assert!(m.undo(), "the GUI pattern is one undo step");
     }
 
     #[test]

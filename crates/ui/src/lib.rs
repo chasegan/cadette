@@ -13,7 +13,7 @@
 use egui::{Color32, Context, RichText, Ui};
 use egui_phosphor::regular as icon;
 use cdt_core::{
-    BooleanOp, Constraint, Document, FeatureId, FeatureKind, Profile, SketchPlane, DVec3,
+    BooleanOp, Constraint, Document, FeatureId, FeatureKind, PatternLayout, Profile, SketchPlane, DVec3,
 };
 
 mod theme;
@@ -819,6 +819,44 @@ pub fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> Editor
             // The path is a line the user can go back and reshape.
             edit_label = Some("Edit path");
         }
+        FeatureKind::Pattern { layout, count, .. } => {
+            changed |= count_drag(ui, "Count", count);
+            match layout {
+                PatternLayout::Linear { step } => {
+                    // The per-instance step; signed so a pattern can run either way.
+                    changed |= drag_signed(ui, "Step X", &mut step.x);
+                    changed |= drag_signed(ui, "Step Y", &mut step.y);
+                    changed |= drag_signed(ui, "Step Z", &mut step.z);
+                }
+                PatternLayout::Circular { center, axis, angle } => {
+                    // Per-instance angle in degrees (stored as radians), with a
+                    // shortcut to spread the instances evenly around a full turn.
+                    let mut deg = angle.to_degrees();
+                    ui.horizontal(|ui| {
+                        ui.label("Angle");
+                        if ui
+                            .add(egui::DragValue::new(&mut deg).speed(1.0).range(-360.0..=360.0).suffix("°"))
+                            .changed()
+                        {
+                            *angle = deg.to_radians();
+                            changed = true;
+                        }
+                        if ui
+                            .small_button("Full turn")
+                            .on_hover_text("Spread the instances evenly over 360°")
+                            .clicked()
+                        {
+                            *angle = std::f64::consts::TAU / f64::from((*count).max(1));
+                            changed = true;
+                        }
+                    });
+                    changed |= drag_signed(ui, "Center X", &mut center.x);
+                    changed |= drag_signed(ui, "Center Y", &mut center.y);
+                    changed |= drag_signed(ui, "Center Z", &mut center.z);
+                    changed |= axis_combo(ui, axis);
+                }
+            }
+        }
     }
 
     // Body colour: a swatch overriding the theme's default material for this
@@ -880,6 +918,40 @@ fn drag(ui: &mut Ui, label: &str, value: &mut f64) -> bool {
 /// distance, translate offset).
 fn drag_signed(ui: &mut Ui, label: &str, value: &mut f64) -> bool {
     drag_ranged(ui, label, value, -10_000.0..=10_000.0)
+}
+
+/// An instance count: a whole number from 1 to the regen limit.
+fn count_drag(ui: &mut Ui, label: &str, value: &mut u32) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(label);
+        changed = ui
+            .add(egui::DragValue::new(value).speed(0.1).range(1..=cdt_core::MAX_PATTERN_COUNT))
+            .changed();
+    });
+    changed
+}
+
+/// Pick a pattern axis: one of the world axes, or keep a custom direction
+/// (shown, not editable) that came from a face.
+fn axis_combo(ui: &mut Ui, axis: &mut DVec3) -> bool {
+    let mut changed = false;
+    let named = [("X", DVec3::X), ("Y", DVec3::Y), ("Z", DVec3::Z)];
+    let current = named
+        .iter()
+        .find(|(_, v)| (*v - *axis).length() < 1e-9)
+        .map_or_else(|| format!("({:.2}, {:.2}, {:.2})", axis.x, axis.y, axis.z), |(l, _)| l.to_string());
+    egui::ComboBox::from_label("Axis")
+        .selected_text(current)
+        .show_ui(ui, |ui| {
+            for (label, v) in named {
+                if ui.selectable_label(*axis == v, label).clicked() && *axis != v {
+                    *axis = v;
+                    changed = true;
+                }
+            }
+        });
+    changed
 }
 
 fn drag_ranged(

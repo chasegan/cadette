@@ -230,8 +230,9 @@ impl History {
     /// dependents *back* to a feature's primary input). Returns
     /// `(landed index, new id)`.
     ///
-    /// `kind` must be a body transform (Translate/Rotate/Scale/Mirror): a single
-    /// primary input meaning "the same body, moved".
+    /// `kind` must be a body transform (Translate/Rotate/Scale/Mirror) or a
+    /// Pattern: a single primary input meaning "the same body, moved" (or
+    /// repeated) — see [`FeatureKind::can_splice`].
     pub fn insert_transform(
         &mut self,
         name: impl Into<String>,
@@ -241,14 +242,8 @@ impl History {
             .primary_input()
             .expect("insert_transform needs a transform with a primary input");
         debug_assert!(
-            matches!(
-                kind,
-                FeatureKind::Translate { .. }
-                    | FeatureKind::Rotate { .. }
-                    | FeatureKind::Scale { .. }
-                    | FeatureKind::Mirror { .. }
-            ),
-            "insert_transform expects a body transform, got {}",
+            kind.can_splice(),
+            "insert_transform expects a body transform or pattern, got {}",
             kind.type_name()
         );
         // Land the transform immediately after its source. `insert` clamps
