@@ -483,9 +483,29 @@ fn a_thread_cuts_a_helical_groove_from_its_body() {
     let groove = thread_profile(1.5, 0.9, 5.0, true);
     assert!(groove.iter().map(|e| e.start()[0]).fold(f64::MIN, f64::max) > 5.5);
 
-    // ISO defaults: M6 is 1.0 mm coarse; M10 is 1.5.
+    // ISO defaults: M6 is 1.0 mm coarse; M10 is 1.5. A hole is seen at its
+    // tap-drill size: 8.5 mm is M10, 5.0 mm is M6, 4.2 mm is M5.
     assert_eq!(Helix::iso_pitch(6.0), 1.0);
     assert_eq!(Helix::iso_pitch(10.2), 1.5);
+    assert_eq!(Helix::iso_pitch_for_minor(8.5), 1.5);
+    assert_eq!(Helix::iso_pitch_for_minor(5.0), 1.0);
+    assert_eq!(Helix::iso_pitch_for_minor(4.2), 0.8);
+
+    // An internal thread whose groove would cross the axis is refused.
+    let mut hole_doc = Document::new("hole");
+    let tiny = hole_doc.add("Tiny", FeatureKind::Cylinder { radius: 1.0, height: 5.0 });
+    hole_doc.add(
+        "Bad",
+        FeatureKind::Thread {
+            source: tiny,
+            helix: Helix { radius: 1.0, pitch: 60.0, length: 5.0, ..helix },
+            depth: 0.5,
+            internal: true,
+            starts: 1,
+        },
+    );
+    let regen = regenerate(&hole_doc, &mut Recording);
+    assert!(regen.errors().iter().any(|e| matches!(e, cdt_core::RegenError::Invalid { reason, .. } if reason.contains("too large for this hole"))), "{:?}", regen.errors());
 
     // Bad parameters are reported, not swept.
     doc.history.get_mut(thread).unwrap().kind = FeatureKind::Thread {

@@ -536,7 +536,7 @@ where
             if *count > MAX_PATTERN_COUNT {
                 return Err(RegenError::Invalid {
                     feature,
-                    reason: "a pattern is limited to 1000 instances",
+                    reason: PATTERN_COUNT_LIMIT,
                 });
             }
             let instances = pattern_instances(*count, skip);
@@ -582,15 +582,16 @@ where
             starts,
         } => {
             let body = input(*source)?;
-            let positive = |x: f64| x.is_finite() && x > 0.0;
             let reason = if let Some(r) = helix_problem(helix) {
                 Some(r)
             } else if !positive(*depth) {
                 Some("a thread needs a positive depth")
             } else if !*internal && *depth >= helix.radius {
                 Some("a thread's depth must be less than its radius")
+            } else if *internal && crate::features::thread_overlap(helix.pitch / f64::from((*starts).max(1))) >= helix.radius {
+                Some("a thread's pitch is too large for this hole")
             } else if *starts == 0 || *starts > MAX_THREAD_STARTS {
-                Some("a thread has between 1 and 200 starts")
+                Some(THREAD_STARTS_LIMIT)
             } else {
                 None
             };
@@ -630,13 +631,19 @@ where
 /// [`crate::SweepPath::Helix`]) will sweep — a guard against a mistyped pitch
 /// stalling regeneration.
 pub const MAX_THREAD_TURNS: f64 = 500.0;
+const THREAD_TURNS_LIMIT: &str = "a helix is limited to 500 turns";
 
 /// The most starts one [`FeatureKind::Thread`] will cut.
 pub const MAX_THREAD_STARTS: u32 = 200;
+const THREAD_STARTS_LIMIT: &str = "a thread has between 1 and 200 starts";
+
+/// A finite, strictly positive length or count.
+fn positive(x: f64) -> bool {
+    x.is_finite() && x > 0.0
+}
 
 /// Why a helix can't be swept, if it can't.
 fn helix_problem(helix: &crate::Helix) -> Option<&'static str> {
-    let positive = |x: f64| x.is_finite() && x > 0.0;
     if !positive(helix.pitch) {
         Some("a helix needs a positive pitch")
     } else if !positive(helix.length) {
@@ -646,9 +653,21 @@ fn helix_problem(helix: &crate::Helix) -> Option<&'static str> {
     } else if helix.axis.length() < 1e-9 {
         Some("a helix needs an axis direction")
     } else if helix.turns() > MAX_THREAD_TURNS {
-        Some("a helix is limited to 500 turns")
+        Some(THREAD_TURNS_LIMIT)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod limit_messages {
+    use super::*;
+
+    #[test]
+    fn limit_messages_quote_the_limits() {
+        assert!(PATTERN_COUNT_LIMIT.contains(&MAX_PATTERN_COUNT.to_string()));
+        assert!(THREAD_STARTS_LIMIT.contains(&MAX_THREAD_STARTS.to_string()));
+        assert!(THREAD_TURNS_LIMIT.contains(&(MAX_THREAD_TURNS as u32).to_string()));
     }
 }
 
@@ -659,5 +678,7 @@ pub fn pattern_instances(count: u32, skip: &[u32]) -> Vec<u32> {
 }
 
 /// The most instances one [`FeatureKind::Pattern`] will build — a guard
-/// against a mistyped count stalling regeneration.
+/// against a mistyped count stalling regeneration. The message quotes the
+/// number (reasons are `&'static str`); a test keeps them in step.
 pub const MAX_PATTERN_COUNT: u32 = 1000;
+const PATTERN_COUNT_LIMIT: &str = "a pattern is limited to 1000 instances";

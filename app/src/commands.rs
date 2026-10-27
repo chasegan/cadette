@@ -239,7 +239,13 @@ impl Modeler {
         let Some(body) = self.selected_body() else {
             return false;
         };
-        let pitch = Helix::iso_pitch(2.0 * cyl.radius);
+        // A hole is modelled at its minor (tap-drill) diameter, a shaft at its
+        // major: pick the standard size accordingly.
+        let pitch = if cyl.convex {
+            Helix::iso_pitch(2.0 * cyl.radius)
+        } else {
+            Helix::iso_pitch_for_minor(2.0 * cyl.radius)
+        };
         let helix = Helix {
             center: cyl.start - cyl.axis * pitch,
             axis: cyl.axis,
@@ -309,12 +315,19 @@ impl Modeler {
             return None;
         };
         let (body_index, local) = self.locate_face(global)?;
-        let id = *self.ui.visible.get(body_index)?;
-        let (count, skip) = match self.doc.history.get(id).map(|f| &f.kind) {
-            Some(FeatureKind::Pattern { count, skip, .. }) => (*count, skip.clone()),
-            _ => return None,
+        // The pattern may sit under in-place transforms (a dragged pattern is
+        // a Translate of it); those keep the compound's face layout, so walk
+        // down the chain to the Pattern itself.
+        let mut id = *self.ui.visible.get(body_index)?;
+        let (count, skip) = loop {
+            let kind = &self.doc.history.get(id)?.kind;
+            match kind {
+                FeatureKind::Pattern { count, skip, .. } => break (*count, skip.as_slice()),
+                k if k.is_in_place_transform() => id = k.primary_input()?,
+                _ => return None,
+            }
         };
-        let built = cdt_core::pattern_instances(count, &skip);
+        let built = cdt_core::pattern_instances(count, skip);
         let faces = self.bodies.get(body_index)?.face_count().ok()? as u32;
         if built.is_empty() || faces == 0 || faces % built.len() as u32 != 0 {
             return None;

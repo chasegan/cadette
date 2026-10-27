@@ -819,7 +819,10 @@ pub fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> Editor
             edit_label = Some("Edit path");
         }
         FeatureKind::Sweep { path: cdt_core::SweepPath::Helix { helix }, .. } => {
-            changed |= helix_editor(ui, helix);
+            // The coil's radius is where the profile sits (it is carried round
+            // rigidly), so the helix's own radius isn't offered.
+            changed |= helix_editor(ui, helix, false);
+            ui.label(RichText::new("radius: the profile's distance from the axis").small().weak());
         }
         FeatureKind::Thread { helix, depth, internal, starts, .. } => {
             changed |= drag(ui, "Pitch", &mut helix.pitch);
@@ -868,49 +871,15 @@ pub fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> Editor
                     changed |= drag_signed(ui, "Step Z", &mut step.z);
                 }
                 PatternLayout::Circular { center, axis, angle } => {
-                    // Per-instance angle in degrees (stored as radians), with a
-                    // shortcut to spread the instances evenly around a full turn.
-                    let mut deg = angle.to_degrees();
-                    ui.horizontal(|ui| {
-                        ui.label("Angle");
-                        if ui
-                            .add(egui::DragValue::new(&mut deg).speed(1.0).range(-360.0..=360.0).suffix("°"))
-                            .changed()
-                        {
-                            *angle = deg.to_radians();
-                            changed = true;
-                        }
-                        if ui
-                            .small_button("Full turn")
-                            .on_hover_text("Spread the instances evenly over 360°")
-                            .clicked()
-                        {
-                            *angle = std::f64::consts::TAU / f64::from((*count).max(1));
-                            changed = true;
-                        }
-                    });
-                    changed |= drag_signed(ui, "Center X", &mut center.x);
-                    changed |= drag_signed(ui, "Center Y", &mut center.y);
-                    changed |= drag_signed(ui, "Center Z", &mut center.z);
-                    changed |= axis_combo(ui, axis);
+                    // Per-instance angle, with a shortcut to spread the
+                    // instances evenly around a full turn.
+                    changed |= step_angle(ui, angle, Some(*count));
+                    changed |= axis_fields(ui, center, axis);
                 }
                 PatternLayout::Helical { center, axis, angle, rise } => {
-                    let mut deg = angle.to_degrees();
-                    ui.horizontal(|ui| {
-                        ui.label("Angle");
-                        if ui
-                            .add(egui::DragValue::new(&mut deg).speed(1.0).range(-360.0..=360.0).suffix("°"))
-                            .changed()
-                        {
-                            *angle = deg.to_radians();
-                            changed = true;
-                        }
-                    });
+                    changed |= step_angle(ui, angle, None);
                     changed |= drag_signed(ui, "Rise", rise);
-                    changed |= drag_signed(ui, "Center X", &mut center.x);
-                    changed |= drag_signed(ui, "Center Y", &mut center.y);
-                    changed |= drag_signed(ui, "Center Z", &mut center.z);
-                    changed |= axis_combo(ui, axis);
+                    changed |= axis_fields(ui, center, axis);
                 }
             }
         }
@@ -979,17 +948,55 @@ fn drag_signed(ui: &mut Ui, label: &str, value: &mut f64) -> bool {
 
 /// The fields of a helix (a coil's path): pitch, length, radius, hand, and
 /// the axis — centre plus a world direction.
-fn helix_editor(ui: &mut Ui, helix: &mut Helix) -> bool {
+fn helix_editor(ui: &mut Ui, helix: &mut Helix, with_radius: bool) -> bool {
     let mut changed = false;
     changed |= drag(ui, "Pitch", &mut helix.pitch);
     changed |= drag(ui, "Length", &mut helix.length);
-    changed |= drag(ui, "Radius", &mut helix.radius);
+    if with_radius {
+        changed |= drag(ui, "Radius", &mut helix.radius);
+    }
     changed |= ui.checkbox(&mut helix.left_handed, "Left-hand").changed();
-    changed |= drag_signed(ui, "Center X", &mut helix.center.x);
-    changed |= drag_signed(ui, "Center Y", &mut helix.center.y);
-    changed |= drag_signed(ui, "Center Z", &mut helix.center.z);
-    changed |= axis_combo(ui, &mut helix.axis);
+    changed |= axis_fields(ui, &mut helix.center, &mut helix.axis);
     ui.label(RichText::new(format!("{:.1} turns", helix.turns())).small().weak());
+    changed
+}
+
+/// A pattern's per-instance angle, edited in degrees (stored as radians).
+/// With `spread_over` = the instance count, a "Full turn" button sets the
+/// angle that spaces them evenly round 360°.
+fn step_angle(ui: &mut Ui, angle: &mut f64, spread_over: Option<u32>) -> bool {
+    let mut changed = false;
+    let mut deg = angle.to_degrees();
+    ui.horizontal(|ui| {
+        ui.label("Angle");
+        if ui
+            .add(egui::DragValue::new(&mut deg).speed(1.0).range(-360.0..=360.0).suffix("°"))
+            .changed()
+        {
+            *angle = deg.to_radians();
+            changed = true;
+        }
+        if let Some(count) = spread_over {
+            if ui
+                .small_button("Full turn")
+                .on_hover_text("Spread the instances evenly over 360°")
+                .clicked()
+            {
+                *angle = std::f64::consts::TAU / f64::from(count.max(1));
+                changed = true;
+            }
+        }
+    });
+    changed
+}
+
+/// An axis through a point: the centre's three coordinates and a world axis.
+fn axis_fields(ui: &mut Ui, center: &mut DVec3, axis: &mut DVec3) -> bool {
+    let mut changed = false;
+    changed |= drag_signed(ui, "Center X", &mut center.x);
+    changed |= drag_signed(ui, "Center Y", &mut center.y);
+    changed |= drag_signed(ui, "Center Z", &mut center.z);
+    changed |= axis_combo(ui, axis);
     changed
 }
 

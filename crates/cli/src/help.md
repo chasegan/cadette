@@ -92,9 +92,10 @@ Operations (reference earlier ids):
   threads: e.g. on a 20 mm knob `pitch: 60, starts: 30, depth: 0.5`, once
   right-handed and once with `left_handed: true`.
 - `{"Sweep":{"profile":sketchId,"path":{"Helix":{"helix":HELIX}}}}` — a coil
-  or spring: the sketch face is carried along the helix (same `HELIX` object
-  as Thread) keeping its orientation relative to the axis, so sketch the
-  section on a plane through the axis, at the coil radius.
+  or spring: the sketch face is carried rigidly round the helix (same `HELIX`
+  object as Thread) keeping its orientation relative to the axis, so sketch
+  the section on a plane through the axis. The coil's radius is the section's
+  own distance from the axis (the helix `radius` field is irrelevant here).
 - `{"Pattern":{"source":id,"count":n,"layout":{"Linear":{"step":[x,y,z]}}}}`,
   `"layout":{"Circular":{"center":[x,y,z],"axis":[x,y,z],"angle":radians}}` or
   `"layout":{"Helical":{"center":[..],"axis":[..],"angle":radians,"rise":d}}`

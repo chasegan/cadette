@@ -1300,15 +1300,20 @@ impl Controller for Modeler {
             }
             return;
         }
-        let face_plane = match pick {
-            Some(Pick::Face(global)) => self.face_plane(global),
+        self.selection.select(pick, additive, None);
+        // A lone selected face carries its plane (sketch-on-face, mirror) or,
+        // if it's round, its cylinder (threading). Derived from the face that
+        // REMAINS, not the one clicked: ⌘-clicking a face out of a pair leaves
+        // the other one, and it's that one's geometry that matters.
+        let lone = match self.selection.selected() {
+            [Pick::Face(global)] => Some(*global),
             _ => None,
         };
-        self.selection.select(pick, additive, face_plane);
-        // A lone round face carries its cylinder, for threading.
-        if let ([Pick::Face(global)], None) = (self.selection.selected(), face_plane) {
-            self.selection.face_cylinder = self.face_cylinder(*global);
-        }
+        self.selection.face_plane = lone.and_then(|g| self.face_plane(g));
+        self.selection.face_cylinder = match (lone, self.selection.face_plane) {
+            (Some(g), None) => self.face_cylinder(g),
+            _ => None,
+        };
         // Remember the clicked point on a picked edge as its durable fillet
         // anchor, then drop anchors for edges no longer in the selection.
         if let (Some(Pick::Edge(g)), Some(p)) = (pick, point) {
@@ -2993,6 +2998,16 @@ mod tests {
         let cyl = m.selection.face_cylinder.expect("the selection carries the cylinder");
         assert!(cyl.convex && (cyl.radius - 5.0).abs() < 1e-9 && (cyl.length - 20.0).abs() < 1e-6);
         assert!(m.selection.face_plane.is_none(), "a round face has no sketch plane");
+        // Toggling a cap in and back out leaves the round face alone again,
+        // and the selection describes IT — not the cap that was clicked last.
+        let cap = (0..3).find(|&f| f != round).unwrap();
+        m.on_pick(Some(Pick::Face(cap)), None, true);
+        assert_eq!(m.selection.selected().len(), 2);
+        assert!(m.selection.face_plane.is_none() && m.selection.face_cylinder.is_none(), "a pair carries neither");
+        m.on_pick(Some(Pick::Face(cap)), None, true);
+        assert_eq!(m.selection.selected(), &[Pick::Face(round)]);
+        assert!(m.selection.face_plane.is_none(), "the remaining face is round: no plane from the clicked cap");
+        assert!(m.selection.face_cylinder.is_some(), "the remaining round face carries its cylinder");
 
         let volume_before = m.bodies[0].volume().unwrap();
         let n0 = m.doc.history.len();

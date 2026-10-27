@@ -231,6 +231,18 @@ impl Helix {
             .map_or(1.0, |&(_, p)| p)
     }
 
+    /// The ISO coarse pitch for a hole seen at its MINOR diameter (the
+    /// tap-drill size): the nominal size is the minor diameter plus twice the
+    /// thread depth, which itself depends on the pitch — so iterate to a
+    /// fixed point. An 8.5 mm hole is M10 (1.5), not M8.
+    pub fn iso_pitch_for_minor(minor_diameter: f64) -> f64 {
+        let mut pitch = Self::iso_pitch(minor_diameter);
+        for _ in 0..4 {
+            pitch = Self::iso_pitch(minor_diameter + 2.0 * Self::iso_depth(pitch));
+        }
+        pitch
+    }
+
     /// The ISO basic-profile thread depth for `pitch`: 5/8 of the fundamental
     /// triangle height (H = 0.866 p), between the crest and root flats.
     pub fn iso_depth(pitch: f64) -> f64 {
@@ -243,6 +255,13 @@ impl Helix {
     }
 }
 
+/// How far past the surface (into air) a thread groove's base reaches, for a
+/// groove `pitch` apart from its neighbours — what [`thread_profile`] uses,
+/// and what must stay smaller than a hole's radius.
+pub fn thread_overlap(pitch: f64) -> f64 {
+    0.05 * pitch
+}
+
 /// The groove a [`FeatureKind::Thread`] cuts, as a closed loop in the helix's
 /// axial plane: `u` is the distance from the axis, `v` the position along it
 /// (0 at the helix point, so the groove is centred on the helix). ISO basic
@@ -250,7 +269,7 @@ impl Helix {
 /// flat is `p/4`, which with the ISO depth gives 60° flanks. The groove's base
 /// is pushed a little past the surface (into air) so the cut is clean.
 pub fn thread_profile(pitch: f64, depth: f64, radius: f64, internal: bool) -> Vec<ProfileElem> {
-    let overlap = 0.05 * pitch;
+    let overlap = thread_overlap(pitch);
     // Half-widths: at the surface the groove is p - p/8 wide; the flank
     // continues through the overlap at the same slope.
     let flank = (0.4375 - 0.125) / Helix::iso_depth(1.0); // Δu per Δv at ISO depth
