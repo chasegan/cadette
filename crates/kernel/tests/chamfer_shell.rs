@@ -247,14 +247,27 @@ fn a_shell_passes_under_chamfers_and_fillets() {
         assert!(desc.contains("closed 1") && !desc.contains("INVALID"), "t={t}: {desc}");
     }
 
+    // A fully filleted body can only be hollowed closed (its faces have no
+    // sharp edge to open at — see the refusal test below): a 1 mm wall keeps
+    // the inner rounding (r = 1), a 3 mm wall loses it to a sharp cavity.
     let filleted = block.fillet_all_edges(2.0).unwrap();
-    let shelled = filleted.shell(&[top], 1.0).unwrap();
-    let v = shelled.volume().unwrap();
-    assert!(v > 0.0 && v < filleted.volume().unwrap() * 0.5, "a 1 mm wall under a 2 mm fillet: {v}");
-    // A wall as thick as the fillet radius has nowhere to put the inner
-    // rounding: refused, not silently ignored.
-    let err = filleted.shell(&[top], 2.0).err().expect("wall ≥ fillet radius must fail");
-    assert!(err.to_string().contains("thickness"), "{err}");
+    let hollow = filleted.shell(&[], 1.0).unwrap();
+    let v = hollow.volume().unwrap();
+    let rounded_box = |w: f64, d: f64, h: f64, r: f64| {
+        // A box with every edge rounded by r: the inner box, its six face
+        // slabs, twelve quarter-cylinder edges and eight corner octants.
+        let (a, b, c) = (w - 2.0 * r, d - 2.0 * r, h - 2.0 * r);
+        a * b * c
+            + 2.0 * r * (a * b + a * c + b * c)
+            + std::f64::consts::PI * r * r * (a + b + c)
+            + 4.0 / 3.0 * std::f64::consts::PI * r * r * r
+    };
+    let expected = rounded_box(40.0, 30.0, 20.0, 2.0) - rounded_box(38.0, 28.0, 18.0, 1.0);
+    assert!((v - expected).abs() < 1e-3, "a 1 mm wall under a 2 mm fillet: {v} vs {expected}");
+    let thick = filleted.shell(&[], 3.0).unwrap();
+    let v = thick.volume().unwrap();
+    let expected = rounded_box(40.0, 30.0, 20.0, 2.0) - 34.0 * 24.0 * 14.0;
+    assert!((v - expected).abs() < 1e-3, "a 3 mm wall under a 2 mm fillet: {v} vs {expected}");
 
     // Closed hollows too: on a blended body OCCT hands the inner offset back
     // as a bare shell, which the kernel must promote to a solid before the
@@ -303,4 +316,57 @@ fn a_shell_anchor_on_a_seam_opens_the_cap_not_the_side() {
     assert!(err.to_string().contains("could not be built"), "{err}");
     let err = cyl.shell(&[], -2.0).err().expect("a negative wall is refused");
     assert!(err.to_string().contains("positive"), "{err}");
+}
+
+#[test]
+fn a_shell_refuses_to_open_a_face_bordered_only_by_fillets() {
+    // Fillet every edge, then open the top: OCCT would hand back a zero-
+    // thickness lid over a CLOSED cavity (valid per BRepCheck, wrong volume).
+    // The kernel refuses with the way round it instead.
+    let block = Solid::cuboid(20.0, 30.0, 40.0).unwrap();
+    let rounded = block.fillet_all_edges(3.0).unwrap();
+    let top = ([10.0, 15.0, 40.0], [0.0, 0.0, 1.0]);
+    let err = rounded.shell(&[top], 2.0).err().expect("a filleted lid can't be opened");
+    assert!(err.to_string().contains("bordered only by fillets"), "{err}");
+    // A top with sharp edges opens fine even when other edges are rounded:
+    // round only the vertical edges, then open the top.
+    let verticals: Vec<[f64; 3]> =
+        vec![[0.0, 0.0, 20.0], [20.0, 0.0, 20.0], [0.0, 30.0, 20.0], [20.0, 30.0, 20.0]];
+    let posts = block.fillet_edges(&verticals, 3.0).unwrap();
+    let cup = posts.shell(&[top], 2.0).unwrap();
+    let v = cup.volume().unwrap();
+    // Analytic: the rounded-post block minus a rounded-post cavity (r = 1)
+    // of 16 × 26 × 38.
+    let rounded_prism = |w: f64, d: f64, h: f64, r: f64| (w * d - (4.0 - std::f64::consts::PI) * r * r) * h;
+    let expected = rounded_prism(20.0, 30.0, 40.0, 3.0) - rounded_prism(16.0, 26.0, 38.0, 1.0);
+    assert!((v - expected).abs() < 1e-6, "an open cup with rounded posts: {v} vs {expected}");
+}
+
+#[test]
+fn shell_errors_name_the_real_problem() {
+    let cube = Solid::cuboid(20.0, 20.0, 20.0).unwrap();
+    // Every face opened: nothing would be left.
+    let all: Vec<([f64; 3], [f64; 3])> = vec![
+        ([10.0, 10.0, 20.0], [0.0, 0.0, 1.0]),
+        ([10.0, 10.0, 0.0], [0.0, 0.0, 1.0]),
+        ([0.0, 10.0, 10.0], [1.0, 0.0, 0.0]),
+        ([20.0, 10.0, 10.0], [1.0, 0.0, 0.0]),
+        ([10.0, 0.0, 10.0], [0.0, 1.0, 0.0]),
+        ([10.0, 20.0, 10.0], [0.0, 1.0, 0.0]),
+    ];
+    let err = cube.shell(&all, 2.0).err().expect("no wall left");
+    assert!(err.to_string().contains("at least one face must stay closed"), "{err}");
+    // Two separate solids (a pattern, a union of parts that don't touch).
+    let far = Solid::cuboid(20.0, 20.0, 20.0).unwrap().translate(50.0, 0.0, 0.0).unwrap();
+    let pair = cube.fuse(&far).unwrap();
+    let err = pair.shell(&[], 2.0).err().expect("two solids");
+    assert!(err.to_string().contains("2 separate solids"), "{err}");
+    // A wall exactly equal to a cylinder's radius used to surface an EMPTY
+    // OCCT message ("shell: "); it is a thickness problem with a hint.
+    let cyl = Solid::cylinder(10.0, 20.0).unwrap();
+    let err = cyl.shell(&[([0.0, 0.0, 20.0], [0.0, 0.0, 1.0])], 10.0).err().expect("t == r");
+    assert!(err.to_string().contains("reduce the thickness"), "{err}");
+    // Chamfering a body with no sharp edges left says so.
+    let err = cube.fillet_all_edges(2.0).unwrap().chamfer_all_edges(1.0).err().expect("no sharp edges");
+    assert!(err.to_string().contains("no sharp edges"), "{err}");
 }

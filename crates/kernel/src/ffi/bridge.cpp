@@ -44,6 +44,7 @@
 #include <Geom_Plane.hxx>
 #include <Geom_CylindricalSurface.hxx>
 #include <Geom2d_Line.hxx>
+#include <Geom2d_Curve.hxx>
 #include <Geom2d_TrimmedCurve.hxx>
 #include <BRepLib.hxx>
 #include <gp_Ax3.hxx>
@@ -1513,7 +1514,20 @@ std::unique_ptr<Shape> finish_blend(BRepFilletAPI_LocalOperation& mk,
                                     rust::Vec<int32_t>& face_records,
                                     rust::Vec<int32_t>& edge_records,
                                     rust::Vec<int32_t>& blend_records) {
-  mk.Build();
+  try {
+    mk.Build();
+  } catch (const Standard_Failure& e) {
+    const char* msg = e.GetMessageString();
+    // OCCT skips tangent (already-filleted) edges; with none left to blend
+    // it throws "There are no suitable edges for chamfer or fillet".
+    if (msg && std::string(msg).find("no suitable edges") != std::string::npos) {
+      throw std::runtime_error(
+          std::string(op) +
+          ": no sharp edges to blend (tangent edges — a fillet's own rim, a "
+          "smooth join — can't be filleted or chamfered)");
+    }
+    throw;
+  }
   if (!mk.IsDone()) {
     throw std::runtime_error(std::string(op) + ": " + build_hint);
   }
@@ -1616,6 +1630,25 @@ std::unique_ptr<Shape> chamfer_edges(const Shape& s, rust::Slice<const double> c
 
 // --- Shell ------------------------------------------------------------------
 
+namespace {
+
+// The surface normal of `face` at the midpoint of its bounding `edge` (via
+// the edge's pcurve on that face). False when the face has no pcurve for
+// the edge or the normal is undefined there.
+bool normal_on_edge(const TopoDS_Face& face, const TopoDS_Edge& edge, gp_Dir& out) {
+  double first = 0.0, last = 0.0;
+  Handle(Geom2d_Curve) pcurve = BRep_Tool::CurveOnSurface(edge, face, first, last);
+  if (pcurve.IsNull()) return false;
+  const gp_Pnt2d uv = pcurve->Value(0.5 * (first + last));
+  BRepAdaptor_Surface surf(face);
+  BRepLProp_SLProps props(surf, uv.X(), uv.Y(), 1, 1e-7);
+  if (!props.IsNormalDefined()) return false;
+  out = props.Normal();
+  return true;
+}
+
+}  // namespace
+
 // Hollow `s` into a shell of uniform wall `thickness`, measured INWARD from
 // its faces, with the faces anchored by each (point, normal) sextuple in
 // `anchors` removed to open the shell (none → a closed hollow body). The
@@ -1637,6 +1670,18 @@ std::unique_ptr<Shape> shell_tracked(const Shape& s,
     }
     if (!(thickness > 0.0)) {
       throw std::runtime_error("shell: the wall thickness must be positive");
+    }
+    int solids = 0;
+    for (TopExp_Explorer ex(s.shape, TopAbs_SOLID); ex.More(); ex.Next()) ++solids;
+    if (solids == 0) {
+      throw std::runtime_error("shell: the body is not a solid (a sketch or a "
+                               "face can't be hollowed)");
+    }
+    if (solids > 1) {
+      throw std::runtime_error(
+          "shell: the body is " + std::to_string(solids) +
+          " separate solids — shell one body (e.g. the seed before patterning "
+          "it, or each part before the union)");
     }
     TopTools_IndexedMapOfShape in_faces;
     TopExp::MapShapes(s.shape, TopAbs_FACE, in_faces);
@@ -1677,6 +1722,43 @@ std::unique_ptr<Shape> shell_tracked(const Shape& s,
       }
       if (opened.Add(target)) open.Append(target);
     }
+    if (!open.IsEmpty() && open.Extent() >= in_faces.Extent()) {
+      throw std::runtime_error(
+          "shell: at least one face must stay closed (opening every face "
+          "leaves no wall)");
+    }
+    // A face bordered ONLY by tangent edges (a filleted top) cannot be opened
+    // by OCCT's thick-solid maker: it hands back a zero-thickness lid over a
+    // closed cavity that BRepCheck calls valid. Refuse up front, with the
+    // way round it.
+    const char* tangent_hint =
+        "shell: the face to open is bordered only by fillets — open a face "
+        "with at least one sharp edge, or shell first and fillet after";
+    {
+      TopTools_IndexedDataMapOfShapeListOfShape edge_faces;
+      TopExp::MapShapesAndAncestors(s.shape, TopAbs_EDGE, TopAbs_FACE, edge_faces);
+      for (TopTools_ListOfShape::Iterator it(open); it.More(); it.Next()) {
+        const TopoDS_Face face = TopoDS::Face(it.Value());
+        bool any_sharp = false;
+        for (TopExp_Explorer ex(face, TopAbs_EDGE); ex.More() && !any_sharp; ex.Next()) {
+          const TopoDS_Edge edge = TopoDS::Edge(ex.Current());
+          const int ei = edge_faces.FindIndex(edge);
+          if (ei == 0) continue;
+          for (TopTools_ListOfShape::Iterator nb(edge_faces(ei)); nb.More(); nb.Next()) {
+            const TopoDS_Face other = TopoDS::Face(nb.Value());
+            if (other.IsSame(face)) continue;
+            gp_Dir n1, n2;
+            if (!normal_on_edge(face, edge, n1) || !normal_on_edge(other, edge, n2)) {
+              any_sharp = true;  // unknown: let OCCT try
+            } else if (std::abs(n1.Dot(n2)) < 0.999) {
+              any_sharp = true;
+            }
+            if (any_sharp) break;
+          }
+        }
+        if (!any_sharp) throw std::runtime_error(tangent_hint);
+      }
+    }
 
     // With nothing to open, OCCT's thick-solid maker returns only the inner
     // offset body, so a closed hollow is built by hand: the inward offset
@@ -1696,16 +1778,26 @@ std::unique_ptr<Shape> shell_tracked(const Shape& s,
     std::unique_ptr<BRepOffsetAPI_MakeThickSolid> thick_mk;
     BRepBuilderAPI_MakeShape* maker = nullptr;
     const char* failed_hint =
-        "shell: the wall could not be built — reduce the thickness (it must "
-        "be less than any fillet radius and half the body's smallest span)";
+        "shell: the wall could not be built — reduce the thickness (under "
+        "half the body's smallest span, and not exactly a fillet or cylinder "
+        "radius it passes under), or open a different face";
+    // OCCT's offset throws (sometimes with an empty message — a wall exactly
+    // equal to a radius) where it can't build the wall: one hint for all.
+    const auto offset = [&](BRepOffsetAPI_MakeThickSolid& mk) {
+      try {
+        mk.MakeThickSolidByJoin(s.shape, open, -thickness, 1e-4,
+                                BRepOffset_Skin, Standard_True,
+                                Standard_False, GeomAbs_Arc);
+      } catch (const Standard_Failure&) {
+        throw std::runtime_error(failed_hint);
+      }
+      if (!mk.IsDone()) throw std::runtime_error(failed_hint);
+    };
     if (open.IsEmpty()) {
       // (MakeOffsetShape builds the same inner body, but its inward result
       // is not a boolean-ready solid on blended bodies — the cut fails.)
       inner_mk = std::make_unique<BRepOffsetAPI_MakeThickSolid>();
-      inner_mk->MakeThickSolidByJoin(s.shape, open, -thickness, 1e-4,
-                                     BRepOffset_Skin, Standard_True,
-                                     Standard_False, GeomAbs_Arc);
-      if (!inner_mk->IsDone()) throw std::runtime_error(failed_hint);
+      offset(*inner_mk);
       // On a body with any blend the maker hands the inner offset back as
       // bare closed SHELLS (on a plain box, a solid); a boolean needs solids.
       // There is one shell per cavity — a body whose interior pinches off
@@ -1740,10 +1832,7 @@ std::unique_ptr<Shape> shell_tracked(const Shape& s,
       maker = cut_mk.get();
     } else {
       thick_mk = std::make_unique<BRepOffsetAPI_MakeThickSolid>();
-      thick_mk->MakeThickSolidByJoin(s.shape, open, -thickness, 1e-4,
-                                     BRepOffset_Skin, Standard_True,
-                                     Standard_False, GeomAbs_Arc);
-      if (!thick_mk->IsDone()) throw std::runtime_error(failed_hint);
+      offset(*thick_mk);
       maker = thick_mk.get();
     }
     bool healed = false;
@@ -1759,6 +1848,16 @@ std::unique_ptr<Shape> shell_tracked(const Shape& s,
     BRepGProp::VolumeProperties(result, out_props);
     if (out_props.Mass() >= in_props.Mass() * (1.0 - 1e-9)) {
       throw std::runtime_error(std::string("shell: ") + cross_hint);
+    }
+    // An opened face must not survive: if OCCT kept it (the lid-over-a-
+    // closed-cavity failure the tangency check guards against, in a form
+    // that check missed) the shell did not open.
+    {
+      TopTools_IndexedMapOfShape out_faces;
+      TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+      for (TopTools_ListOfShape::Iterator it(open); it.More(); it.Next()) {
+        if (out_faces.Contains(it.Value())) throw std::runtime_error(tangent_hint);
+      }
     }
     if (!healed) {
       const Handle(BRepTools_History) no_unify;

@@ -78,15 +78,21 @@ Operations (reference earlier ids):
 - `{"ChamferAll":{"source":id,"distance":d}}` — a symmetric 45° bevel, `d` back
   along both faces of every edge. Its own feature, not a fillet variant.
 - `{"Chamfer":{"source":id,"edges":[{"point":[x,y,z]}],"distance":d}}` — anchors as for Fillet.
+  Blends need sharp edges: chamfer a shaft's end BEFORE threading it, and a
+  body whose every edge is already filleted has nothing left to chamfer.
 - `{"Shell":{"source":id,"thickness":t,"open":[{"point":[x,y,z],"normal":[x,y,z]}]}}`
   — hollow the body to a uniform wall `t` measured INWARD (the outside is
   unchanged); each `open` face (anchored like PushPull) is removed so the cavity
-  is reachable. Omit `open` for a closed hollow. `t` must be less than any
-  fillet radius it passes under and less than half the body's smallest span,
-  or the regen fails with a reason. Anchor a face with a hole in it by a point
-  ON the face (its `centroid` may sit in the hole). Keep `t` under half the
-  thinnest neck of a multi-lobed body: where the inward offset would pinch
-  off, the kernel's offset is unreliable.
+  is reachable. Omit `open` for a closed hollow. Rules: the body must be ONE
+  solid (shell the seed before patterning it); `t` under half the body's
+  smallest span; a face to open needs at least one sharp edge (a fully
+  filleted top can't be opened — shell first, fillet after); anchor a face
+  with a hole in it by a point ON the face (its `centroid` may sit in the
+  hole). Inner concave corners come out rounded with radius `t`; a wall
+  thicker than a fillet it passes under loses that inner rounding (exactly
+  equal fails). Keep `t` under half the thinnest neck of a multi-lobed body:
+  where the inward offset would pinch off, the kernel's offset is unreliable.
+  Failures are regen errors with a reason.
 - `{"PushPull":{"source":id,"anchor":{"point":[x,y,z],"normal":[x,y,z]},"distance":d}}`
   — a planar face by a point on it (its `centroid`) and its normal; positive adds material.
 - `{"Revolve":{"source":sketchId,"axis":{"point":[x,y,z]},"angle":radians}}` — the axis is one of the profile's own straight edges, named by a point on it.
