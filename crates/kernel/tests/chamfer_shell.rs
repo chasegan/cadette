@@ -270,3 +270,37 @@ fn a_shell_passes_under_chamfers_and_fillets() {
         }
     }
 }
+
+#[test]
+fn a_closed_hollow_cuts_every_cavity_when_the_interior_pinches_off() {
+    // Two 20 cubes joined by a 1 mm plate: a 3 mm wall is thicker than the
+    // plate, so the inward offset splits into two cavities — and BOTH must
+    // be cut, not just the first shell OCCT hands back.
+    let left = Solid::cuboid(20.0, 20.0, 20.0).unwrap();
+    let right = Solid::cuboid(20.0, 20.0, 20.0).unwrap().translate(30.0, 0.0, 0.0).unwrap();
+    let plate = Solid::cuboid(12.0, 20.0, 1.0).unwrap().translate(19.0, 0.0, 0.0).unwrap();
+    let dumbbell = left.fuse(&right).unwrap().fuse(&plate).unwrap();
+    let hollow = dumbbell.shell(&[], 3.0).unwrap();
+    let v = hollow.volume().unwrap();
+    let expected = dumbbell.volume().unwrap() - 2.0 * 14.0 * 14.0 * 14.0;
+    assert!((v - expected).abs() < 1e-6, "two 14 mm cavities: {v} vs {expected}");
+    let desc = hollow.describe().unwrap();
+    assert!(desc.contains("solids=1") && desc.contains("closed 3") && !desc.contains("INVALID"), "{desc}");
+}
+
+#[test]
+fn a_shell_anchor_on_a_seam_opens_the_cap_not_the_side() {
+    // Anchoring at the rim of a cylinder's top, where the cap and the curved
+    // side meet: the planar cap matching the normal wins, whatever the face
+    // order. Opening the curved side itself (which would leave two loose
+    // discs) is a clear refusal, and so is a non-positive wall.
+    let cyl = Solid::cylinder(10.0, 20.0).unwrap();
+    let cup = cyl.shell(&[([10.0, 0.0, 20.0], [0.0, 0.0, 1.0])], 2.0).unwrap();
+    let v = cup.volume().unwrap();
+    let expected = cyl.volume().unwrap() - std::f64::consts::PI * 64.0 * 18.0;
+    assert!((v - expected).abs() < 1e-6, "an open-topped cup: {v} vs {expected}");
+    let err = cyl.shell(&[([0.0, -10.0, 10.0], [0.0, -1.0, 0.0])], 2.0).err().expect("no wall to keep");
+    assert!(err.to_string().contains("could not be built"), "{err}");
+    let err = cyl.shell(&[], -2.0).err().expect("a negative wall is refused");
+    assert!(err.to_string().contains("positive"), "{err}");
+}

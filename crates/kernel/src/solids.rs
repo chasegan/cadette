@@ -30,7 +30,6 @@ fn lineage(records: Vec<i32>) -> Vec<Lineage> {
         .collect()
 }
 
-/// Parse the kernel's flat `[in, out]` generated-face pairs.
 /// Flatten `(point, normal)` face anchors into the FFI's sextuple layout.
 fn shell_anchors(open: &[([f64; 3], [f64; 3])]) -> Vec<f64> {
     open.iter()
@@ -38,6 +37,7 @@ fn shell_anchors(open: &[([f64; 3], [f64; 3])]) -> Vec<f64> {
         .collect()
 }
 
+/// Parse the kernel's flat `[in, out]` generated-face pairs.
 fn pairs(records: Vec<i32>) -> Vec<(u32, u32)> {
     records
         .chunks_exact(2)

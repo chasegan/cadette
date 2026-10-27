@@ -64,7 +64,9 @@ impl GeometryBackend for Recording {
         Ok(format!("{name}({target},{tool})"))
     }
     fn fillet_all(&mut self, body: &String, radius: f64) -> Result<String, String> {
-        if radius <= 0.0 {
+        // A radius beyond any body stands in for a kernel refusal (regen
+        // itself already rejects non-positive radii before the backend).
+        if radius > 1e6 {
             return Err(format!("infeasible fillet radius {radius}"));
         }
         Ok(format!("fillet({body},{radius:.0})"))
@@ -75,7 +77,7 @@ impl GeometryBackend for Recording {
         anchors: &[cdt_core::EdgeAnchor],
         radius: f64,
     ) -> Result<String, String> {
-        if radius <= 0.0 {
+        if radius > 1e6 {
             return Err(format!("infeasible fillet radius {radius}"));
         }
         Ok(format!("fillet_edges({body},{},{radius:.0})", anchors.len()))
@@ -260,10 +262,10 @@ fn suppressing_an_input_breaks_only_its_dependents() {
 
 #[test]
 fn missing_input_reasons_tell_cascades_from_structural_errors() {
-    // A cascade: the fillet fails (radius 0 is rejected by Recording), so the
-    // boolean that consumes it is missing its input because it *failed*.
+    // A cascade: the fillet fails (an absurd radius is rejected by Recording),
+    // so the boolean that consumes it is missing its input because it *failed*.
     let (mut doc, [_b, f, _c, cut]) = sample();
-    doc.history.get_mut(f).unwrap().kind = FeatureKind::FilletAll { source: _b, radius: 0.0 };
+    doc.history.get_mut(f).unwrap().kind = FeatureKind::FilletAll { source: _b, radius: 1e9 };
     let regen = regenerate(&doc, &mut Recording);
     assert!(matches!(
         regen.errors()[0],
@@ -355,7 +357,7 @@ fn backend_failure_is_recorded_and_isolated() {
             size: DVec3::new(5.0, 5.0, 5.0),
         },
     );
-    let bad = doc.add("Fillet", FeatureKind::FilletAll { source: b, radius: 0.0 });
+    let bad = doc.add("Fillet", FeatureKind::FilletAll { source: b, radius: 1e9 });
     let regen = regenerate(&doc, &mut Recording);
 
     assert!(!regen.is_ok());
@@ -442,6 +444,26 @@ fn chamfers_and_shells_replay_as_their_own_kinds() {
         regen.errors()
     );
     doc.history.get_mut(bevel).unwrap().kind = FeatureKind::ChamferAll { source: block, distance: 1.0 };
+    // Anchored blends also need at least one edge, fillets and chamfers alike.
+    for (kind, want) in [
+        (FeatureKind::Chamfer { source: bevel, edges: Vec::new(), distance: 1.0 }, "chamfer needs at least one edge"),
+        (FeatureKind::Fillet { source: bevel, edges: Vec::new(), radius: 1.0 }, "fillet needs at least one edge"),
+        (FeatureKind::Fillet { source: bevel, edges: vec![EdgeAnchor { point: DVec3::ZERO }], radius: 0.0 }, "fillet needs a positive radius"),
+        (FeatureKind::Chamfer { source: bevel, edges: vec![EdgeAnchor { point: DVec3::ZERO }], distance: f64::NAN }, "chamfer needs a positive distance"),
+    ] {
+        doc.history.get_mut(edge).unwrap().kind = kind;
+        let regen = regenerate(&doc, &mut Recording);
+        assert!(
+            regen.errors().iter().any(|e| matches!(e, RegenError::Invalid { reason, .. } if reason.contains(want))),
+            "{want}: {:?}",
+            regen.errors()
+        );
+    }
+    doc.history.get_mut(edge).unwrap().kind = FeatureKind::Chamfer {
+        source: bevel,
+        edges: vec![EdgeAnchor { point: DVec3::new(15.0, 0.0, 10.0) }],
+        distance: 2.0,
+    };
     doc.history.get_mut(hollow).unwrap().kind =
         FeatureKind::Shell { source: edge, thickness: -2.0, open: Vec::new() };
     let regen = regenerate(&doc, &mut Recording);

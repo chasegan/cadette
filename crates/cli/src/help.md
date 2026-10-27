@@ -83,7 +83,10 @@ Operations (reference earlier ids):
   unchanged); each `open` face (anchored like PushPull) is removed so the cavity
   is reachable. Omit `open` for a closed hollow. `t` must be less than any
   fillet radius it passes under and less than half the body's smallest span,
-  or the regen fails with a reason.
+  or the regen fails with a reason. Anchor a face with a hole in it by a point
+  ON the face (its `centroid` may sit in the hole). Keep `t` under half the
+  thinnest neck of a multi-lobed body: where the inward offset would pinch
+  off, the kernel's offset is unreliable.
 - `{"PushPull":{"source":id,"anchor":{"point":[x,y,z],"normal":[x,y,z]},"distance":d}}`
   — a planar face by a point on it (its `centroid`) and its normal; positive adds material.
 - `{"Revolve":{"source":sketchId,"axis":{"point":[x,y,z]},"angle":radians}}` — the axis is one of the profile's own straight edges, named by a point on it.

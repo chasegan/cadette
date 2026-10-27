@@ -108,7 +108,7 @@ pub struct EdgeReport {
     pub length: f64,
     pub start: [f64; 3],
     pub end: [f64; 3],
-    /// A point on the edge — what a fillet's `EdgeAnchor` takes.
+    /// A point on the edge — what a fillet's or chamfer's `EdgeAnchor` takes.
     pub midpoint: [f64; 3],
     #[serde(skip_serializing_if = "Option::is_none")]
     pub radius: Option<f64>,

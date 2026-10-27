@@ -71,6 +71,18 @@ fn sample_document() -> Document {
         anchor: FaceAnchor { point: DVec3::new(1.0, 2.0, 8.0), normal: DVec3::Z },
         distance: -1.0,
     });
+    let bevel = doc.add("Chamfer 1", FeatureKind::Chamfer {
+        source: fused,
+        edges: vec![EdgeAnchor { point: DVec3::new(0.0, 10.0, 30.0) }],
+        distance: 0.5,
+    });
+    // `open` is skipped when empty and defaulted when absent: both forms.
+    let hollow = doc.add("Shell 1", FeatureKind::Shell { source: bevel, thickness: 1.0, open: Vec::new() });
+    doc.add("Shell 2", FeatureKind::Shell {
+        source: hollow,
+        thickness: 1.0,
+        open: vec![FaceAnchor { point: DVec3::new(5.0, 10.0, 30.0), normal: DVec3::Z }],
+    });
     doc.add("Group 1", FeatureKind::Group { members: vec![fused, pad] });
     doc
 }

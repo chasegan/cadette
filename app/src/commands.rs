@@ -166,10 +166,13 @@ impl Modeler {
         true
     }
 
-    /// Hollow the selected faces' body to a uniform inward wall, removing the
-    /// selected PLANAR faces so the cavity is open there (push/pull and
-    /// mirror are planar-only in the same way). Returns true if a feature
-    /// was added.
+    /// Hollow the selected faces' body to a uniform inward wall, removing
+    /// every selected face so the cavity is open there. Each face is anchored
+    /// at its clicked point (always on the face) with its outward normal;
+    /// a face picked without a point falls back to its plane centroid, and a
+    /// face with neither (a round face picked programmatically) refuses the
+    /// whole command rather than opening fewer faces than were selected.
+    /// Returns true if a feature was added.
     pub(crate) fn shell_selected_faces(&mut self) -> bool {
         let bodies = self.selected_bodies();
         if bodies.len() != 1 {
@@ -182,21 +185,33 @@ impl Modeler {
         let Some(solid) = self.bodies.get(body_index) else {
             return false;
         };
+        let Ok(infos) = solid.faces() else {
+            return false;
+        };
         let mut open: Vec<FaceAnchor> = Vec::new();
         for pick in self.selection.selected() {
-            if let Pick::Face(g) = pick {
-                if let Some((idx, local)) = self.locate_face(*g) {
-                    if idx == body_index {
-                        if let Ok(Some((origin, x_dir, y_dir))) = solid.face_plane(local) {
-                            let point = DVec3::from_array(origin);
-                            let normal = DVec3::from_array(x_dir)
-                                .cross(DVec3::from_array(y_dir))
-                                .normalize_or_zero();
-                            open.push(FaceAnchor { point, normal });
-                        }
-                    }
-                }
+            let Pick::Face(g) = pick else { continue };
+            let Some((idx, local)) = self.locate_face(*g) else {
+                return false;
+            };
+            if idx != body_index {
+                return false;
             }
+            let plane = solid.face_plane(local).ok().flatten();
+            let point = match (self.face_anchors.get(g), plane) {
+                (Some(p), _) => *p,
+                (None, Some((origin, _, _))) => DVec3::from_array(origin),
+                (None, None) => return false,
+            };
+            let normal = infos
+                .iter()
+                .find(|f| f.index == local)
+                .map(|f| DVec3::from_array(f.normal))
+                .unwrap_or(DVec3::ZERO);
+            if normal.length_squared() < 0.5 {
+                return false;
+            }
+            open.push(FaceAnchor { point, normal });
         }
         if open.is_empty() {
             return false;
@@ -207,6 +222,7 @@ impl Modeler {
             .add_numbered("Shell", FeatureKind::Shell { source, thickness: 2.0, open });
         self.ui.selected = Some(id);
         self.selection.clear();
+        self.face_anchors.clear();
         true
     }
 

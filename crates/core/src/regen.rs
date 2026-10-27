@@ -462,6 +462,9 @@ where
         }
         FeatureKind::FilletAll { source, radius } => {
             let body = input(*source)?;
+            if !positive(*radius) {
+                return Err(RegenError::Invalid { feature, reason: FILLET_RADIUS });
+            }
             backend.fillet_all(body, *radius).map_err(backend_err)
         }
         FeatureKind::Fillet {
@@ -470,6 +473,9 @@ where
             radius,
         } => {
             let body = input(*source)?;
+            if let Some(reason) = blend_problem(edges.len(), *radius, FILLET_RADIUS, FILLET_EDGES) {
+                return Err(RegenError::Invalid { feature, reason });
+            }
             backend.fillet_edges(body, edges, *radius).map_err(backend_err)
         }
         FeatureKind::ChamferAll { source, distance } => {
@@ -485,8 +491,10 @@ where
             distance,
         } => {
             let body = input(*source)?;
-            if !positive(*distance) {
-                return Err(RegenError::Invalid { feature, reason: CHAMFER_DISTANCE });
+            if let Some(reason) =
+                blend_problem(edges.len(), *distance, CHAMFER_DISTANCE, CHAMFER_EDGES)
+            {
+                return Err(RegenError::Invalid { feature, reason });
             }
             backend.chamfer_edges(body, edges, *distance).map_err(backend_err)
         }
@@ -666,7 +674,27 @@ const THREAD_TURNS_LIMIT: &str = "a helix is limited to 500 turns";
 pub const MAX_THREAD_STARTS: u32 = 200;
 const THREAD_STARTS_LIMIT: &str = "a thread has between 1 and 200 starts";
 
+const FILLET_RADIUS: &str = "a fillet needs a positive radius";
+const FILLET_EDGES: &str = "a fillet needs at least one edge";
 const CHAMFER_DISTANCE: &str = "a chamfer needs a positive distance";
+const CHAMFER_EDGES: &str = "a chamfer needs at least one edge";
+
+/// Why an anchored edge blend (fillet/chamfer) can't be attempted: no edges,
+/// or a size that isn't a positive finite length.
+fn blend_problem(
+    edges: usize,
+    size: f64,
+    size_reason: &'static str,
+    edges_reason: &'static str,
+) -> Option<&'static str> {
+    if edges == 0 {
+        Some(edges_reason)
+    } else if !positive(size) {
+        Some(size_reason)
+    } else {
+        None
+    }
+}
 
 /// A finite, strictly positive length or count.
 fn positive(x: f64) -> bool {

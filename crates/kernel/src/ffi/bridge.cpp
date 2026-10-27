@@ -1635,6 +1635,9 @@ std::unique_ptr<Shape> shell_tracked(const Shape& s,
     if (anchors.size() % 6 != 0) {
       throw std::runtime_error("shell: anchors must be point+normal sextuples");
     }
+    if (!(thickness > 0.0)) {
+      throw std::runtime_error("shell: the wall thickness must be positive");
+    }
     TopTools_IndexedMapOfShape in_faces;
     TopExp::MapShapes(s.shape, TopAbs_FACE, in_faces);
 
@@ -1644,23 +1647,35 @@ std::unique_ptr<Shape> shell_tracked(const Shape& s,
       const gp_Pnt point(anchors[base], anchors[base + 1], anchors[base + 2]);
       const gp_Dir wanted(anchors[base + 3], anchors[base + 4], anchors[base + 5]);
       const TopoDS_Vertex probe_vertex = BRepBuilderAPI_MakeVertex(point).Vertex();
-      bool found = false;
+      // The anchor must lie on the face. A planar face must also match the
+      // normal (so a coplanar neighbour is never taken); among the faces
+      // that qualify, a planar one wins over a curved one, and otherwise the
+      // nearest wins — an anchor on the seam between a cap and a curved
+      // side opens the cap it was aimed at, whatever the face order.
+      TopoDS_Face target;
+      bool target_planar = false;
+      double best = 1e30;
       for (int i = 1; i <= in_faces.Extent(); ++i) {
         const TopoDS_Face face = TopoDS::Face(in_faces(i));
         gp_Pln pln;
-        if (face_pln(face, pln) &&
-            std::abs(pln.Axis().Direction().Dot(wanted)) < 0.99) {
+        const bool planar = face_pln(face, pln);
+        if (planar && std::abs(pln.Axis().Direction().Dot(wanted)) < 0.99) {
           continue;
         }
         BRepExtrema_DistShapeShape probe(probe_vertex, face);
         if (!probe.IsDone() || probe.Value() > 0.05) continue;
-        if (opened.Add(face)) open.Append(face);
-        found = true;
-        break;
+        const bool better = target.IsNull() || (planar && !target_planar) ||
+                            (planar == target_planar && probe.Value() < best);
+        if (better) {
+          target = face;
+          target_planar = planar;
+          best = probe.Value();
+        }
       }
-      if (!found) {
+      if (target.IsNull()) {
         throw std::runtime_error("shell: no matching face to open");
       }
+      if (opened.Add(target)) open.Append(target);
     }
 
     // With nothing to open, OCCT's thick-solid maker returns only the inner
@@ -1672,6 +1687,10 @@ std::unique_ptr<Shape> shell_tracked(const Shape& s,
     // arcs only) hands back the INPUT untouched for any body with a chamfer,
     // while the intersection mode offsets bevels and, with a wall thicker
     // than a fillet radius, lets the rounded inner faces vanish cleanly.
+    // Known OCCT limit: when the inward offset pinches off (a wall thicker
+    // than half a neck between two lobes) the offset algorithm is unreliable
+    // in every join mode — it may lose a cavity, fail, or crash — so help.md
+    // tells agents to keep the wall under half the body's thinnest span.
     std::unique_ptr<BRepOffsetAPI_MakeThickSolid> inner_mk;
     std::unique_ptr<BRepAlgoAPI_Cut> cut_mk;
     std::unique_ptr<BRepOffsetAPI_MakeThickSolid> thick_mk;
@@ -1687,17 +1706,36 @@ std::unique_ptr<Shape> shell_tracked(const Shape& s,
                                      BRepOffset_Skin, Standard_True,
                                      Standard_False, GeomAbs_Arc);
       if (!inner_mk->IsDone()) throw std::runtime_error(failed_hint);
-      // On a body with any blend the maker hands the inner offset back as a
-      // bare closed SHELL (on a plain box, a solid); a boolean needs a solid.
+      // On a body with any blend the maker hands the inner offset back as
+      // bare closed SHELLS (on a plain box, a solid); a boolean needs solids.
+      // There is one shell per cavity — a body whose interior pinches off
+      // at this thickness (a dumbbell) has several, and every one is a
+      // cavity to cut, not just the first.
       TopoDS_Shape inner = inner_mk->Shape();
       if (!TopExp_Explorer(inner, TopAbs_SOLID).More()) {
-        TopExp_Explorer shells(inner, TopAbs_SHELL);
-        if (!shells.More()) throw std::runtime_error(failed_hint);
-        TopoDS_Solid solid = BRepBuilderAPI_MakeSolid(TopoDS::Shell(shells.Current())).Solid();
-        BRepLib::OrientClosedSolid(solid);
-        inner = solid;
+        TopoDS_Compound cavities;
+        BRep_Builder builder;
+        builder.MakeCompound(cavities);
+        int count = 0;
+        for (TopExp_Explorer shells(inner, TopAbs_SHELL); shells.More(); shells.Next()) {
+          TopoDS_Solid solid = BRepBuilderAPI_MakeSolid(TopoDS::Shell(shells.Current())).Solid();
+          BRepLib::OrientClosedSolid(solid);
+          builder.Add(cavities, solid);
+          ++count;
+        }
+        if (count == 0) throw std::runtime_error(failed_hint);
+        inner = cavities;
       }
-      cut_mk = std::make_unique<BRepAlgoAPI_Cut>(s.shape, inner);
+      // One cut with every cavity as a tool (the list API takes several).
+      TopTools_ListOfShape body_list, cavity_list;
+      body_list.Append(s.shape);
+      for (TopExp_Explorer ex(inner, TopAbs_SOLID); ex.More(); ex.Next()) {
+        cavity_list.Append(ex.Current());
+      }
+      cut_mk = std::make_unique<BRepAlgoAPI_Cut>();
+      cut_mk->SetArguments(body_list);
+      cut_mk->SetTools(cavity_list);
+      cut_mk->Build();
       if (!cut_mk->IsDone()) throw std::runtime_error(failed_hint);
       maker = cut_mk.get();
     } else {

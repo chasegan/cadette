@@ -187,6 +187,10 @@ struct Modeler {
     /// id), captured at click time so each edge in a multi-selection keeps its
     /// own durable fillet anchor.
     edge_anchors: HashMap<u32, DVec3>,
+    /// The clicked point on each selected face (by global pick id): a point
+    /// guaranteed ON the face — a face's centroid is not, for a ring or a
+    /// plate with a hole — so a Shell can anchor the faces it opens.
+    face_anchors: HashMap<u32, DVec3>,
     /// Tape-measure mode, when engaged (toolbar toggle / Esc to exit).
     tape: Option<TapeState>,
     /// The Build Graph row under the cursor + when that hover began — the
@@ -264,6 +268,7 @@ impl Modeler {
             volume_cache: HashMap::new(),
             bbox_cache: HashMap::new(),
             edge_anchors: HashMap::new(),
+            face_anchors: HashMap::new(),
             tape: None,
             graph_hover: None,
             ghost_step: None,
@@ -609,6 +614,7 @@ impl Modeler {
     fn drop_transient_state(&mut self) {
         self.selection.clear();
         self.edge_anchors.clear();
+        self.face_anchors.clear();
         self.manipulation = None;
         self.transform = None;
         self.resize = None;
@@ -754,9 +760,7 @@ impl Controller for Modeler {
                         fillet_body = action_btn(ui, phi::BOUNDING_BOX, "Fillet every edge", "Round every edge of this body", true);
                         chamfer_face = action_btn(ui, phi::HEXAGON, "Chamfer face edges", "Bevel all edges bounding this face", true);
                         chamfer_body = action_btn(ui, phi::DIAMOND, "Chamfer every edge", "Bevel every edge of this body", true);
-                        if self.selection.face_plane.is_some() {
-                            shell = action_btn(ui, phi::CUBE_TRANSPARENT, "Shell from this face", "Hollow the body to a uniform inward wall, open at this face", true);
-                        }
+                        shell = action_btn(ui, phi::CUBE_TRANSPARENT, "Shell from this face", "Hollow the body to a uniform inward wall, open at this face", true);
                         if can_mirror {
                             mirror = action_btn(ui, phi::FLIP_HORIZONTAL, "Mirror across face", "Reflect this body across the face — keeps the original", true);
                         }
@@ -819,7 +823,7 @@ impl Controller for Modeler {
                         if n_bodies == 1 {
                             fillet_edges = action_btn(ui, phi::FRAME_CORNERS, "Fillet face edges", "Round all edges of the selected faces", true);
                             chamfer_edges = action_btn(ui, phi::HEXAGON, "Chamfer face edges", "Bevel all edges of the selected faces", true);
-                            shell = action_btn(ui, phi::CUBE_TRANSPARENT, "Shell from these faces", "Hollow the body to a uniform inward wall, open at the selected planar faces", true);
+                            shell = action_btn(ui, phi::CUBE_TRANSPARENT, "Shell from these faces", "Hollow the body to a uniform inward wall, open at the selected faces", true);
                         }
                         if n_bodies >= 2 {
                             group = action_btn(ui, phi::STACK_PLUS, &format!("Group {n_bodies} bodies"), "Combine into one unit that moves/rotates together (⌘G)", true);
@@ -1343,21 +1347,27 @@ impl Controller for Modeler {
             (Some(g), None) => self.face_cylinder(g),
             _ => None,
         };
-        // Remember the clicked point on a picked edge as its durable fillet
-        // anchor, then drop anchors for edges no longer in the selection.
-        if let (Some(Pick::Edge(g)), Some(p)) = (pick, point) {
-            self.edge_anchors.insert(g, DVec3::new(p[0], p[1], p[2]));
+        // Remember the clicked point on a picked edge or face as its durable
+        // anchor, then drop anchors for elements no longer in the selection.
+        match (pick, point) {
+            (Some(Pick::Edge(g)), Some(p)) => {
+                self.edge_anchors.insert(g, DVec3::from_array(p));
+            }
+            (Some(Pick::Face(g)), Some(p)) => {
+                self.face_anchors.insert(g, DVec3::from_array(p));
+            }
+            _ => {}
         }
-        let live: std::collections::HashSet<u32> = self
-            .selection
-            .selected()
-            .iter()
-            .filter_map(|pick| match pick {
-                Pick::Edge(g) => Some(*g),
-                _ => None,
-            })
-            .collect();
-        self.edge_anchors.retain(|g, _| live.contains(g));
+        let (mut live_edges, mut live_faces) =
+            (std::collections::HashSet::new(), std::collections::HashSet::new());
+        for pick in self.selection.selected() {
+            match pick {
+                Pick::Edge(g) => live_edges.insert(*g),
+                Pick::Face(g) => live_faces.insert(*g),
+            };
+        }
+        self.edge_anchors.retain(|g, _| live_edges.contains(g));
+        self.face_anchors.retain(|g, _| live_faces.contains(g));
         // Clicking a body in the viewport makes it the operation target: select
         // its feature in the history (which is what the toolbar acts on).
         self.ui.selected = self.selected_body();
@@ -2158,6 +2168,7 @@ mod tests {
             volume_cache: HashMap::new(),
             bbox_cache: HashMap::new(),
             edge_anchors: HashMap::new(),
+            face_anchors: HashMap::new(),
             tape: None,
             graph_hover: None,
             ghost_step: None,
@@ -3213,14 +3224,15 @@ mod tests {
         m.doc = Document::new("box");
         m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(20.0) });
         let _ = m.mesh();
-        // Pick the top face (whichever global index has normal +Z).
+        // Pick the top face (the one whose plane sits at z = 20; the plane
+        // normal alone can't tell top from bottom), clicking it off-centre.
         let top = (0..6u32)
             .find(|&g| {
                 m.on_pick(Some(Pick::Face(g)), None, false);
-                m.selection.face_plane.is_some_and(|p| p.normal().z > 0.99)
+                m.selection.face_plane.is_some_and(|p| p.origin().z > 19.9)
             })
-            .expect("a +Z face");
-        m.on_pick(Some(Pick::Face(top)), None, false);
+            .expect("the z = 20 face");
+        m.on_pick(Some(Pick::Face(top)), Some([3.0, 4.0, 20.0]), false);
         let n0 = m.doc.history.len();
         assert!(m.shell_selected_faces());
         assert_eq!(m.doc.history.len(), n0 + 1, "one Shell feature");
@@ -3237,6 +3249,47 @@ mod tests {
         assert!((v - (8000.0 - 16.0 * 16.0 * 18.0)).abs() < 1e-6, "volume {v}");
         let (lo, hi) = body.solid.bbox().unwrap();
         assert!(lo.iter().all(|c| c.abs() < 1e-6) && hi.iter().all(|c| (c - 20.0).abs() < 1e-6), "the outside is unchanged");
+        // Open at the TOP: the cavity floor is a planar face at z = 2 and
+        // there is no ceiling at z = 18.
+        let floors: Vec<f64> = (0..body.face_count().unwrap() as u32)
+            .filter_map(|i| body.face_plane(i).unwrap().map(|p| p.0[2]))
+            .collect();
+        assert!(floors.iter().any(|z| (z - 2.0).abs() < 1e-6), "a floor at z = 2: {floors:?}");
+        assert!(!floors.iter().any(|z| (z - 18.0).abs() < 1e-6), "no ceiling at z = 18: {floors:?}");
+    }
+
+    #[test]
+    fn shell_anchors_the_opened_face_at_the_clicked_point() {
+        // A plate with a hole through it: the top face's centroid lies IN the
+        // hole, so a shell anchored there would find no face. The clicked
+        // point is on the face by construction.
+        let mut m = Modeler::new();
+        m.doc = Document::new("plate");
+        let plate = m.doc.add("Plate", FeatureKind::Box { size: DVec3::new(40.0, 40.0, 10.0) });
+        let bore = m.doc.add("Bore", FeatureKind::Cylinder { radius: 6.0, height: 30.0 });
+        m.doc.insert_transform(
+            "Place",
+            FeatureKind::Translate { source: bore, offset: DVec3::new(20.0, 20.0, -10.0) },
+        );
+        let bore = m.doc.history.features().last().map(|f| f.id).unwrap();
+        m.doc.add("Hole", FeatureKind::Boolean { op: BooleanOp::Subtract, target: plate, tool: bore });
+        let _ = m.mesh();
+        assert!(m.ui.errors.is_empty(), "the bored plate builds: {:?}", m.ui.errors);
+        let n = m.bodies[0].face_count().unwrap() as u32;
+        let top = (0..n)
+            .find(|&g| {
+                m.on_pick(Some(Pick::Face(g)), None, false);
+                m.selection.face_plane.is_some_and(|p| p.origin().z > 9.9)
+            })
+            .expect("the z = 10 face");
+        m.on_pick(Some(Pick::Face(top)), Some([3.0, 3.0, 10.0]), false);
+        assert_eq!(m.face_anchors.get(&top), Some(&DVec3::new(3.0, 3.0, 10.0)));
+        assert!(m.shell_selected_faces());
+        let _ = m.mesh();
+        assert!(m.ui.errors.is_empty(), "the shell anchors at the click, not the centroid: {:?}", m.ui.errors);
+        let v = m.bodies[0].solid.volume().unwrap();
+        let full = 40.0 * 40.0 * 10.0 - std::f64::consts::PI * 36.0 * 10.0;
+        assert!(v > 0.0 && v < full * 0.5, "hollowed: {v} of {full}");
     }
 
     #[test]
@@ -4381,6 +4434,7 @@ mod tests {
             volume_cache: HashMap::new(),
             bbox_cache: HashMap::new(),
             edge_anchors: HashMap::new(),
+            face_anchors: HashMap::new(),
             tape: None,
             graph_hover: None,
             ghost_step: None,
