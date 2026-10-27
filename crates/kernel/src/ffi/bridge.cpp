@@ -25,6 +25,11 @@
 #include <BRepTools_History.hxx>
 #include <TopTools_ListOfShape.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
+#include <BRepFilletAPI_MakeChamfer.hxx>
+#include <BRepFilletAPI_LocalOperation.hxx>
+#include <BRepOffsetAPI_MakeThickSolid.hxx>
+#include <BRepOffset_Mode.hxx>
+#include <GeomAbs_JoinType.hxx>
 #include <ShapeFix_Shape.hxx>
 #include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <BRepBuilderAPI_MakeShape.hxx>
@@ -33,6 +38,7 @@
 #include <BRepBuilderAPI_Copy.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakeSolid.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <Geom_Plane.hxx>
@@ -1401,15 +1407,16 @@ double edge_length(const Shape& s, uint32_t index) {
 
 namespace {
 
-// The lineage of a fillet: how each input face/edge survived, plus which
-// result faces each rounded edge GENERATED ([input_edge, output_face] pairs
-// in `rounded_records`). No unify pass runs in the fillet pipeline, so the
-// history is single-stage (a null unify handle).
-void track_fillet(BRepFilletAPI_MakeFillet& mk, const TopoDS_Shape& input,
-                  const TopoDS_Shape& result,
-                  rust::Vec<int32_t>& face_records,
-                  rust::Vec<int32_t>& edge_records,
-                  rust::Vec<int32_t>& rounded_records) {
+// The lineage of an edge blend (fillet or chamfer): how each input face/edge
+// survived, plus which result faces each blended edge GENERATED
+// ([input_edge, output_face] pairs in `blend_records`). No unify pass runs in
+// the blend pipeline, so the history is single-stage (a null unify handle).
+// Both OCCT makers share BRepFilletAPI_LocalOperation, so one tracker serves.
+void track_blend(BRepFilletAPI_LocalOperation& mk, const TopoDS_Shape& input,
+                 const TopoDS_Shape& result,
+                 rust::Vec<int32_t>& face_records,
+                 rust::Vec<int32_t>& edge_records,
+                 rust::Vec<int32_t>& blend_records) {
   const Handle(BRepTools_History) no_unify;
   track_elements(mk, no_unify, {&input}, result, TopAbs_FACE, face_records);
   track_elements(mk, no_unify, {&input}, result, TopAbs_EDGE, edge_records);
@@ -1423,12 +1430,110 @@ void track_fillet(BRepFilletAPI_MakeFillet& mk, const TopoDS_Shape& input,
       if (it.Value().ShapeType() != TopAbs_FACE) continue;
       const int oi = out_faces.FindIndex(it.Value());
       if (oi > 0) {
-        rounded_records.push_back(static_cast<int32_t>(i - 1));
-        rounded_records.push_back(static_cast<int32_t>(oi - 1));
+        blend_records.push_back(static_cast<int32_t>(i - 1));
+        blend_records.push_back(static_cast<int32_t>(oi - 1));
       }
     }
   }
 }
+
+// The edge of `edges` nearest `anchor` — the durable edge reference a Fillet
+// or Chamfer feature stores. The anchor lies on the picked edge, so a close
+// match is expected; a large gap means the edge moved or vanished after an
+// upstream edit, which is an error (`op` names the caller in it).
+TopoDS_Edge nearest_edge(const TopTools_IndexedMapOfShape& edges,
+                         const gp_Pnt& anchor, const char* op) {
+  const TopoDS_Vertex probe_vertex = BRepBuilderAPI_MakeVertex(anchor).Vertex();
+  TopoDS_Edge target;
+  double best = 1e30;
+  for (int i = 1; i <= edges.Extent(); ++i) {
+    const TopoDS_Edge edge = TopoDS::Edge(edges(i));
+    BRepExtrema_DistShapeShape probe(probe_vertex, edge);
+    if (!probe.IsDone()) continue;
+    if (probe.Value() < best) {
+      best = probe.Value();
+      target = edge;
+    }
+  }
+  if (target.IsNull() || best > 1.0) {
+    throw std::runtime_error(std::string(op) + ": no matching edge");
+  }
+  return target;
+}
+
+// Add the edges nearest each xyz triple in `coords` to a blend maker, each
+// edge once even if two anchors resolve to it.
+template <typename Maker>
+void add_anchored_edges(Maker& mk, const TopoDS_Shape& shape,
+                        rust::Slice<const double> coords, double size,
+                        const char* op) {
+  if (coords.size() % 3 != 0) {
+    throw std::runtime_error(std::string(op) + ": coords must be xyz triples");
+  }
+  TopTools_IndexedMapOfShape edges;
+  TopExp::MapShapes(shape, TopAbs_EDGE, edges);
+  TopTools_MapOfShape added;
+  for (size_t base = 0; base < coords.size(); base += 3) {
+    const gp_Pnt anchor(coords[base], coords[base + 1], coords[base + 2]);
+    const TopoDS_Edge target = nearest_edge(edges, anchor, op);
+    if (added.Add(target)) {
+      mk.Add(size, target);
+    }
+  }
+}
+
+// Add every edge of `shape` to a blend maker, using a uniqued edge map: a raw
+// explorer visits shared edges once per adjacent face, which would add each
+// edge to the blend twice.
+template <typename Maker>
+void add_all_edges(Maker& mk, const TopoDS_Shape& shape, double size) {
+  TopTools_IndexedMapOfShape edges;
+  TopExp::MapShapes(shape, TopAbs_EDGE, edges);
+  for (int i = 1; i <= edges.Extent(); ++i) {
+    mk.Add(size, TopoDS::Edge(edges(i)));
+  }
+}
+
+// Build a blend and gate its result. When a fillet radius (or chamfer
+// distance) is too large for the face between two blended edges, the blend
+// surfaces overlap and OCCT leaves a self-intersecting sliver: the maker
+// reports IsDone, but the solid is INVALID. It renders yet silently corrupts
+// every downstream boolean and STL. Try to heal it (the same policy as the
+// swept-solid path) — minor tolerance/pcurve defects recover into a clean
+// solid. A genuine overlap can't be made watertight: ShapeFix strips the
+// tangled faces and leaves an OPEN shell (valid per BRepCheck, but no solid
+// and not closed) — which the gate rejects.
+// Lineage is recorded only when the shape was NOT healed: ShapeFix rebuilds
+// sub-shapes without history, so records against a healed result would point
+// at stale topology (its elements stay unnamed, anchor fallback).
+std::unique_ptr<Shape> finish_blend(BRepFilletAPI_LocalOperation& mk,
+                                    const TopoDS_Shape& input, const char* op,
+                                    const char* build_hint,
+                                    const char* overlap_hint,
+                                    rust::Vec<int32_t>& face_records,
+                                    rust::Vec<int32_t>& edge_records,
+                                    rust::Vec<int32_t>& blend_records) {
+  mk.Build();
+  if (!mk.IsDone()) {
+    throw std::runtime_error(std::string(op) + ": " + build_hint);
+  }
+  bool healed = false;
+  TopoDS_Shape result = require_valid_solid(mk.Shape(), op, overlap_hint, healed);
+  if (!healed) {
+    track_blend(mk, input, result, face_records, edge_records, blend_records);
+  }
+  return std::make_unique<Shape>(result);
+}
+
+constexpr const char* kFilletBuild = "the rounding failed to build";
+constexpr const char* kChamferBuild =
+    "the bevel failed to build (the distance is too large for an adjacent face)";
+constexpr const char* kFilletOverlap =
+    "the rounded edges overlap (the radius is too large for the face "
+    "between them) — reduce the fillet radius";
+constexpr const char* kChamferOverlap =
+    "the chamfered edges overlap (the distance is too large for the face "
+    "between them) — reduce the chamfer distance";
 
 }  // namespace
 
@@ -1438,16 +1543,9 @@ std::unique_ptr<Shape> fillet_all_tracked(const Shape& s, double radius,
                                           rust::Vec<int32_t>& rounded_records) {
   return guard("fillet_all_edges", [&] {
     BRepFilletAPI_MakeFillet mk(s.shape);
-    // Use a uniqued edge map: a raw explorer visits shared edges once per
-    // adjacent face, which would add each edge to the fillet twice.
-    TopTools_IndexedMapOfShape edges;
-    TopExp::MapShapes(s.shape, TopAbs_EDGE, edges);
-    for (int i = 1; i <= edges.Extent(); ++i) {
-      mk.Add(radius, TopoDS::Edge(edges(i)));
-    }
-    const TopoDS_Shape result = mk.Shape();
-    track_fillet(mk, s.shape, result, face_records, edge_records, rounded_records);
-    return std::make_unique<Shape>(result);
+    add_all_edges(mk, s.shape, radius);
+    return finish_blend(mk, s.shape, "fillet_all_edges", kFilletBuild, kFilletOverlap, face_records,
+                        edge_records, rounded_records);
   });
 }
 
@@ -1463,69 +1561,10 @@ std::unique_ptr<Shape> fillet_edges_tracked(const Shape& s,
                                             rust::Vec<int32_t>& edge_records,
                                             rust::Vec<int32_t>& rounded_records) {
   return guard("fillet_edges", [&] {
-    if (coords.size() % 3 != 0) {
-      throw std::runtime_error("fillet_edges: coords must be xyz triples");
-    }
-
-    TopTools_IndexedMapOfShape edges;
-    TopExp::MapShapes(s.shape, TopAbs_EDGE, edges);
-
     BRepFilletAPI_MakeFillet mk(s.shape);
-    // A given edge must be added only once, even if two anchors resolve to it.
-    TopTools_MapOfShape added;
-    for (size_t base = 0; base < coords.size(); base += 3) {
-      const gp_Pnt anchor(coords[base], coords[base + 1], coords[base + 2]);
-      const TopoDS_Vertex probe_vertex =
-          BRepBuilderAPI_MakeVertex(anchor).Vertex();
-
-      // Find the edge nearest this anchor point (the durable edge reference).
-      TopoDS_Edge target;
-      double best = 1e30;
-      for (int i = 1; i <= edges.Extent(); ++i) {
-        const TopoDS_Edge edge = TopoDS::Edge(edges(i));
-        BRepExtrema_DistShapeShape probe(probe_vertex, edge);
-        if (!probe.IsDone()) continue;
-        if (probe.Value() < best) {
-          best = probe.Value();
-          target = edge;
-        }
-      }
-      // The anchor lies on the picked edge, so a close match is expected; a
-      // large gap means the edge moved or vanished after an upstream edit.
-      if (target.IsNull() || best > 1.0) {
-        throw std::runtime_error("fillet_edges: no matching edge");
-      }
-      if (added.Add(target)) {
-        mk.Add(radius, target);
-      }
-    }
-    mk.Build();
-    if (!mk.IsDone()) {
-      throw std::runtime_error("fillet: the rounding failed to build");
-    }
-    TopoDS_Shape result = mk.Shape();
-    // When a fillet radius is too large for the face between two rounded edges,
-    // the rolling surfaces overlap and OCCT leaves a self-intersecting sliver:
-    // MakeFillet reports IsDone, but the solid is INVALID. It renders yet
-    // silently corrupts every downstream boolean and STL. Try to heal it (the
-    // same policy as the swept-solid path) — minor tolerance/pcurve defects
-    // recover into a clean solid.
-    // A genuine radius-too-large overlap can't be made watertight: ShapeFix
-    // strips the tangled faces and leaves an OPEN shell (valid per BRepCheck,
-    // but no solid and not closed) — which the gate rejects.
-    bool healed = false;
-    result = require_valid_solid(
-        result, "fillet",
-        "the rounded edges overlap (the radius is too large for the face "
-        "between them) — reduce the fillet radius",
-        healed);
-    // Lineage — only when the shape was NOT healed: ShapeFix rebuilds
-    // sub-shapes without history, so records against a healed result would
-    // point at stale topology (its elements stay unnamed, anchor fallback).
-    if (!healed) {
-      track_fillet(mk, s.shape, result, face_records, edge_records, rounded_records);
-    }
-    return std::make_unique<Shape>(result);
+    add_anchored_edges(mk, s.shape, coords, radius, "fillet_edges");
+    return finish_blend(mk, s.shape, "fillet_edges", kFilletBuild, kFilletOverlap, face_records,
+                        edge_records, rounded_records);
   });
 }
 
@@ -1533,6 +1572,200 @@ std::unique_ptr<Shape> fillet_edges(const Shape& s, rust::Slice<const double> co
                                     double radius) {
   rust::Vec<int32_t> f, e, r;
   return fillet_edges_tracked(s, coords, radius, f, e, r);
+}
+
+// A chamfer is the fillet pipeline with a planar bevel in place of the
+// rolling surface: the same distance is measured back along both faces of
+// each edge (a symmetric 45° chamfer on a square corner).
+std::unique_ptr<Shape> chamfer_all_tracked(const Shape& s, double distance,
+                                           rust::Vec<int32_t>& face_records,
+                                           rust::Vec<int32_t>& edge_records,
+                                           rust::Vec<int32_t>& bevel_records) {
+  return guard("chamfer_all_edges", [&] {
+    BRepFilletAPI_MakeChamfer mk(s.shape);
+    add_all_edges(mk, s.shape, distance);
+    return finish_blend(mk, s.shape, "chamfer_all_edges", kChamferBuild, kChamferOverlap, face_records,
+                        edge_records, bevel_records);
+  });
+}
+
+std::unique_ptr<Shape> chamfer_all_edges(const Shape& s, double distance) {
+  rust::Vec<int32_t> f, e, r;
+  return chamfer_all_tracked(s, distance, f, e, r);
+}
+
+std::unique_ptr<Shape> chamfer_edges_tracked(const Shape& s,
+                                             rust::Slice<const double> coords,
+                                             double distance,
+                                             rust::Vec<int32_t>& face_records,
+                                             rust::Vec<int32_t>& edge_records,
+                                             rust::Vec<int32_t>& bevel_records) {
+  return guard("chamfer_edges", [&] {
+    BRepFilletAPI_MakeChamfer mk(s.shape);
+    add_anchored_edges(mk, s.shape, coords, distance, "chamfer_edges");
+    return finish_blend(mk, s.shape, "chamfer_edges", kChamferBuild, kChamferOverlap, face_records,
+                        edge_records, bevel_records);
+  });
+}
+
+std::unique_ptr<Shape> chamfer_edges(const Shape& s, rust::Slice<const double> coords,
+                                     double distance) {
+  rust::Vec<int32_t> f, e, r;
+  return chamfer_edges_tracked(s, coords, distance, f, e, r);
+}
+
+// --- Shell ------------------------------------------------------------------
+
+// Hollow `s` into a shell of uniform wall `thickness`, measured INWARD from
+// its faces, with the faces anchored by each (point, normal) sextuple in
+// `anchors` removed to open the shell (none → a closed hollow body). The
+// anchor must lie on the face; for planar faces the normal must match too,
+// so a coplanar neighbour is never picked instead.
+// Lineage: `face_records`/`edge_records` carry survival triples for the
+// outer faces/edges, and `offset_records` [input_face, output_face] pairs —
+// the inner wall each kept face GENERATED. Records stay EMPTY when the result
+// needed healing.
+std::unique_ptr<Shape> shell_tracked(const Shape& s,
+                                     rust::Slice<const double> anchors,
+                                     double thickness,
+                                     rust::Vec<int32_t>& face_records,
+                                     rust::Vec<int32_t>& edge_records,
+                                     rust::Vec<int32_t>& offset_records) {
+  return guard("shell", [&] {
+    if (anchors.size() % 6 != 0) {
+      throw std::runtime_error("shell: anchors must be point+normal sextuples");
+    }
+    TopTools_IndexedMapOfShape in_faces;
+    TopExp::MapShapes(s.shape, TopAbs_FACE, in_faces);
+
+    TopTools_ListOfShape open;
+    TopTools_MapOfShape opened;
+    for (size_t base = 0; base < anchors.size(); base += 6) {
+      const gp_Pnt point(anchors[base], anchors[base + 1], anchors[base + 2]);
+      const gp_Dir wanted(anchors[base + 3], anchors[base + 4], anchors[base + 5]);
+      const TopoDS_Vertex probe_vertex = BRepBuilderAPI_MakeVertex(point).Vertex();
+      bool found = false;
+      for (int i = 1; i <= in_faces.Extent(); ++i) {
+        const TopoDS_Face face = TopoDS::Face(in_faces(i));
+        gp_Pln pln;
+        if (face_pln(face, pln) &&
+            std::abs(pln.Axis().Direction().Dot(wanted)) < 0.99) {
+          continue;
+        }
+        BRepExtrema_DistShapeShape probe(probe_vertex, face);
+        if (!probe.IsDone() || probe.Value() > 0.05) continue;
+        if (opened.Add(face)) open.Append(face);
+        found = true;
+        break;
+      }
+      if (!found) {
+        throw std::runtime_error("shell: no matching face to open");
+      }
+    }
+
+    // With nothing to open, OCCT's thick-solid maker returns only the inner
+    // offset body, so a closed hollow is built by hand: the inward offset
+    // cut out of the original. Both paths are BRepBuilderAPI_MakeShape, so
+    // one lineage pass serves; the closed path chains the offset's Generated
+    // faces through the cut.
+    // `Intersection = true` matters: the default (offset faces joined by
+    // arcs only) hands back the INPUT untouched for any body with a chamfer,
+    // while the intersection mode offsets bevels and, with a wall thicker
+    // than a fillet radius, lets the rounded inner faces vanish cleanly.
+    std::unique_ptr<BRepOffsetAPI_MakeThickSolid> inner_mk;
+    std::unique_ptr<BRepAlgoAPI_Cut> cut_mk;
+    std::unique_ptr<BRepOffsetAPI_MakeThickSolid> thick_mk;
+    BRepBuilderAPI_MakeShape* maker = nullptr;
+    const char* failed_hint =
+        "shell: the wall could not be built — reduce the thickness (it must "
+        "be less than any fillet radius and half the body's smallest span)";
+    if (open.IsEmpty()) {
+      // (MakeOffsetShape builds the same inner body, but its inward result
+      // is not a boolean-ready solid on blended bodies — the cut fails.)
+      inner_mk = std::make_unique<BRepOffsetAPI_MakeThickSolid>();
+      inner_mk->MakeThickSolidByJoin(s.shape, open, -thickness, 1e-4,
+                                     BRepOffset_Skin, Standard_True,
+                                     Standard_False, GeomAbs_Arc);
+      if (!inner_mk->IsDone()) throw std::runtime_error(failed_hint);
+      // On a body with any blend the maker hands the inner offset back as a
+      // bare closed SHELL (on a plain box, a solid); a boolean needs a solid.
+      TopoDS_Shape inner = inner_mk->Shape();
+      if (!TopExp_Explorer(inner, TopAbs_SOLID).More()) {
+        TopExp_Explorer shells(inner, TopAbs_SHELL);
+        if (!shells.More()) throw std::runtime_error(failed_hint);
+        TopoDS_Solid solid = BRepBuilderAPI_MakeSolid(TopoDS::Shell(shells.Current())).Solid();
+        BRepLib::OrientClosedSolid(solid);
+        inner = solid;
+      }
+      cut_mk = std::make_unique<BRepAlgoAPI_Cut>(s.shape, inner);
+      if (!cut_mk->IsDone()) throw std::runtime_error(failed_hint);
+      maker = cut_mk.get();
+    } else {
+      thick_mk = std::make_unique<BRepOffsetAPI_MakeThickSolid>();
+      thick_mk->MakeThickSolidByJoin(s.shape, open, -thickness, 1e-4,
+                                     BRepOffset_Skin, Standard_True,
+                                     Standard_False, GeomAbs_Arc);
+      if (!thick_mk->IsDone()) throw std::runtime_error(failed_hint);
+      maker = thick_mk.get();
+    }
+    bool healed = false;
+    const char* cross_hint =
+        "the walls cross (the thickness is too large for the body) — reduce "
+        "the thickness";
+    TopoDS_Shape result = require_valid_solid(maker->Shape(), "shell", cross_hint, healed);
+    // When the walls would cross, OCCT can hand back the INPUT untouched (a
+    // valid solid, nothing hollowed) rather than fail: a shell must always
+    // remove material.
+    GProp_GProps in_props, out_props;
+    BRepGProp::VolumeProperties(s.shape, in_props);
+    BRepGProp::VolumeProperties(result, out_props);
+    if (out_props.Mass() >= in_props.Mass() * (1.0 - 1e-9)) {
+      throw std::runtime_error(std::string("shell: ") + cross_hint);
+    }
+    if (!healed) {
+      const Handle(BRepTools_History) no_unify;
+      track_elements(*maker, no_unify, {&s.shape}, result, TopAbs_FACE, face_records);
+      track_elements(*maker, no_unify, {&s.shape}, result, TopAbs_EDGE, edge_records);
+      TopTools_IndexedMapOfShape out_faces;
+      TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+      for (int i = 1; i <= in_faces.Extent(); ++i) {
+        // The inner wall each kept face generated — straight from the thick
+        // solid, or from the offset and then through the cut (which keeps
+        // the inner faces as they are, or trims them).
+        TopTools_ListOfShape walls;
+        if (thick_mk) {
+          walls = thick_mk->Generated(in_faces(i));
+        } else {
+          const TopTools_ListOfShape& gen = inner_mk->Generated(in_faces(i));
+          for (TopTools_ListOfShape::Iterator it(gen); it.More(); it.Next()) {
+            const TopTools_ListOfShape& mods = cut_mk->Modified(it.Value());
+            if (mods.IsEmpty()) {
+              walls.Append(it.Value());
+            } else {
+              for (TopTools_ListOfShape::Iterator m(mods); m.More(); m.Next()) {
+                walls.Append(m.Value());
+              }
+            }
+          }
+        }
+        for (TopTools_ListOfShape::Iterator it(walls); it.More(); it.Next()) {
+          if (it.Value().ShapeType() != TopAbs_FACE) continue;
+          const int oi = out_faces.FindIndex(it.Value());
+          if (oi > 0) {
+            offset_records.push_back(static_cast<int32_t>(i - 1));
+            offset_records.push_back(static_cast<int32_t>(oi - 1));
+          }
+        }
+      }
+    }
+    return std::make_unique<Shape>(result);
+  });
+}
+
+std::unique_ptr<Shape> shell(const Shape& s, rust::Slice<const double> anchors,
+                             double thickness) {
+  rust::Vec<int32_t> f, e, o;
+  return shell_tracked(s, anchors, thickness, f, e, o);
 }
 
 // --- Display / export -------------------------------------------------------

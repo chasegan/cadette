@@ -106,6 +106,26 @@ pub enum FeatureKind {
         edges: Vec<EdgeAnchor>,
         radius: f64,
     },
+    /// Chamfer every edge of `source`: a symmetric bevel set back `distance`
+    /// along both faces of each edge. Its own kind, not a fillet variant —
+    /// a bevel and a rounding are different features of a part.
+    ChamferAll { source: FeatureId, distance: f64 },
+    /// Chamfer one or more edges of `source` (identified by `edges`) by a
+    /// constant `distance`.
+    Chamfer {
+        source: FeatureId,
+        edges: Vec<EdgeAnchor>,
+        distance: f64,
+    },
+    /// Hollow `source` into a shell of uniform wall `thickness`, measured
+    /// inward from its faces, removing the faces in `open` so the cavity is
+    /// reachable (an empty `open` keeps a closed hollow body).
+    Shell {
+        source: FeatureId,
+        thickness: f64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        open: Vec<FaceAnchor>,
+    },
 
     /// Push or pull a planar face of `source` along its normal by `distance`
     /// (positive adds material, negative removes). The face is identified by
@@ -361,6 +381,8 @@ impl FeatureKind {
             FeatureKind::Boolean { op: BooleanOp::Subtract, .. } => "Subtract",
             FeatureKind::Boolean { op: BooleanOp::Intersect, .. } => "Intersect",
             FeatureKind::FilletAll { .. } | FeatureKind::Fillet { .. } => "Fillet",
+            FeatureKind::ChamferAll { .. } | FeatureKind::Chamfer { .. } => "Chamfer",
+            FeatureKind::Shell { .. } => "Shell",
             FeatureKind::PushPull { .. } => "Push/Pull",
             FeatureKind::Rotate { .. } => "Rotate",
             FeatureKind::Scale { .. } => "Scale",
@@ -405,6 +427,9 @@ impl FeatureKind {
             FeatureKind::Translate { source, .. } => vec![*source],
             FeatureKind::FilletAll { source, .. } => vec![*source],
             FeatureKind::Fillet { source, .. } => vec![*source],
+            FeatureKind::ChamferAll { source, .. } => vec![*source],
+            FeatureKind::Chamfer { source, .. } => vec![*source],
+            FeatureKind::Shell { source, .. } => vec![*source],
             FeatureKind::Extrude { source, .. } => vec![*source],
             FeatureKind::PushPull { source, .. } => vec![*source],
             FeatureKind::Rotate { source, .. } => vec![*source],
@@ -428,6 +453,9 @@ impl FeatureKind {
             FeatureKind::Translate { source, .. }
             | FeatureKind::FilletAll { source, .. }
             | FeatureKind::Fillet { source, .. }
+            | FeatureKind::ChamferAll { source, .. }
+            | FeatureKind::Chamfer { source, .. }
+            | FeatureKind::Shell { source, .. }
             | FeatureKind::Extrude { source, .. }
             | FeatureKind::PushPull { source, .. }
             | FeatureKind::Rotate { source, .. }
@@ -457,6 +485,9 @@ impl FeatureKind {
             FeatureKind::Translate { source, .. }
             | FeatureKind::FilletAll { source, .. }
             | FeatureKind::Fillet { source, .. }
+            | FeatureKind::ChamferAll { source, .. }
+            | FeatureKind::Chamfer { source, .. }
+            | FeatureKind::Shell { source, .. }
             | FeatureKind::Extrude { source, .. }
             | FeatureKind::PushPull { source, .. }
             | FeatureKind::Rotate { source, .. }
@@ -488,6 +519,9 @@ impl FeatureKind {
             FeatureKind::Boolean { .. } => "Boolean",
             FeatureKind::FilletAll { .. } => "Fillet",
             FeatureKind::Fillet { .. } => "Fillet",
+            FeatureKind::ChamferAll { .. } => "Chamfer",
+            FeatureKind::Chamfer { .. } => "Chamfer",
+            FeatureKind::Shell { .. } => "Shell",
             FeatureKind::PushPull { .. } => "Push/Pull",
             FeatureKind::Rotate { .. } => "Rotate",
             FeatureKind::Scale { .. } => "Scale",

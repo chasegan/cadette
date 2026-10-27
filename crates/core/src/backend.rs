@@ -114,6 +114,28 @@ pub trait GeometryBackend {
         radius: f64,
     ) -> Result<Self::Body, Self::Error>;
 
+    /// Chamfer every edge of `body`: a symmetric bevel set back `distance`
+    /// along both faces of each edge.
+    fn chamfer_all(&mut self, body: &Self::Body, distance: f64) -> Result<Self::Body, Self::Error>;
+
+    /// Chamfer the edges of `body` nearest each anchor in `anchors` by
+    /// `distance`, in a single operation.
+    fn chamfer_edges(
+        &mut self,
+        body: &Self::Body,
+        anchors: &[EdgeAnchor],
+        distance: f64,
+    ) -> Result<Self::Body, Self::Error>;
+
+    /// Hollow `body` to a uniform inward wall `thickness`, removing the faces
+    /// identified by `open` (none → a closed hollow).
+    fn shell(
+        &mut self,
+        body: &Self::Body,
+        thickness: f64,
+        open: &[FaceAnchor],
+    ) -> Result<Self::Body, Self::Error>;
+
     /// Push or pull the planar face of `body` identified by `anchor` along its
     /// normal by `distance` (positive adds material, negative removes).
     fn push_pull(

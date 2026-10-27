@@ -31,6 +31,13 @@ fn lineage(records: Vec<i32>) -> Vec<Lineage> {
 }
 
 /// Parse the kernel's flat `[in, out]` generated-face pairs.
+/// Flatten `(point, normal)` face anchors into the FFI's sextuple layout.
+fn shell_anchors(open: &[([f64; 3], [f64; 3])]) -> Vec<f64> {
+    open.iter()
+        .flat_map(|(p, n)| p.iter().chain(n.iter()).copied())
+        .collect()
+}
+
 fn pairs(records: Vec<i32>) -> Vec<(u32, u32)> {
     records
         .chunks_exact(2)
@@ -67,15 +74,17 @@ pub struct TrackedBoolean {
     pub sections: Vec<(u8, u32, u32)>,
 }
 
-/// A fillet result with its evolution history. Lineage `input` is always 0
-/// (one source body); `rounded` pairs each source edge with the fillet face
-/// it generated. All vecs are EMPTY when the result needed healing.
+/// A modifying op's result (fillet, chamfer, shell) with its evolution
+/// history. Lineage `input` is always 0 (one source body); `generated` pairs
+/// each source element with the result face it generated — the fillet or
+/// bevel face of an edge, the inner wall of a shelled face. All vecs are
+/// EMPTY when the result needed healing.
 pub struct TrackedModify {
     pub result: Solid,
     pub faces: Vec<Lineage>,
     pub edges: Vec<Lineage>,
-    /// `(source_edge_index, result_face_index)` per generated fillet face.
-    pub rounded: Vec<(u32, u32)>,
+    /// `(source_element_index, result_face_index)` per generated face.
+    pub generated: Vec<(u32, u32)>,
 }
 
 /// A push/pull result with its evolution history: boolean-style lineage where
@@ -515,7 +524,7 @@ impl Solid {
             result: Self::wrap(shape),
             faces: lineage(f),
             edges: lineage(e),
-            rounded: pairs(r),
+            generated: pairs(r),
         })
     }
 
@@ -533,7 +542,76 @@ impl Solid {
             result: Self::wrap(shape),
             faces: lineage(f),
             edges: lineage(e),
-            rounded: pairs(r),
+            generated: pairs(r),
+        })
+    }
+
+    /// Chamfer every edge: a symmetric bevel set back `distance` along both
+    /// faces of each edge. Errors like [`Self::fillet_all_edges`].
+    pub fn chamfer_all_edges(&self, distance: f64) -> Result<Self> {
+        Ok(Self::wrap(ffi::chamfer_all_edges(&self.0, distance)?))
+    }
+
+    /// Chamfer the edges nearest each `point` by `distance`, in one operation.
+    pub fn chamfer_edges(&self, points: &[[f64; 3]], distance: f64) -> Result<Self> {
+        let coords: Vec<f64> = points.iter().flat_map(|p| p.iter().copied()).collect();
+        Ok(Self::wrap(ffi::chamfer_edges(&self.0, &coords, distance)?))
+    }
+
+    /// [`Self::chamfer_all_edges`] with its lineage report.
+    pub fn chamfer_all_tracked(&self, distance: f64) -> Result<TrackedModify> {
+        let (mut f, mut e, mut r) = (Vec::new(), Vec::new(), Vec::new());
+        let shape = ffi::chamfer_all_tracked(&self.0, distance, &mut f, &mut e, &mut r)?;
+        Ok(TrackedModify {
+            result: Self::wrap(shape),
+            faces: lineage(f),
+            edges: lineage(e),
+            generated: pairs(r),
+        })
+    }
+
+    /// [`Self::chamfer_edges`] with its lineage report (empty when healed).
+    pub fn chamfer_edges_tracked(
+        &self,
+        points: &[[f64; 3]],
+        distance: f64,
+    ) -> Result<TrackedModify> {
+        let coords: Vec<f64> = points.iter().flat_map(|p| p.iter().copied()).collect();
+        let (mut f, mut e, mut r) = (Vec::new(), Vec::new(), Vec::new());
+        let shape =
+            ffi::chamfer_edges_tracked(&self.0, &coords, distance, &mut f, &mut e, &mut r)?;
+        Ok(TrackedModify {
+            result: Self::wrap(shape),
+            faces: lineage(f),
+            edges: lineage(e),
+            generated: pairs(r),
+        })
+    }
+
+    // --- Shell --------------------------------------------------------------
+
+    /// Hollow the solid to a uniform wall of `thickness`, measured inward,
+    /// removing each face anchored by a `(point, normal)` in `open` so the
+    /// cavity is reachable (no open faces → a closed hollow body).
+    pub fn shell(&self, open: &[([f64; 3], [f64; 3])], thickness: f64) -> Result<Self> {
+        Ok(Self::wrap(ffi::shell(&self.0, &shell_anchors(open), thickness)?))
+    }
+
+    /// [`Self::shell`] with its lineage report: `generated` pairs each kept
+    /// outer face with its inner wall (empty when healed).
+    pub fn shell_tracked(
+        &self,
+        open: &[([f64; 3], [f64; 3])],
+        thickness: f64,
+    ) -> Result<TrackedModify> {
+        let (mut f, mut e, mut o) = (Vec::new(), Vec::new(), Vec::new());
+        let shape =
+            ffi::shell_tracked(&self.0, &shell_anchors(open), thickness, &mut f, &mut e, &mut o)?;
+        Ok(TrackedModify {
+            result: Self::wrap(shape),
+            faces: lineage(f),
+            edges: lineage(e),
+            generated: pairs(o),
         })
     }
 

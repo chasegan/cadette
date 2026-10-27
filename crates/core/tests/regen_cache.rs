@@ -80,6 +80,28 @@ impl GeometryBackend for Counting {
         self.ops += 1;
         Ok(format!("filletE({b},{},{r})", e.len()))
     }
+    fn chamfer_all(&mut self, b: &String, d: f64) -> Result<String, String> {
+        self.ops += 1;
+        Ok(format!("chamfer({b},{d})"))
+    }
+    fn chamfer_edges(
+        &mut self,
+        b: &String,
+        e: &[cdt_core::EdgeAnchor],
+        d: f64,
+    ) -> Result<String, String> {
+        self.ops += 1;
+        Ok(format!("chamferE({b},{},{d})", e.len()))
+    }
+    fn shell(
+        &mut self,
+        b: &String,
+        t: f64,
+        o: &[cdt_core::FaceAnchor],
+    ) -> Result<String, String> {
+        self.ops += 1;
+        Ok(format!("shell({b},{t},{})", o.len()))
+    }
     fn push_pull(
         &mut self,
         b: &String,

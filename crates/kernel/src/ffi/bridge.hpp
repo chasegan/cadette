@@ -151,6 +151,30 @@ std::unique_ptr<Shape> fillet_edges_tracked(const Shape& s,
                                             rust::Vec<int32_t>& face_records,
                                             rust::Vec<int32_t>& edge_records,
                                             rust::Vec<int32_t>& rounded_records);
+std::unique_ptr<Shape> chamfer_all_edges(const Shape& s, double distance);
+std::unique_ptr<Shape> chamfer_edges(const Shape& s,
+                                     rust::Slice<const double> coords,
+                                     double distance);
+std::unique_ptr<Shape> chamfer_all_tracked(const Shape& s, double distance,
+                                           rust::Vec<int32_t>& face_records,
+                                           rust::Vec<int32_t>& edge_records,
+                                           rust::Vec<int32_t>& bevel_records);
+std::unique_ptr<Shape> chamfer_edges_tracked(const Shape& s,
+                                             rust::Slice<const double> coords,
+                                             double distance,
+                                             rust::Vec<int32_t>& face_records,
+                                             rust::Vec<int32_t>& edge_records,
+                                             rust::Vec<int32_t>& bevel_records);
+
+// --- Shell ------------------------------------------------------------------
+std::unique_ptr<Shape> shell(const Shape& s, rust::Slice<const double> anchors,
+                             double thickness);
+std::unique_ptr<Shape> shell_tracked(const Shape& s,
+                                     rust::Slice<const double> anchors,
+                                     double thickness,
+                                     rust::Vec<int32_t>& face_records,
+                                     rust::Vec<int32_t>& edge_records,
+                                     rust::Vec<int32_t>& offset_records);
 
 // --- Display / export -------------------------------------------------------
 Mesh tessellate(const Shape& s, double deflection);

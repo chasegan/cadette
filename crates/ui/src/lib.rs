@@ -769,6 +769,29 @@ pub fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> Editor
         FeatureKind::FilletAll { radius, .. } | FeatureKind::Fillet { radius, .. } => {
             changed |= drag(ui, "Radius", radius);
         }
+        FeatureKind::ChamferAll { distance, .. } | FeatureKind::Chamfer { distance, .. } => {
+            changed |= drag(ui, "Distance", distance);
+            ui.weak("Measured back along both faces of each edge");
+        }
+        FeatureKind::Shell { thickness, open, .. } => {
+            changed |= drag(ui, "Wall", thickness);
+            ui.horizontal(|ui| {
+                if open.is_empty() {
+                    ui.weak("Closed hollow (no open faces)");
+                } else {
+                    ui.weak(format!("{} face(s) open", open.len()));
+                    if ui
+                        .small_button("Close all")
+                        .on_hover_text("Keep every face: a sealed hollow body")
+                        .clicked()
+                    {
+                        open.clear();
+                        changed = true;
+                    }
+                }
+            });
+            ui.weak("The wall grows inward; the outside is unchanged");
+        }
         FeatureKind::Rotate { angle, .. } => {
             // Edit the angle in degrees; stored as radians.
             let mut deg = angle.to_degrees();

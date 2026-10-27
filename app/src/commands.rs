@@ -2,7 +2,7 @@
 //! booleans, extrude, fillets, mirror/flip, group/ungroup, revolve, and
 //! copy/paste of bodies.
 
-use cdt_core::{BooleanOp, EdgeAnchor, FeatureId, FeatureKind, Helix, PatternLayout, DVec3};
+use cdt_core::{BooleanOp, EdgeAnchor, FaceAnchor, FeatureId, FeatureKind, Helix, PatternLayout, DVec3};
 use cdt_render::{Axis3, Pick};
 
 use crate::Modeler;
@@ -124,7 +124,53 @@ impl Modeler {
     }
 
     pub(crate) fn fillet_selected_face_edges(&mut self) -> bool {
-        // All selected faces must belong to one body.
+        let Some((source, edges)) = self.selected_face_edge_anchors() else {
+            return false;
+        };
+        self.record_undo(self.doc.clone());
+        let id = self
+            .doc
+            .add_numbered("Fillet", FeatureKind::Fillet { source, edges, radius: 2.0 });
+        self.ui.selected = Some(id);
+        self.selection.clear();
+        true
+    }
+
+    /// Bevel EVERY edge of the selected body with a default distance — the
+    /// chamfer twin of `fillet_all_selected_body`.
+    pub(crate) fn chamfer_all_selected_body(&mut self) -> bool {
+        let Some(source) = self.selected_body() else {
+            return false;
+        };
+        self.record_undo(self.doc.clone());
+        let id = self
+            .doc
+            .add_numbered("Chamfer", FeatureKind::ChamferAll { source, distance: 1.0 });
+        self.ui.selected = Some(id);
+        self.selection.clear();
+        true
+    }
+
+    /// Chamfer all edges bounding the selected face(s), as one feature — the
+    /// chamfer twin of `fillet_selected_face_edges`.
+    pub(crate) fn chamfer_selected_face_edges(&mut self) -> bool {
+        let Some((source, edges)) = self.selected_face_edge_anchors() else {
+            return false;
+        };
+        self.record_undo(self.doc.clone());
+        let id = self
+            .doc
+            .add_numbered("Chamfer", FeatureKind::Chamfer { source, edges, distance: 1.0 });
+        self.ui.selected = Some(id);
+        self.selection.clear();
+        true
+    }
+
+    /// Hollow the selected faces' body to a uniform inward wall, removing the
+    /// selected PLANAR faces so the cavity is open there (push/pull and
+    /// mirror are planar-only in the same way). Returns true if a feature
+    /// was added.
+    pub(crate) fn shell_selected_faces(&mut self) -> bool {
         let bodies = self.selected_bodies();
         if bodies.len() != 1 {
             return false;
@@ -136,7 +182,45 @@ impl Modeler {
         let Some(solid) = self.bodies.get(body_index) else {
             return false;
         };
-        // Gather a point on every edge of every selected face on this body.
+        let mut open: Vec<FaceAnchor> = Vec::new();
+        for pick in self.selection.selected() {
+            if let Pick::Face(g) = pick {
+                if let Some((idx, local)) = self.locate_face(*g) {
+                    if idx == body_index {
+                        if let Ok(Some((origin, x_dir, y_dir))) = solid.face_plane(local) {
+                            let point = DVec3::from_array(origin);
+                            let normal = DVec3::from_array(x_dir)
+                                .cross(DVec3::from_array(y_dir))
+                                .normalize_or_zero();
+                            open.push(FaceAnchor { point, normal });
+                        }
+                    }
+                }
+            }
+        }
+        if open.is_empty() {
+            return false;
+        }
+        self.record_undo(self.doc.clone());
+        let id = self
+            .doc
+            .add_numbered("Shell", FeatureKind::Shell { source, thickness: 2.0, open });
+        self.ui.selected = Some(id);
+        self.selection.clear();
+        true
+    }
+
+    /// The body behind the selected faces (all on one body) and an anchor on
+    /// every edge bounding those faces — what a face-edge fillet or chamfer
+    /// stores.
+    fn selected_face_edge_anchors(&self) -> Option<(FeatureId, Vec<EdgeAnchor>)> {
+        let bodies = self.selected_bodies();
+        if bodies.len() != 1 {
+            return None;
+        }
+        let source = bodies[0];
+        let body_index = self.ui.visible.iter().position(|&f| f == source)?;
+        let solid = self.bodies.get(body_index)?;
         let mut edges: Vec<EdgeAnchor> = Vec::new();
         for pick in self.selection.selected() {
             if let Pick::Face(g) = pick {
@@ -151,16 +235,7 @@ impl Modeler {
                 }
             }
         }
-        if edges.is_empty() {
-            return false;
-        }
-        self.record_undo(self.doc.clone());
-        let id = self
-            .doc
-            .add_numbered("Fillet", FeatureKind::Fillet { source, edges, radius: 2.0 });
-        self.ui.selected = Some(id);
-        self.selection.clear();
-        true
+        (!edges.is_empty()).then_some((source, edges))
     }
 
     /// Mirror the selected face's body across that face's plane, keeping the
@@ -588,10 +663,39 @@ impl Modeler {
     /// Fillet the currently selected edges (each anchored at its clicked point),
     /// as one feature. Returns true if a feature was added.
     pub(crate) fn fillet_selected_edges(&mut self) -> bool {
-        let Some(source) = self.selected_body() else {
+        let Some((source, edges)) = self.selected_edge_anchors() else {
             return false;
         };
-        // Gather an anchor per selected edge, in click order.
+        self.record_undo(self.doc.clone());
+        let id = self
+            .doc
+            .add_numbered("Fillet", FeatureKind::Fillet { source, edges, radius: 2.0 });
+        self.ui.selected = Some(id);
+        self.selection.clear();
+        self.edge_anchors.clear();
+        true
+    }
+
+    /// Chamfer the currently selected edges, as one feature — the chamfer
+    /// twin of `fillet_selected_edges`.
+    pub(crate) fn chamfer_selected_edges(&mut self) -> bool {
+        let Some((source, edges)) = self.selected_edge_anchors() else {
+            return false;
+        };
+        self.record_undo(self.doc.clone());
+        let id = self
+            .doc
+            .add_numbered("Chamfer", FeatureKind::Chamfer { source, edges, distance: 1.0 });
+        self.ui.selected = Some(id);
+        self.selection.clear();
+        self.edge_anchors.clear();
+        true
+    }
+
+    /// The selected body and an anchor per selected edge (each at its clicked
+    /// point), in click order.
+    fn selected_edge_anchors(&self) -> Option<(FeatureId, Vec<EdgeAnchor>)> {
+        let source = self.selected_body()?;
         let edges: Vec<EdgeAnchor> = self
             .selection
             .selected()
@@ -602,18 +706,7 @@ impl Modeler {
             })
             .map(|point| EdgeAnchor { point })
             .collect();
-        if edges.is_empty() {
-            return false;
-        }
-
-        self.record_undo(self.doc.clone());
-        let id = self
-            .doc
-            .add_numbered("Fillet", FeatureKind::Fillet { source, edges, radius: 2.0 });
-        self.ui.selected = Some(id);
-        self.selection.clear();
-        self.edge_anchors.clear();
-        true
+        (!edges.is_empty()).then_some((source, edges))
     }
 
     /// If a single edge of a planar sketch profile is selected, the profile

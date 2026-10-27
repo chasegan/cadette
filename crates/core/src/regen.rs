@@ -472,6 +472,35 @@ where
             let body = input(*source)?;
             backend.fillet_edges(body, edges, *radius).map_err(backend_err)
         }
+        FeatureKind::ChamferAll { source, distance } => {
+            let body = input(*source)?;
+            if !positive(*distance) {
+                return Err(RegenError::Invalid { feature, reason: CHAMFER_DISTANCE });
+            }
+            backend.chamfer_all(body, *distance).map_err(backend_err)
+        }
+        FeatureKind::Chamfer {
+            source,
+            edges,
+            distance,
+        } => {
+            let body = input(*source)?;
+            if !positive(*distance) {
+                return Err(RegenError::Invalid { feature, reason: CHAMFER_DISTANCE });
+            }
+            backend.chamfer_edges(body, edges, *distance).map_err(backend_err)
+        }
+        FeatureKind::Shell {
+            source,
+            thickness,
+            open,
+        } => {
+            let body = input(*source)?;
+            if !positive(*thickness) {
+                return Err(RegenError::Invalid { feature, reason: "a shell needs a positive wall thickness" });
+            }
+            backend.shell(body, *thickness, open).map_err(backend_err)
+        }
         FeatureKind::PushPull {
             source,
             anchor,
@@ -637,6 +666,8 @@ const THREAD_TURNS_LIMIT: &str = "a helix is limited to 500 turns";
 pub const MAX_THREAD_STARTS: u32 = 200;
 const THREAD_STARTS_LIMIT: &str = "a thread has between 1 and 200 starts";
 
+const CHAMFER_DISTANCE: &str = "a chamfer needs a positive distance";
+
 /// A finite, strictly positive length or count.
 fn positive(x: f64) -> bool {
     x.is_finite() && x > 0.0
@@ -659,18 +690,6 @@ fn helix_problem(helix: &crate::Helix) -> Option<&'static str> {
     }
 }
 
-#[cfg(test)]
-mod limit_messages {
-    use super::*;
-
-    #[test]
-    fn limit_messages_quote_the_limits() {
-        assert!(PATTERN_COUNT_LIMIT.contains(&MAX_PATTERN_COUNT.to_string()));
-        assert!(THREAD_STARTS_LIMIT.contains(&MAX_THREAD_STARTS.to_string()));
-        assert!(THREAD_TURNS_LIMIT.contains(&(MAX_THREAD_TURNS as u32).to_string()));
-    }
-}
-
 /// The instances a [`FeatureKind::Pattern`] builds: `0..count` minus `skip`,
 /// in order.
 pub fn pattern_instances(count: u32, skip: &[u32]) -> Vec<u32> {
@@ -682,3 +701,15 @@ pub fn pattern_instances(count: u32, skip: &[u32]) -> Vec<u32> {
 /// number (reasons are `&'static str`); a test keeps them in step.
 pub const MAX_PATTERN_COUNT: u32 = 1000;
 const PATTERN_COUNT_LIMIT: &str = "a pattern is limited to 1000 instances";
+
+#[cfg(test)]
+mod limit_messages {
+    use super::*;
+
+    #[test]
+    fn limit_messages_quote_the_limits() {
+        assert!(PATTERN_COUNT_LIMIT.contains(&MAX_PATTERN_COUNT.to_string()));
+        assert!(THREAD_STARTS_LIMIT.contains(&MAX_THREAD_STARTS.to_string()));
+        assert!(THREAD_TURNS_LIMIT.contains(&(MAX_THREAD_TURNS as u32).to_string()));
+    }
+}

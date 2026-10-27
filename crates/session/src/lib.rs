@@ -288,6 +288,13 @@ pub fn kind_summary(kind: &FeatureKind) -> String {
         FeatureKind::Fillet { source, edges, radius } => {
             format!("Fillet {} edge(s) of #{} r={radius}", edges.len(), source.0)
         }
+        FeatureKind::ChamferAll { source, distance } => format!("Chamfer all edges of #{} d={distance}", source.0),
+        FeatureKind::Chamfer { source, edges, distance } => {
+            format!("Chamfer {} edge(s) of #{} d={distance}", edges.len(), source.0)
+        }
+        FeatureKind::Shell { source, thickness, open } => {
+            format!("Shell #{} wall={thickness}, {} face(s) open", source.0, open.len())
+        }
         FeatureKind::PushPull { source, distance, .. } => format!("Push/pull a face of #{} by {distance}", source.0),
         FeatureKind::Rotate { source, angle, .. } => format!("Rotate #{} by {:.1}°", source.0, angle.to_degrees()),
         FeatureKind::Scale { source, factors, .. } => {

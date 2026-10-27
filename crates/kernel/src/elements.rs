@@ -73,6 +73,12 @@ pub enum ElementName {
     /// The face a fillet rolled out of edge `parent` — "the rounding of that
     /// edge". The trimmed faces around it keep their names verbatim.
     Rounded { parent: Box<ElementName> },
+    /// The flat face a chamfer cut across edge `parent` — "the bevel of that
+    /// edge". As with fillets, the trimmed neighbours keep their names.
+    Chamfered { parent: Box<ElementName> },
+    /// The inner wall a shell offset from face `parent` — "the inside of
+    /// that face". The outer faces keep their names verbatim.
+    Offset { parent: Box<ElementName> },
 }
 
 /// One (input element → result element) lineage pair reported by a tracked
@@ -336,18 +342,22 @@ impl ElementMap {
         ElementMap { faces, edges }
     }
 
-    /// Compose a modifying op's map (fillet) from the single source body's
-    /// map and the kernel's lineage: surviving faces/edges keep their names
-    /// (splits/merges as in booleans), each rounded edge's fillet face
-    /// becomes [`ElementName::Rounded`] (several pieces → centroid-ranked
-    /// `Split`s of it), and the fillet's new boundary edges are named by
-    /// adjacency.
+    /// Compose a modifying op's map (fillet, chamfer, shell) from the single
+    /// source body's map and the kernel's lineage: surviving faces/edges keep
+    /// their names (splits/merges as in booleans), each face a source element
+    /// `generated` is named by `generated_name` of that element's name — e.g.
+    /// [`ElementName::Rounded`] of a filleted edge — (several pieces →
+    /// centroid-ranked `Split`s of it), and the op's new boundary edges are
+    /// named by adjacency. `generated_from` says which element list the
+    /// generating indices refer to (edges for blends, faces for a shell).
     #[allow(clippy::too_many_arguments)]
     pub fn compose_modified(
         source: &ElementMap,
         face_lineage: &[Lineage],
         edge_lineage: &[Lineage],
-        rounded: &[(u32, u32)],
+        generated: &[(u32, u32)],
+        generated_from: ElemKind,
+        generated_name: &dyn Fn(Box<ElementName>) -> ElementName,
         out_faces: usize,
         out_edges: usize,
         adjacency: &[(u32, u32)],
@@ -359,17 +369,19 @@ impl ElementMap {
         let mut edges =
             compose_kind(source, &empty, ElemKind::Edge, edge_lineage, out_edges, centroid);
 
-        // Fillet faces, grouped per rounded edge (one edge can round into
-        // several pieces) — the same Split policy as swept side walls.
-        let mut rounded_of: HashMap<u32, Vec<u32>> = HashMap::new();
-        for &(edge, out_face) in rounded {
-            rounded_of.entry(edge).or_default().push(out_face);
+        // Generated faces, grouped per source element (one edge can round
+        // into several pieces) — the same Split policy as swept side walls.
+        let mut generated_of: HashMap<u32, Vec<u32>> = HashMap::new();
+        for &(elem, out_face) in generated {
+            generated_of.entry(elem).or_default().push(out_face);
         }
-        for (edge, mut outs) in rounded_of {
-            let Some(parent) = source.edge(edge) else { continue };
-            let name = ElementName::Rounded {
-                parent: Box::new(parent.clone()),
+        for (elem, mut outs) in generated_of {
+            let parent = match generated_from {
+                ElemKind::Face => source.face(elem),
+                ElemKind::Edge => source.edge(elem),
             };
+            let Some(parent) = parent else { continue };
+            let name = generated_name(Box::new(parent.clone()));
             outs.sort_unstable();
             outs.dedup();
             let set = |slots: &mut Vec<Option<ElementName>>, i: u32, n: ElementName| {

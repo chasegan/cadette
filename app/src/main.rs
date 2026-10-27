@@ -687,6 +687,9 @@ impl Controller for Modeler {
             let (mut sweep_helix, mut skip_instance) = (false, false);
             // "Fillet every edge" of the selected body (was a toolbar button).
             let mut fillet_body = false;
+            // Chamfer twins of the fillet actions, and a shell from the selected faces.
+            let (mut chamfer_face, mut chamfer_body, mut chamfer_edges, mut shell) =
+                (false, false, false, false);
             // A sweep request carries the path plane chosen at that moment.
             let mut sweep_plane_choice: Option<SketchPlane> = None;
             let mut flip: Option<Axis3> = None;
@@ -749,6 +752,11 @@ impl Controller for Modeler {
                         }
                         fillet_face = action_btn(ui, phi::FRAME_CORNERS, "Fillet face edges", "Round all edges bounding this face", true);
                         fillet_body = action_btn(ui, phi::BOUNDING_BOX, "Fillet every edge", "Round every edge of this body", true);
+                        chamfer_face = action_btn(ui, phi::HEXAGON, "Chamfer face edges", "Bevel all edges bounding this face", true);
+                        chamfer_body = action_btn(ui, phi::DIAMOND, "Chamfer every edge", "Bevel every edge of this body", true);
+                        if self.selection.face_plane.is_some() {
+                            shell = action_btn(ui, phi::CUBE_TRANSPARENT, "Shell from this face", "Hollow the body to a uniform inward wall, open at this face", true);
+                        }
                         if can_mirror {
                             mirror = action_btn(ui, phi::FLIP_HORIZONTAL, "Mirror across face", "Reflect this body across the face — keeps the original", true);
                         }
@@ -810,6 +818,8 @@ impl Controller for Modeler {
                         ui.add_space(2.0);
                         if n_bodies == 1 {
                             fillet_edges = action_btn(ui, phi::FRAME_CORNERS, "Fillet face edges", "Round all edges of the selected faces", true);
+                            chamfer_edges = action_btn(ui, phi::HEXAGON, "Chamfer face edges", "Bevel all edges of the selected faces", true);
+                            shell = action_btn(ui, phi::CUBE_TRANSPARENT, "Shell from these faces", "Hollow the body to a uniform inward wall, open at the selected planar faces", true);
                         }
                         if n_bodies >= 2 {
                             group = action_btn(ui, phi::STACK_PLUS, &format!("Group {n_bodies} bodies"), "Combine into one unit that moves/rotates together (⌘G)", true);
@@ -845,6 +855,9 @@ impl Controller for Modeler {
                         fillet_edges = action_btn(ui, phi::FRAME_CORNERS,
                             if n_sel == 1 { "Fillet this edge" } else { "Fillet these edges" },
                             "Round the selected edge(s)", true);
+                        chamfer_edges = action_btn(ui, phi::HEXAGON,
+                            if n_sel == 1 { "Chamfer this edge" } else { "Chamfer these edges" },
+                            "Bevel the selected edge(s)", true);
                         if can_revolve {
                             revolve = action_btn(ui, phi::ARROW_CLOCKWISE, "Revolve about edge", "Spin the sketch profile a full turn about this edge", true);
                         }
@@ -917,6 +930,22 @@ impl Controller for Modeler {
             }
             if fillet_body {
                 changed |= self.fillet_all_selected_body();
+            }
+            if chamfer_face {
+                changed |= self.chamfer_selected_face_edges();
+            }
+            if chamfer_body {
+                changed |= self.chamfer_all_selected_body();
+            }
+            if shell {
+                changed |= self.shell_selected_faces();
+            }
+            if chamfer_edges {
+                changed |= if multi_face {
+                    self.chamfer_selected_face_edges()
+                } else {
+                    self.chamfer_selected_edges()
+                };
             }
             if mirror {
                 changed |= self.mirror_across_selected_face();
@@ -3119,6 +3148,95 @@ mod tests {
             .map(|v| v.face_id)
             .collect();
         assert!(faces.len() > 6, "filleting two faces adds rounded faces: {}", faces.len());
+    }
+
+    #[test]
+    fn chamfer_actions_mirror_the_fillet_ones() {
+        // "Chamfer every edge": one ChamferAll; volume drops by less than the
+        // twelve full 1 mm prisms (corners overlap) but by more than nothing.
+        let mut m = Modeler::new();
+        m.doc = Document::new("box");
+        m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(20.0) });
+        let _ = m.mesh();
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        let n0 = m.doc.history.len();
+        assert!(m.chamfer_all_selected_body());
+        assert_eq!(m.doc.history.len(), n0 + 1);
+        assert!(matches!(
+            m.doc.history.get(m.ui.selected.unwrap()).map(|f| &f.kind),
+            Some(FeatureKind::ChamferAll { distance, .. }) if *distance == 1.0
+        ));
+        let mesh = m.mesh();
+        assert!(m.ui.errors.is_empty(), "chamfer-all rebuilds: {:?}", m.ui.errors);
+        let faces: std::collections::BTreeSet<u32> = mesh.vertices.iter().map(|v| v.face_id).collect();
+        assert_eq!(faces.len(), 26, "6 trimmed + 12 bevels + 8 corner triangles");
+
+        // "Chamfer face edges" on two faces of one body: one Chamfer feature.
+        let mut m = Modeler::new();
+        m.doc = Document::new("box");
+        m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(20.0) });
+        let _ = m.mesh();
+        m.on_pick(Some(Pick::Face(0)), None, false);
+        m.on_pick(Some(Pick::Face(1)), None, true);
+        let n0 = m.doc.history.len();
+        assert!(m.chamfer_selected_face_edges());
+        assert_eq!(m.doc.history.len(), n0 + 1);
+        let edges = m.doc.history.features().iter().find_map(|f| match &f.kind {
+            FeatureKind::Chamfer { edges, .. } => Some(edges.len()),
+            _ => None,
+        });
+        assert_eq!(edges, Some(8), "four edges per face; the kernel dedupes the shared one");
+        let _ = m.mesh();
+        assert!(m.ui.errors.is_empty(), "face-edge chamfer rebuilds: {:?}", m.ui.errors);
+
+        // "Chamfer these edges" from two picked edges.
+        let mut m = Modeler::new();
+        m.doc = Document::new("one");
+        let b = m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(10.0) });
+        let _ = m.mesh();
+        m.on_pick(Some(Pick::Edge(0)), Some([0.0, 5.0, 10.0]), false);
+        m.on_pick(Some(Pick::Edge(2)), Some([10.0, 5.0, 10.0]), true);
+        m.ui.selected = Some(b);
+        assert!(m.chamfer_selected_edges());
+        let _ = m.mesh();
+        assert!(m.ui.errors.is_empty(), "edge chamfer rebuilds: {:?}", m.ui.errors);
+        let edges = m.doc.history.features().iter().find_map(|f| match &f.kind {
+            FeatureKind::Chamfer { edges, .. } => Some(edges.len()),
+            _ => None,
+        });
+        assert_eq!(edges, Some(2));
+    }
+
+    #[test]
+    fn shell_from_the_selected_face_hollows_the_body_inward() {
+        let mut m = Modeler::new();
+        m.doc = Document::new("box");
+        m.doc.add("Box", FeatureKind::Box { size: DVec3::splat(20.0) });
+        let _ = m.mesh();
+        // Pick the top face (whichever global index has normal +Z).
+        let top = (0..6u32)
+            .find(|&g| {
+                m.on_pick(Some(Pick::Face(g)), None, false);
+                m.selection.face_plane.is_some_and(|p| p.normal().z > 0.99)
+            })
+            .expect("a +Z face");
+        m.on_pick(Some(Pick::Face(top)), None, false);
+        let n0 = m.doc.history.len();
+        assert!(m.shell_selected_faces());
+        assert_eq!(m.doc.history.len(), n0 + 1, "one Shell feature");
+        let open = m.doc.history.features().iter().find_map(|f| match &f.kind {
+            FeatureKind::Shell { open, thickness, .. } => Some((open.len(), *thickness)),
+            _ => None,
+        });
+        assert_eq!(open, Some((1, 2.0)), "the picked face is the open one, 2 mm wall");
+        let _ = m.mesh();
+        assert!(m.ui.errors.is_empty(), "shell rebuilds: {:?}", m.ui.errors);
+        // 2 mm walls, open top: the cavity is 16 × 16 × 18.
+        let body = m.bodies.first().expect("one body");
+        let v = body.solid.volume().unwrap();
+        assert!((v - (8000.0 - 16.0 * 16.0 * 18.0)).abs() < 1e-6, "volume {v}");
+        let (lo, hi) = body.solid.bbox().unwrap();
+        assert!(lo.iter().all(|c| c.abs() < 1e-6) && hi.iter().all(|c| (c - 20.0).abs() < 1e-6), "the outside is unchanged");
     }
 
     #[test]

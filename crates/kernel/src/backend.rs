@@ -14,7 +14,7 @@ use cdt_core::{
     ProfileElem, SketchPlane,
 };
 
-use crate::elements::{ElementMap, GenRecord};
+use crate::elements::{ElemKind, ElementMap, ElementName, GenRecord};
 use crate::solids::{TrackedBoolOp, TrackedModify};
 use crate::{KernelError, Solid};
 
@@ -61,9 +61,16 @@ impl Body {
         }
     }
 
-    /// Compose a fillet's result: survivors keep their names, each rounded
-    /// edge's fillet face becomes `Rounded`, new boundary edges by adjacency.
-    fn modified(source: &Body, tracked: TrackedModify) -> Result<Body, KernelError> {
+    /// Compose a modifying op's result: survivors keep their names, each
+    /// face a source element generated is named by `generated_name` (its
+    /// `Rounded`/`Chamfered` edge, its `Offset` face), new boundary edges by
+    /// adjacency.
+    fn modified(
+        source: &Body,
+        tracked: TrackedModify,
+        generated_from: ElemKind,
+        generated_name: &dyn Fn(Box<ElementName>) -> ElementName,
+    ) -> Result<Body, KernelError> {
         let solid = tracked.result;
         let out_faces = solid.face_count()?;
         let out_edges = solid.edge_count()?;
@@ -72,7 +79,9 @@ impl Body {
             &source.elements,
             &tracked.faces,
             &tracked.edges,
-            &tracked.rounded,
+            &tracked.generated,
+            generated_from,
+            generated_name,
             out_faces,
             out_edges,
             &adjacency,
@@ -335,7 +344,7 @@ impl GeometryBackend for KernelBackend {
     }
 
     fn fillet_all(&mut self, body: &Body, radius: f64) -> Result<Body, KernelError> {
-        Body::modified(body, body.solid.fillet_all_tracked(radius)?)
+        Body::modified(body, body.solid.fillet_all_tracked(radius)?, ElemKind::Edge, &rounded)
     }
 
     fn fillet_edges(
@@ -344,8 +353,55 @@ impl GeometryBackend for KernelBackend {
         anchors: &[EdgeAnchor],
         radius: f64,
     ) -> Result<Body, KernelError> {
-        let points: Vec<[f64; 3]> = anchors.iter().map(|a| a.point.to_array()).collect();
-        Body::modified(body, body.solid.fillet_edges_tracked(&points, radius)?)
+        let points = anchor_points(anchors);
+        Body::modified(
+            body,
+            body.solid.fillet_edges_tracked(&points, radius)?,
+            ElemKind::Edge,
+            &rounded,
+        )
+    }
+
+    fn chamfer_all(&mut self, body: &Body, distance: f64) -> Result<Body, KernelError> {
+        Body::modified(
+            body,
+            body.solid.chamfer_all_tracked(distance)?,
+            ElemKind::Edge,
+            &chamfered,
+        )
+    }
+
+    fn chamfer_edges(
+        &mut self,
+        body: &Body,
+        anchors: &[EdgeAnchor],
+        distance: f64,
+    ) -> Result<Body, KernelError> {
+        let points = anchor_points(anchors);
+        Body::modified(
+            body,
+            body.solid.chamfer_edges_tracked(&points, distance)?,
+            ElemKind::Edge,
+            &chamfered,
+        )
+    }
+
+    fn shell(
+        &mut self,
+        body: &Body,
+        thickness: f64,
+        open: &[FaceAnchor],
+    ) -> Result<Body, KernelError> {
+        let open: Vec<([f64; 3], [f64; 3])> = open
+            .iter()
+            .map(|a| (a.point.to_array(), a.normal.to_array()))
+            .collect();
+        Body::modified(
+            body,
+            body.solid.shell_tracked(&open, thickness)?,
+            ElemKind::Face,
+            &offset,
+        )
     }
 
     fn push_pull(
@@ -459,4 +515,21 @@ impl GeometryBackend for KernelBackend {
 fn perpendicular_to(axis: DVec3) -> DVec3 {
     let seed = if axis.x.abs() < 0.9 { DVec3::X } else { DVec3::Y };
     axis.cross(seed).normalize()
+}
+
+/// The xyz of each edge anchor, in order.
+fn anchor_points(anchors: &[EdgeAnchor]) -> Vec<[f64; 3]> {
+    anchors.iter().map(|a| a.point.to_array()).collect()
+}
+
+fn rounded(parent: Box<ElementName>) -> ElementName {
+    ElementName::Rounded { parent }
+}
+
+fn chamfered(parent: Box<ElementName>) -> ElementName {
+    ElementName::Chamfered { parent }
+}
+
+fn offset(parent: Box<ElementName>) -> ElementName {
+    ElementName::Offset { parent }
 }

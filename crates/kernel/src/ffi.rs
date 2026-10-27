@@ -466,6 +466,57 @@ mod bridge {
             rounded_records: &mut Vec<i32>,
         ) -> Result<UniquePtr<Shape>>;
 
+        /// Chamfer every edge of `shape`: a symmetric bevel set back
+        /// `distance` along both faces of each edge.
+        fn chamfer_all_edges(shape: &Shape, distance: f64) -> Result<UniquePtr<Shape>>;
+
+        /// Chamfer the edges nearest each xyz triple in `coords` by `distance`.
+        fn chamfer_edges(
+            shape: &Shape,
+            coords: &[f64],
+            distance: f64,
+        ) -> Result<UniquePtr<Shape>>;
+
+        /// Chamfer-every-edge with lineage (the `fillet_all_tracked` record
+        /// scheme; `bevel_records` pairs each chamfered edge with the bevel
+        /// face it GENERATED).
+        fn chamfer_all_tracked(
+            shape: &Shape,
+            distance: f64,
+            face_records: &mut Vec<i32>,
+            edge_records: &mut Vec<i32>,
+            bevel_records: &mut Vec<i32>,
+        ) -> Result<UniquePtr<Shape>>;
+
+        /// Chamfer-by-anchors with lineage. Records stay EMPTY when the
+        /// result needed healing.
+        fn chamfer_edges_tracked(
+            shape: &Shape,
+            coords: &[f64],
+            distance: f64,
+            face_records: &mut Vec<i32>,
+            edge_records: &mut Vec<i32>,
+            bevel_records: &mut Vec<i32>,
+        ) -> Result<UniquePtr<Shape>>;
+
+        // --- Shell ----------------------------------------------------------
+        /// Hollow `shape` to a uniform inward wall `thickness`, removing the
+        /// faces anchored by each `[px,py,pz, nx,ny,nz]` sextuple in
+        /// `anchors` (none → a closed hollow).
+        fn shell(shape: &Shape, anchors: &[f64], thickness: f64) -> Result<UniquePtr<Shape>>;
+
+        /// `shell` with lineage: survival triples for the outer faces/edges
+        /// and `offset_records` `[input_face, output_face]` pairs — the inner
+        /// wall each kept face GENERATED. EMPTY when healed.
+        fn shell_tracked(
+            shape: &Shape,
+            anchors: &[f64],
+            thickness: f64,
+            face_records: &mut Vec<i32>,
+            edge_records: &mut Vec<i32>,
+            offset_records: &mut Vec<i32>,
+        ) -> Result<UniquePtr<Shape>>;
+
         // --- Display / export ---------------------------------------------
         /// Tessellate to a triangle mesh. `deflection` is the max chord
         /// deviation (model units); smaller = smoother and heavier.

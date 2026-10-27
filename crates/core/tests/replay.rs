@@ -6,7 +6,7 @@
 //! Rust, independent of OCCT.
 
 use cdt_core::{
-    regenerate, BooleanOp, Document, FeatureId, FeatureKind, GeometryBackend, MissingReason,
+    regenerate, BooleanOp, Document, EdgeAnchor, FaceAnchor, FeatureId, FeatureKind, GeometryBackend, MissingReason,
     Profile, RegenError, SketchPlane, DVec3,
 };
 
@@ -79,6 +79,31 @@ impl GeometryBackend for Recording {
             return Err(format!("infeasible fillet radius {radius}"));
         }
         Ok(format!("fillet_edges({body},{},{radius:.0})", anchors.len()))
+    }
+    fn chamfer_all(&mut self, body: &String, distance: f64) -> Result<String, String> {
+        if distance <= 0.0 {
+            return Err(format!("infeasible chamfer distance {distance}"));
+        }
+        Ok(format!("chamfer({body},{distance:.0})"))
+    }
+    fn chamfer_edges(
+        &mut self,
+        body: &String,
+        anchors: &[cdt_core::EdgeAnchor],
+        distance: f64,
+    ) -> Result<String, String> {
+        if distance <= 0.0 {
+            return Err(format!("infeasible chamfer distance {distance}"));
+        }
+        Ok(format!("chamfer({body},{}e,{distance:.0})", anchors.len()))
+    }
+    fn shell(
+        &mut self,
+        body: &String,
+        thickness: f64,
+        open: &[cdt_core::FaceAnchor],
+    ) -> Result<String, String> {
+        Ok(format!("shell({body},{thickness:.0},{}open)", open.len()))
     }
     fn push_pull(
         &mut self,
@@ -375,6 +400,56 @@ fn clone_subtree_duplicates_a_body_independently() {
     let regen = regenerate(&doc, &mut Recording);
     assert!(regen.is_ok());
     assert_eq!(regen.visible(), &[b, b2], "two independent visible bodies");
+}
+
+#[test]
+fn chamfers_and_shells_replay_as_their_own_kinds() {
+    let mut doc = Document::new("cs");
+    let block = doc.add("Block", FeatureKind::Box { size: DVec3::new(30.0, 20.0, 10.0) });
+    let bevel = doc.add("Bevel", FeatureKind::ChamferAll { source: block, distance: 1.0 });
+    let edge = doc.add(
+        "Edge",
+        FeatureKind::Chamfer {
+            source: bevel,
+            edges: vec![EdgeAnchor { point: DVec3::new(15.0, 0.0, 10.0) }],
+            distance: 2.0,
+        },
+    );
+    let hollow = doc.add(
+        "Hollow",
+        FeatureKind::Shell {
+            source: edge,
+            thickness: 2.0,
+            open: vec![FaceAnchor { point: DVec3::new(15.0, 10.0, 10.0), normal: DVec3::Z }],
+        },
+    );
+    assert!(doc.history.validate().is_ok());
+    let regen = regenerate(&doc, &mut Recording);
+    assert!(regen.is_ok(), "{:?}", regen.errors());
+    assert_eq!(regen.visible(), &[hollow], "each step consumes the one before");
+    assert_eq!(
+        regen.body(hollow).unwrap(),
+        "shell(chamfer(chamfer(box(30,20,10),1),1e,2),2,1open)"
+    );
+
+    // A non-positive distance or wall is refused with a reason, before the
+    // backend sees it.
+    doc.history.get_mut(bevel).unwrap().kind = FeatureKind::ChamferAll { source: block, distance: 0.0 };
+    let regen = regenerate(&doc, &mut Recording);
+    assert!(
+        regen.errors().iter().any(|e| matches!(e, RegenError::Invalid { reason, .. } if reason.contains("positive distance"))),
+        "{:?}",
+        regen.errors()
+    );
+    doc.history.get_mut(bevel).unwrap().kind = FeatureKind::ChamferAll { source: block, distance: 1.0 };
+    doc.history.get_mut(hollow).unwrap().kind =
+        FeatureKind::Shell { source: edge, thickness: -2.0, open: Vec::new() };
+    let regen = regenerate(&doc, &mut Recording);
+    assert!(
+        regen.errors().iter().any(|e| matches!(e, RegenError::Invalid { reason, .. } if reason.contains("wall thickness"))),
+        "{:?}",
+        regen.errors()
+    );
 }
 
 #[test]

@@ -75,6 +75,15 @@ Operations (reference earlier ids):
 - `{"FilletAll":{"source":id,"radius":r}}`
 - `{"Fillet":{"source":id,"edges":[{"point":[x,y,z]}],"radius":r}}` — each point
   must lie on the edge (within 1 mm): use an edge's `midpoint` from `detail`.
+- `{"ChamferAll":{"source":id,"distance":d}}` — a symmetric 45° bevel, `d` back
+  along both faces of every edge. Its own feature, not a fillet variant.
+- `{"Chamfer":{"source":id,"edges":[{"point":[x,y,z]}],"distance":d}}` — anchors as for Fillet.
+- `{"Shell":{"source":id,"thickness":t,"open":[{"point":[x,y,z],"normal":[x,y,z]}]}}`
+  — hollow the body to a uniform wall `t` measured INWARD (the outside is
+  unchanged); each `open` face (anchored like PushPull) is removed so the cavity
+  is reachable. Omit `open` for a closed hollow. `t` must be less than any
+  fillet radius it passes under and less than half the body's smallest span,
+  or the regen fails with a reason.
 - `{"PushPull":{"source":id,"anchor":{"point":[x,y,z],"normal":[x,y,z]},"distance":d}}`
   — a planar face by a point on it (its `centroid`) and its normal; positive adds material.
 - `{"Revolve":{"source":sketchId,"axis":{"point":[x,y,z]},"angle":radians}}` — the axis is one of the profile's own straight edges, named by a point on it.
