@@ -785,6 +785,14 @@ impl Controller for Modeler {
                                 pattern = Some(commands::PatternKind::Circular);
                                 ui.close_menu();
                             }
+                            if ui
+                                .button("Helical — spiralling up the Z axis")
+                                .on_hover_text("Repeat the body around the Z axis, each instance also lifted along it (a screw motion)")
+                                .clicked()
+                            {
+                                pattern = Some(commands::PatternKind::Helical);
+                                ui.close_menu();
+                            }
                         })
                         .response
                         .on_hover_text("Repeat this body along a line or around an axis");
@@ -2894,6 +2902,22 @@ mod tests {
             other => panic!("hole is {other:?}"),
         }
         assert!(m.undo(), "the GUI pattern is one undo step");
+
+        // Helical from the menu: turned and lifted about Z, with the orbit
+        // centre pushed aside for a body sitting on the axis.
+        let _ = m.mesh();
+        m.on_pick(Some(Pick::Face(first_face)), None, false);
+        assert!(m.pattern_selected_body(PatternKind::Helical));
+        match m.doc.history.get(m.ui.selected.unwrap()).map(|f| &f.kind) {
+            Some(FeatureKind::Pattern { layout: cdt_core::PatternLayout::Helical { rise, center, .. }, count, .. }) => {
+                assert_eq!(*count, 12);
+                assert!((rise - 10.0).abs() < 1e-9, "rise = the cube's height");
+                assert_eq!(*center, DVec3::ZERO, "the cube's centre (5,5,5) is off the Z axis, so it orbits the origin");
+            }
+            other => panic!("{other:?}"),
+        }
+        let _ = m.mesh();
+        assert!(m.ui.errors.is_empty(), "errors: {:?}", m.ui.errors);
     }
 
     #[test]

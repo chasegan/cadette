@@ -16,6 +16,7 @@ pub(crate) const PASTE_OFFSET: f64 = 10.0;
 pub(crate) enum PatternKind {
     Linear,
     Circular,
+    Helical,
 }
 
 /// Which part of the combined bounding box aligned bodies come to share on an
@@ -371,11 +372,10 @@ impl Modeler {
                 let along = extent.abs().dot(dir.abs()).max(1.0);
                 (PatternLayout::Linear { step: dir * (along * 1.5) }, 3)
             }
-            PatternKind::Circular => {
+            PatternKind::Circular | PatternKind::Helical => {
                 // Around the world Z axis through the origin — unless the body
                 // sits on that axis, where every instance would coincide; then
                 // orbit it about a centre off to its side instead.
-                let count = 6;
                 let body_center = DVec3::new(
                     0.5 * (min[0] + max[0]),
                     0.5 * (min[1] + max[1]),
@@ -387,14 +387,29 @@ impl Modeler {
                 } else {
                     DVec3::ZERO
                 };
-                (
-                    PatternLayout::Circular {
-                        center,
-                        axis: DVec3::Z,
-                        angle: std::f64::consts::TAU / f64::from(count),
-                    },
-                    count,
-                )
+                if kind == PatternKind::Circular {
+                    let count = 6;
+                    (
+                        PatternLayout::Circular {
+                            center,
+                            axis: DVec3::Z,
+                            angle: std::f64::consts::TAU / f64::from(count),
+                        },
+                        count,
+                    )
+                } else {
+                    // Twelve instances a turn, each lifted by the body's own
+                    // height — a spiral staircase of the body up the axis.
+                    (
+                        PatternLayout::Helical {
+                            center,
+                            axis: DVec3::Z,
+                            angle: std::f64::consts::TAU / 12.0,
+                            rise: (max[2] - min[2]).max(1.0),
+                        },
+                        12,
+                    )
+                }
             }
         };
         self.record_undo(self.doc.clone());
