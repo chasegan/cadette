@@ -65,7 +65,7 @@ impl Link {
                                 Ok(request) => {
                                     let wait = match &request {
                                         LinkRequest::Apply { batch, .. }
-                                            if batch.edits.iter().any(|e| matches!(e, DocEdit::ImportStep { .. })) =>
+                                            if batch.edits.iter().any(|e| matches!(e, DocEdit::Import { .. })) =>
                                         {
                                             600
                                         }

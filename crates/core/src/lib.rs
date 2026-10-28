@@ -34,7 +34,7 @@ pub use document::Document;
 pub use edit::{decode_import_data, import_feature_name, BatchError, DocEdit, EditError, EditOutcome};
 pub use features::{
     thread_profile, BooleanOp, EdgeAnchor, FaceAnchor, Feature, FeatureId, FeatureKind, Helix,
-    PatternLayout, SweepPath,
+    ImportFormat, PatternLayout, SweepPath,
 };
 pub use build_graph::{BuildGraph, BuildGraphRow, LANE_PALETTE};
 pub use glam::DVec3;

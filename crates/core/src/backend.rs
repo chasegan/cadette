@@ -9,7 +9,7 @@
 use glam::DVec3;
 
 #[allow(unused_imports)] // SweepPath: doc link
-use crate::features::{BooleanOp, EdgeAnchor, FaceAnchor, FeatureId, Helix, SweepPath};
+use crate::features::{BooleanOp, EdgeAnchor, FaceAnchor, FeatureId, Helix, ImportFormat, SweepPath};
 use crate::sketch::{ProfileElem, Profile, SketchPlane};
 
 /// A geometry engine capable of producing and combining solid bodies.
@@ -34,10 +34,11 @@ pub trait GeometryBackend {
     fn make_cylinder(&mut self, radius: f64, height: f64) -> Result<Self::Body, Self::Error>;
     fn make_sphere(&mut self, radius: f64) -> Result<Self::Body, Self::Error>;
 
-    /// Read every solid of a STEP file (`data`, the file's bytes) as one body,
-    /// scaled by `scale` — the document's unit per millimetre, since STEP
-    /// geometry arrives in millimetres.
-    fn import_step(&mut self, data: &[u8], scale: f64) -> Result<Self::Body, Self::Error>;
+    /// Read every solid of an imported file (`data`, the file's bytes, in
+    /// `format`) as one body, scaled by `scale` — the document's unit per
+    /// millimetre, since STEP geometry arrives in millimetres and STL has no
+    /// unit (millimetres by convention).
+    fn import(&mut self, format: ImportFormat, data: &[u8], scale: f64) -> Result<Self::Body, Self::Error>;
 
     /// Build a planar face from a closed profile on a base plane.
     fn sketch(&mut self, plane: SketchPlane, profile: Profile) -> Result<Self::Body, Self::Error>;

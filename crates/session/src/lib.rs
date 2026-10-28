@@ -16,8 +16,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use cdt_core::{
-    BatchError, DocEdit, Document, EditError, EditOutcome, FeatureId, FeatureKind, MissingReason,
-    RegenCache, RegenError, Regeneration, SolveStatus,
+    BatchError, DocEdit, Document, EditError, EditOutcome, FeatureId, FeatureKind, ImportFormat,
+    MissingReason, RegenCache, RegenError, Regeneration, SolveStatus,
 };
 use cdt_kernel::{Body, KernelBackend, KernelError, Solid};
 use cdt_project::{ProjectError, ProjectFile};
@@ -257,16 +257,20 @@ impl Session {
     }
 }
 
-/// Refuse a batch whose [`DocEdit::ImportStep`] the kernel can't read, before
+/// Refuse a batch whose [`DocEdit::Import`] the kernel can't read, before
 /// anything lands: a file that isn't STEP, is truncated, or holds no solid
 /// would otherwise sit in the project as a permanently failed feature with
 /// its bytes. Every host that applies edits calls this first.
 pub fn check_imports(edits: &[DocEdit]) -> Result<(), BatchError> {
     for (index, edit) in edits.iter().enumerate() {
-        if let DocEdit::ImportStep { file, data, .. } = edit {
+        if let DocEdit::Import { file, data, .. } = edit {
+            let Some(format) = ImportFormat::of_name(file) else {
+                let error = EditError::BadFile(format!("{file}: not a STEP or STL file (by its extension)"));
+                return Err(BatchError { index, error });
+            };
             let bytes = cdt_core::decode_import_data(data).map_err(|error| BatchError { index, error })?;
-            if let Err(e) = Solid::from_step(&bytes) {
-                let reason = e.0.strip_prefix("read_step: ").unwrap_or(&e.0).to_string();
+            if let Err(e) = Solid::import(format, &bytes) {
+                let reason = e.0.strip_prefix("read_step: ").or(e.0.strip_prefix("read_stl: ")).unwrap_or(&e.0).to_string();
                 return Err(BatchError { index, error: EditError::BadFile(format!("{file}: {reason}")) });
             }
         }

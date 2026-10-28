@@ -9,6 +9,7 @@ use cxx::UniquePtr;
 
 use crate::elements::{ElemKind, GenRecord, Lineage};
 use crate::{ffi, Result};
+use cdt_core::ImportFormat;
 
 /// Parse the kernel's flat `[tag, in, out]` generative-lineage triples.
 fn gen_records(records: Vec<i32>) -> Vec<GenRecord> {
@@ -658,6 +659,22 @@ impl Solid {
     /// can't parse.
     pub fn from_step(data: &[u8]) -> Result<Self> {
         Ok(Self::wrap(ffi::read_step(data)?))
+    }
+
+    /// Read an STL file (ASCII or binary) as a faceted solid: one planar
+    /// face per triangle, each closed mesh one solid, in the file's units
+    /// taken as millimetres. Booleans and transforms work on it; fillets
+    /// have nothing to round. Open or non-manifold meshes are refused.
+    pub fn from_stl(data: &[u8]) -> Result<Self> {
+        Ok(Self::wrap(ffi::read_stl(data)?))
+    }
+
+    /// Read an imported file by its format.
+    pub fn import(format: ImportFormat, data: &[u8]) -> Result<Self> {
+        match format {
+            ImportFormat::Step => Self::from_step(data),
+            ImportFormat::Stl => Self::from_stl(data),
+        }
     }
 
     /// Write this solid to `path` as a STEP file (AP214), in model units.

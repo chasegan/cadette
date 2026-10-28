@@ -10,8 +10,8 @@
 use std::sync::Arc;
 
 use cdt_core::{
-    BooleanOp, DVec3, EdgeAnchor, FaceAnchor, FeatureId, GeometryBackend, Helix, Profile,
-    ProfileElem, SketchPlane,
+    BooleanOp, DVec3, EdgeAnchor, FaceAnchor, FeatureId, GeometryBackend, Helix, ImportFormat,
+    Profile, ProfileElem, SketchPlane,
 };
 
 use crate::elements::{ElemKind, ElementMap, ElementName, GenRecord};
@@ -159,8 +159,8 @@ impl GeometryBackend for KernelBackend {
         self.born(Solid::sphere(radius)?)
     }
 
-    fn import_step(&mut self, data: &[u8], scale: f64) -> Result<Body, KernelError> {
-        let solid = Solid::from_step(data)?;
+    fn import(&mut self, format: ImportFormat, data: &[u8], scale: f64) -> Result<Body, KernelError> {
+        let solid = Solid::import(format, data)?;
         let solid = if (scale - 1.0).abs() > 1e-12 {
             solid.scale([scale; 3], [0.0; 3])?
         } else {

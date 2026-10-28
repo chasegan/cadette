@@ -525,6 +525,13 @@ mod bridge {
         /// patched.
         fn read_step(data: &[u8]) -> Result<UniquePtr<Shape>>;
 
+        /// Read an STL file's bytes (ASCII or binary) as a faceted solid:
+        /// one planar face per triangle, sharing vertices and edges, with
+        /// face orientation repaired and inward shells attached to the
+        /// solid they hollow. Each connected closed mesh is one solid, in
+        /// millimetres. A mesh with open or non-manifold edges is refused.
+        fn read_stl(data: &[u8]) -> Result<UniquePtr<Shape>>;
+
         /// Write the shape as an AP214 STEP file.
         fn write_step(shape: &Shape, path: &str) -> Result<()>;
 

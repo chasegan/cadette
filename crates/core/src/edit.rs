@@ -15,7 +15,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::document::Document;
-use crate::features::{FeatureId, FeatureKind};
+use crate::features::{FeatureId, FeatureKind, ImportFormat};
 use crate::history::DependencyError;
 
 /// One mutation of a document's history.
@@ -37,11 +37,13 @@ pub enum DocEdit {
         name: Option<String>,
         kind: FeatureKind,
     },
-    /// Store a STEP file in the project and add an `Import` feature that
-    /// replays it, at the rollback bar. `file` is the file's name (it becomes
-    /// the asset's name, numbered if taken); `data` its bytes, base64. The
-    /// feature is named after the file unless `name` is given.
-    ImportStep {
+    /// Store a STEP or STL file in the project and add an `Import` feature
+    /// that replays it, at the rollback bar. `file` is the file's name (its
+    /// extension says the format; it becomes the asset's name, numbered if
+    /// taken); `data` its bytes, base64. The feature is named after the file
+    /// unless `name` is given.
+    #[serde(alias = "import_step")]
+    Import {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         file: String,
@@ -141,7 +143,10 @@ impl DocEdit {
                     None => doc.insert_transform_numbered(kind.display_name(), kind.clone()),
                 })
             }
-            DocEdit::ImportStep { name, file, data } => {
+            DocEdit::Import { name, file, data } => {
+                if ImportFormat::of_name(file).is_none() {
+                    return Err(EditError::BadFile(format!("{file}: not a STEP or STL file (by its extension)")));
+                }
                 let bytes = decode_import_data(data)?;
                 // A deleted import's orphaned file would otherwise keep the
                 // plain name and push this one to `name 2`.
@@ -219,7 +224,7 @@ pub fn import_feature_name(doc: &Document, file: &str) -> String {
     format!("{stem} {}", doc.history.next_name_number(stem).max(2))
 }
 
-/// The bytes behind an [`DocEdit::ImportStep`]'s `data`: standard base64,
+/// The bytes behind an [`DocEdit::Import`]'s `data`: standard base64,
 /// padded or not.
 pub fn decode_import_data(data: &str) -> Result<Vec<u8>, EditError> {
     use base64::Engine as _;
@@ -232,10 +237,10 @@ pub fn decode_import_data(data: &str) -> Result<Vec<u8>, EditError> {
 }
 
 impl DocEdit {
-    /// An [`DocEdit::ImportStep`] for a file already read into memory.
-    pub fn import_step(file: impl Into<String>, bytes: &[u8], name: Option<String>) -> Self {
+    /// An [`DocEdit::Import`] for a file already read into memory.
+    pub fn import_file(file: impl Into<String>, bytes: &[u8], name: Option<String>) -> Self {
         use base64::Engine as _;
-        DocEdit::ImportStep {
+        DocEdit::Import {
             name,
             file: file.into(),
             data: base64::engine::general_purpose::STANDARD.encode(bytes),
@@ -345,7 +350,7 @@ mod tests {
     #[test]
     fn import_step_stores_the_file_and_adds_a_feature_named_after_it() {
         let mut doc = Document::new("t");
-        let edit = DocEdit::ImportStep { name: None, file: "parts/servo.step".into(), data: "SVNPLTEwMzAzLTIxOw==".into() };
+        let edit = DocEdit::Import { name: None, file: "parts/servo.step".into(), data: "SVNPLTEwMzAzLTIxOw==".into() };
         let out = doc.apply_edits(std::slice::from_ref(&edit)).unwrap();
         let id = out[0].created().unwrap();
         let f = doc.history.get(id).unwrap();
@@ -358,7 +363,7 @@ mod tests {
         let out = doc.apply_edits(std::slice::from_ref(&edit)).unwrap();
         assert_eq!(doc.assets.len(), 1);
         assert_eq!(doc.history.get(out[0].created().unwrap()).unwrap().name, "servo 2");
-        let other = DocEdit::ImportStep { name: Some("Bolt".into()), file: "servo.step".into(), data: "b3RoZXI=".into() };
+        let other = DocEdit::Import { name: Some("Bolt".into()), file: "servo.step".into(), data: "b3RoZXI=".into() };
         let out = doc.apply_edits(&[other]).unwrap();
         let f = doc.history.get(out[0].created().unwrap()).unwrap();
         assert_eq!(f.name, "Bolt");
@@ -366,7 +371,7 @@ mod tests {
 
         // Unpadded base64 and a blank name are both fine.
         let out = doc
-            .apply_edits(&[DocEdit::ImportStep { name: Some("  ".into()), file: "servo.step".into(), data: "b3RoZXI".into() }])
+            .apply_edits(&[DocEdit::Import { name: Some("  ".into()), file: "servo.step".into(), data: "b3RoZXI".into() }])
             .unwrap();
         let f = doc.history.get(out[0].created().unwrap()).unwrap();
         assert_eq!(f.name, "servo 3");
@@ -377,7 +382,7 @@ mod tests {
         let first = doc.history.features()[0].id;
         doc.apply_edits(&[DocEdit::Remove { id: first }, DocEdit::Remove { id: doc.history.features()[1].id }]).unwrap();
         assert_eq!(doc.history.len(), 2, "{:?}", doc.history.features().iter().map(|f| &f.name).collect::<Vec<_>>());
-        let out = doc.apply_edits(&[DocEdit::import_step("servo.step", b"third", None)]).unwrap();
+        let out = doc.apply_edits(&[DocEdit::import_file("servo.step", b"third", None)]).unwrap();
         let f = doc.history.get(out[0].created().unwrap()).unwrap();
         assert_eq!(f.kind, FeatureKind::Import { asset: "servo.step".into() });
         assert!(doc.assets.contains("servo 2.step"), "still used by Bolt");
@@ -385,7 +390,12 @@ mod tests {
 
         // Bad base64 is refused and leaves the document untouched.
         let before = doc.history.len();
-        let err = doc.apply_edits(&[DocEdit::ImportStep { name: None, file: "x.step".into(), data: "@@@".into() }]).unwrap_err();
+        let err = doc
+            .apply_edits(&[DocEdit::Import { name: None, file: "x.obj".into(), data: "b3RoZXI=".into() }])
+            .unwrap_err();
+        assert_eq!(err.error, EditError::BadFile("x.obj: not a STEP or STL file (by its extension)".into()));
+        assert!(!doc.assets.contains("x.obj"));
+        let err = doc.apply_edits(&[DocEdit::Import { name: None, file: "x.step".into(), data: "@@@".into() }]).unwrap_err();
         assert!(matches!(err.error, EditError::BadData(_)), "{err}");
         assert_eq!(doc.history.len(), before);
         assert!(!doc.assets.contains("x.step"));

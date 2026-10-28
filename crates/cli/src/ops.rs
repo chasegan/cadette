@@ -257,15 +257,15 @@ pub fn import_edit(step: &Path, name: Option<String>) -> anyhow::Result<DocEdit>
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .ok_or_else(|| anyhow!("{} has no file name", step.display()))?;
-    Ok(DocEdit::ImportStep { name, file, data: base64::engine::general_purpose::STANDARD.encode(bytes) })
+    Ok(DocEdit::Import { name, file, data: base64::engine::general_purpose::STANDARD.encode(bytes) })
 }
 
-/// Import a STEP file as a new feature — through the window if one has the
-/// project open (one undoable step), else on the file.
-pub fn import_step(target: &Target, step: &Path, name: Option<String>, out: Option<PathBuf>, save: bool) -> anyhow::Result<Outcome> {
+/// Import a STEP or STL file as a new feature — through the window if one
+/// has the project open (one undoable step), else on the file.
+pub fn import_file(target: &Target, step: &Path, name: Option<String>, out: Option<PathBuf>, save: bool) -> anyhow::Result<Outcome> {
     let edit = import_edit(step, name)?;
     let label = match &edit {
-        DocEdit::ImportStep { file, .. } => format!("Import {file}"),
+        DocEdit::Import { file, .. } => format!("Import {file}"),
         _ => unreachable!(),
     };
     apply(target, EditBatch { label: Some(label), edits: vec![edit] }, out, false, save)

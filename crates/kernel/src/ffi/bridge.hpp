@@ -178,6 +178,7 @@ std::unique_ptr<Shape> shell_tracked(const Shape& s,
 
 // --- Data exchange ----------------------------------------------------------
 std::unique_ptr<Shape> read_step(rust::Slice<const uint8_t> data);
+std::unique_ptr<Shape> read_stl(rust::Slice<const uint8_t> data);
 void write_step(const Shape& s, rust::Str path);
 
 // --- Display / export -------------------------------------------------------

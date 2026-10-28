@@ -3,7 +3,7 @@
 //! upstream, and never stale geometry.
 
 use cdt_core::{
-    DVec3, Document, FeatureKind, GeometryBackend, Profile, RegenCache, SketchPlane,
+    DVec3, Document, FeatureKind, GeometryBackend, ImportFormat, Profile, RegenCache, SketchPlane,
 };
 
 /// A backend that counts how many operations it performs, so a test can assert
@@ -29,9 +29,9 @@ impl GeometryBackend for Counting {
         self.ops += 1;
         Ok(format!("sphere({r})"))
     }
-    fn import_step(&mut self, data: &[u8], scale: f64) -> Result<String, String> {
+    fn import(&mut self, format: ImportFormat, data: &[u8], scale: f64) -> Result<String, String> {
         self.ops += 1;
-        Ok(format!("step({}b,{scale})", data.len()))
+        Ok(format!("{}({}b,{scale})", format.label().to_lowercase(), data.len()))
     }
     fn sketch(&mut self, _p: SketchPlane, _profile: Profile) -> Result<String, String> {
         self.ops += 1;

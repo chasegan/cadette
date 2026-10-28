@@ -74,8 +74,9 @@ pub enum FeatureKind {
     Cylinder { radius: f64, height: f64 },
     /// Sphere of `radius`, centered at the origin.
     Sphere { radius: f64 },
-    /// A body read from a STEP file stored as `asset` in the project (see
-    /// [`crate::Assets`]): every solid in the file, as one body. Its faces
+    /// A body read from a STEP or STL file stored as `asset` in the project
+    /// (see [`crate::Assets`]; the extension says which, see
+    /// [`ImportFormat`]): every solid in the file, as one body. Its faces
     /// and edges are named by index like a primitive's, stable while the
     /// asset is.
     Import { asset: String },
@@ -559,4 +560,51 @@ pub struct Feature {
     /// older project files (which lack the field) loading.
     #[serde(default)]
     pub color: Option<[f32; 3]>,
+}
+
+/// What an imported file holds, by its extension.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ImportFormat {
+    /// Exact B-rep: `.step` / `.stp`.
+    Step,
+    /// A triangle mesh, read as a faceted solid: `.stl`.
+    Stl,
+}
+
+impl ImportFormat {
+    /// The format a file name's extension names (case-insensitive), or
+    /// `None` for anything Cadette can't import.
+    pub fn of_name(file: &str) -> Option<Self> {
+        let ext = file.rsplit('.').next().filter(|e| e.len() < file.len())?;
+        match ext.to_ascii_lowercase().as_str() {
+            "step" | "stp" => Some(ImportFormat::Step),
+            "stl" => Some(ImportFormat::Stl),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ImportFormat::Step => "STEP",
+            ImportFormat::Stl => "STL",
+        }
+    }
+
+    /// Every extension an import accepts, lowercase, for file pickers.
+    pub const EXTENSIONS: [&'static str; 3] = ["step", "stp", "stl"];
+}
+
+#[cfg(test)]
+mod import_format_tests {
+    use super::ImportFormat;
+
+    #[test]
+    fn the_extension_names_the_format() {
+        assert_eq!(ImportFormat::of_name("servo.STEP"), Some(ImportFormat::Step));
+        assert_eq!(ImportFormat::of_name("a/b.stp"), Some(ImportFormat::Step));
+        assert_eq!(ImportFormat::of_name("cap.stl"), Some(ImportFormat::Stl));
+        assert_eq!(ImportFormat::of_name("cap.obj"), None);
+        assert_eq!(ImportFormat::of_name("stl"), None);
+        assert_eq!(ImportFormat::of_name(""), None);
+    }
 }

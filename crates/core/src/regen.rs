@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::backend::GeometryBackend;
 use crate::document::Document;
-use crate::features::{BooleanOp, FeatureId, FeatureKind};
+use crate::features::{BooleanOp, FeatureId, FeatureKind, ImportFormat};
 use crate::solver::{SketchSolver, SolveStatus};
 
 /// A single feature's failure during regeneration.
@@ -439,12 +439,16 @@ where
             backend.make_cylinder(*radius, *height).map_err(backend_err)
         }
         FeatureKind::Sphere { radius } => backend.make_sphere(*radius).map_err(backend_err),
-        FeatureKind::Import { asset } => match document.assets.get(asset) {
-            Some(data) => {
+        FeatureKind::Import { asset } => match (ImportFormat::of_name(asset), document.assets.get(asset)) {
+            (Some(format), Some(data)) => {
                 let scale = 1.0 / document.units.mm_per_unit();
-                backend.import_step(data, scale).map_err(backend_err)
+                backend.import(format, data, scale).map_err(backend_err)
             }
-            None => Err(RegenError::Invalid {
+            (None, _) => Err(RegenError::Invalid {
+                feature,
+                reason: "the imported file isn't a STEP or STL file (by its extension)",
+            }),
+            (_, None) => Err(RegenError::Invalid {
                 feature,
                 reason: "the imported file is missing from the project — import it again",
             }),

@@ -77,13 +77,14 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Import a STEP file as a new feature (the file is stored inside the
-    /// project). Goes through the window if one has the project open.
+    /// Import a STEP or STL file as a new feature (the file is stored inside
+    /// the project). Goes through the window if one has the project open.
     Import {
         file: PathBuf,
-        /// The STEP file (.step / .stp) to import.
-        step: PathBuf,
-        /// The feature's name (default: the STEP file's stem).
+        /// The file to import: STEP (.step / .stp, exact B-rep) or STL
+        /// (.stl, a mesh read as a faceted solid, in millimetres).
+        source: PathBuf,
+        /// The feature's name (default: the imported file's stem).
         #[arg(long)]
         name: Option<String>,
         /// Write the result here instead of back to `file`.
@@ -149,11 +150,11 @@ enum LiveCommand {
         #[arg(long)]
         save: bool,
     },
-    /// Import a STEP file into the open project as one undo step.
+    /// Import a STEP or STL file into the open project as one undo step.
     Import {
-        /// The STEP file (.step / .stp) to import.
-        step: PathBuf,
-        /// The feature's name (default: the STEP file's stem).
+        /// The file to import: STEP (.step / .stp) or STL (.stl).
+        source: PathBuf,
+        /// The feature's name (default: the imported file's stem).
         #[arg(long)]
         name: Option<String>,
         /// Also save the project to its file afterwards.
@@ -256,8 +257,8 @@ fn run(command: Command, offline: bool) -> anyhow::Result<Outcome> {
         Command::Apply { file, edits, out, dry_run } => {
             ops::apply(&Target::file(file, offline), read_batch(&edits)?, out, dry_run, true)
         }
-        Command::Import { file, step, name, out } => {
-            ops::import_step(&Target::file(file, offline), &step, name, out, true)
+        Command::Import { file, source, name, out } => {
+            ops::import_file(&Target::file(file, offline), &source, name, out, true)
         }
         Command::ExportStep { file, out } => ops::export_step(&file, &out),
         Command::ExportStl { file, out, deflection } => ops::export_stl(&file, &out, Some(deflection)),
@@ -294,7 +295,7 @@ fn run(command: Command, offline: bool) -> anyhow::Result<Outcome> {
                 LiveCommand::Info { detail } => ops::info(&target, Detail::parse(&detail)?),
                 LiveCommand::State => ops::state(&target),
                 LiveCommand::Apply { edits, save } => ops::apply(&target, read_batch(&edits)?, None, false, save),
-                LiveCommand::Import { step, name, save } => ops::import_step(&target, &step, name, None, save),
+                LiveCommand::Import { source, name, save } => ops::import_file(&target, &source, name, None, save),
                 LiveCommand::Undo => ops::undo(&target),
                 LiveCommand::Redo => ops::redo(&target),
                 LiveCommand::Save => ops::save(&target),

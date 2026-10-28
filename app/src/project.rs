@@ -1,7 +1,7 @@
 //! Project and STL file I/O: saving/opening `.cdt` project archives and
 //! exporting the visible model as STL, including the `rfd` file dialogs.
 
-use cdt_core::{DocEdit, Document, RegenCache};
+use cdt_core::{DocEdit, Document, ImportFormat, RegenCache};
 use cdt_kernel::Solid;
 use cdt_project::ProjectFile;
 use cdt_render::CameraPose;
@@ -115,11 +115,13 @@ impl Modeler {
         });
     }
 
-    /// Prompt for a STEP file and add it as an Import feature (one undo
-    /// step). Returns true if the document changed.
-    pub(crate) fn import_step(&mut self) -> bool {
+    /// Prompt for a STEP or STL file and add it as an Import feature (one
+    /// undo step). Returns true if the document changed.
+    pub(crate) fn import_file(&mut self) -> bool {
         let Some(path) = rfd::FileDialog::new()
+            .add_filter("STEP or STL", &ImportFormat::EXTENSIONS)
             .add_filter("STEP", &["step", "stp"])
+            .add_filter("STL", &["stl"])
             .pick_file()
         else {
             return false; // cancelled
@@ -132,16 +134,16 @@ impl Modeler {
             }
         };
         let file = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "import.step".into());
-        self.import_step_bytes(&file, bytes)
+        self.import_bytes(&file, bytes)
     }
 
     /// Store `bytes` as the asset `file` and add an Import feature replaying
-    /// it — the same [`DocEdit::ImportStep`] the CLI and the link apply, as
+    /// it — the same [`DocEdit::Import`] the CLI and the link apply, as
     /// one undo step, selecting the new feature. A file the kernel can't
     /// read is refused before anything lands. Returns true if the document
     /// changed.
-    pub(crate) fn import_step_bytes(&mut self, file: &str, bytes: Vec<u8>) -> bool {
-        let edits = [DocEdit::import_step(file, &bytes, None)];
+    pub(crate) fn import_bytes(&mut self, file: &str, bytes: Vec<u8>) -> bool {
+        let edits = [DocEdit::import_file(file, &bytes, None)];
         if let Err(e) = cdt_session::check_imports(&edits) {
             self.status = Some(format!("Import failed: {}", e.error));
             return false;

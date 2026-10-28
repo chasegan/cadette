@@ -1133,8 +1133,8 @@ impl Controller for Modeler {
         if resp.export_step {
             self.export_step();
         }
-        if resp.import_step {
-            changed |= self.import_step();
+        if resp.import_file {
+            changed |= self.import_file();
         }
         if resp.new_project {
             changed |= self.new_document();
@@ -3240,7 +3240,7 @@ mod tests {
 
         let mut m = Modeler::new();
         m.doc = Document::new("imp");
-        assert!(m.import_step_bytes("cube.step", bytes.clone()));
+        assert!(m.import_bytes("cube.step", bytes.clone()));
         let _ = m.mesh();
         assert!(m.ui.errors.is_empty(), "{:?}", m.ui.errors);
         let v = m.bodies.first().expect("one body").solid.volume().unwrap();
@@ -3250,13 +3250,13 @@ mod tests {
         assert_eq!(m.doc.history.features()[0].name, "cube");
 
         // The same file again: one asset, a numbered feature.
-        assert!(m.import_step_bytes("cube.step", bytes));
+        assert!(m.import_bytes("cube.step", bytes));
         assert_eq!(m.doc.assets.len(), 1);
         assert_eq!(m.doc.history.len(), 2);
         assert_eq!(m.doc.history.features()[1].name, "cube 2");
 
         // Junk is refused before it touches the document.
-        assert!(!m.import_step_bytes("junk.step", b"not a step file".to_vec()));
+        assert!(!m.import_bytes("junk.step", b"not a step file".to_vec()));
         assert!(m.status.as_deref().unwrap_or("").starts_with("Import failed: the file can't be imported: junk.step"), "{:?}", m.status);
         assert_eq!(m.doc.history.len(), 2);
         assert!(!m.doc.assets.contains("junk.step"));

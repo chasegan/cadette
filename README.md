@@ -31,6 +31,8 @@ More at **[cadette.org](https://cadette.org)**.
 - **STEP in and out** — import a vendor part (a servo, a bearing) as exact
   B-rep and fillet, shell or cut it like anything else; export the model as
   STEP for other CAD. The imported file travels inside the `.cdt`.
+- **STL in** — drop a mesh (a download, a scan, an old print) in as a
+  faceted solid and cut, join, pattern or move it like any other body.
 
 ## Scripting and AI agents
 
@@ -44,7 +46,7 @@ cargo run -p cdt-cli -- check part.cdt             # exit 2 if a step failed to 
 echo '[{"op":"add","kind":{"Box":{"size":[40,13,26]}}}]' | cargo run -p cdt-cli -- apply part.cdt
 cargo run -p cdt-cli -- render part.cdt -o iso.png --view top --highlight 12
 cargo run -p cdt-cli -- export-stl part.cdt -o part.stl
-cargo run -p cdt-cli -- import part.cdt servo.step      # a STEP file as a new body
+cargo run -p cdt-cli -- import part.cdt servo.step      # a STEP (or STL) file as a new body
 cargo run -p cdt-cli -- export-step part.cdt -o part.step
 ```
 

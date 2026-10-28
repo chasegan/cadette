@@ -47,9 +47,10 @@ Each edit is an object with an `op`:
 - `{"op":"reorder","id":N,"index":I}` — refused if a reference would point forward.
 - `{"op":"duplicate","id":N}` → a copy of the whole subtree feeding N.
 - `{"op":"set_rollback","position":P}`, `{"op":"rollback_to_tip"}`, `{"op":"tidy"}`.
-- `{"op":"import_step","file":"servo.step","data":BASE64}` (+ optional `"name"`)
-  → stores the STEP file in the project and adds an `Import` feature that
-  replays it. Prefer `cadette_import`, which reads the file for you.
+- `{"op":"import","file":"servo.step","data":BASE64}` (+ optional `"name"`)
+  → stores the STEP or STL file (by extension) in the project and adds an
+  `Import` feature that replays it. Prefer `cadette_import`, which reads the
+  file for you.
 
 Ids created by `add` in one batch cannot be referenced later in the same
 batch — do two calls (add, read the id, then add the fillet on it).
@@ -61,19 +62,28 @@ Primitives (no inputs): `{"Box":{"size":[x,y,z]}}` (corner at the origin),
 `{"Sphere":{"radius":r}}` (centred at the origin). Position them with a
 Translate.
 
-Imported bodies: `{"Import":{"asset":"servo.step"}}` — a STEP file stored in
-the project (added with `cadette_import`, never by hand: the asset must
-exist). Every solid in the file becomes one body, exact B-rep in the file's
-units converted to the document's, placed where the file put it (Translate
-it like a primitive). Its faces and edges work like any other body's — read
-them with `detail`, then fillet, chamfer, shell, cut or thread. An assembly
-file (several solids) is one compound body like a Pattern's (`solids` in
-the report says how many): boolean it as one, or import the parts
-separately. A file that isn't STEP, is truncated, has syntax errors or holds
-no solid is refused at import, so nothing lands. Topology is exact but not
-necessarily identical to the exporter's (periodic faces may be split), so
-edge anchors from before an export don't carry across. A big file costs its
-parse time on every CLI call (the window caches it).
+Imported bodies: `{"Import":{"asset":"servo.step"}}` — a STEP or STL file
+stored in the project (added with `cadette_import`, never by hand: the
+asset must exist; the extension says which format). Every solid in the
+file becomes one body, placed where the file put it (Translate it like a
+primitive). An assembly or multi-part file is one compound body like a
+Pattern's (`solids` in the report says how many): boolean it as one, or
+import the parts separately. A big file costs its parse time on every CLI
+call (the window caches it).
+- STEP (`.step`/`.stp`): exact B-rep in the file's units converted to the
+  document's. Its faces and edges work like any other body's — read them
+  with `detail`, then fillet, chamfer, shell, cut or thread. A file that
+  isn't STEP, is truncated, has syntax errors or holds no solid is refused
+  at import, so nothing lands. Topology is exact but not necessarily
+  identical to the exporter's (periodic faces may be split), so edge anchors
+  from before an export don't carry across.
+- STL (`.stl`, ASCII or binary): a faceted solid — one planar face per
+  triangle, in millimetres (STL has no unit), each closed mesh one solid,
+  inner shells kept as cavities. Boolean, pattern, move, scale and export
+  work; `detail` lists every triangle; fillet/chamfer/shell on it are
+  pointless (there are no real edges to round) and booleans on big meshes
+  are slow. A mesh with open or non-manifold edges, or over 500,000
+  triangles, is refused at import — repair or decimate it in a mesh tool.
 `cadette_export_step` writes the visible bodies back out for other CAD.
 
 Sketch faces: `{"Sketch":{"plane":PLANE,"profile":{"Rectangle":{"width":w,"height":h}}}}`

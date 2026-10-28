@@ -113,7 +113,7 @@ fn a_step_import_is_checked_before_it_lands_and_survives_a_save() {
     let mut s = Session::new(Document::new("imp"));
 
     // Junk is refused as a batch error — nothing lands, no undo entry.
-    let err = s.apply(&[DocEdit::import_step("junk.step", b"hello", None)]).unwrap_err();
+    let err = s.apply(&[DocEdit::import_file("junk.step", b"hello", None)]).unwrap_err();
     assert_eq!(err.index, 0);
     assert!(err.error.to_string().contains("junk.step: could not parse"), "{err}");
     assert!(s.document().history.is_empty());
@@ -121,7 +121,7 @@ fn a_step_import_is_checked_before_it_lands_and_survives_a_save() {
     assert!(!s.can_undo());
 
     // A real file lands, builds, and is in the saved archive.
-    let out = s.apply(&[DocEdit::import_step("block.step", &bytes, None)]).unwrap();
+    let out = s.apply(&[DocEdit::import_file("block.step", &bytes, None)]).unwrap();
     let id = out[0].created().unwrap();
     let r = s.report();
     assert!(r.ok, "{:?}", r.errors);
@@ -138,4 +138,38 @@ fn a_step_import_is_checked_before_it_lands_and_survives_a_save() {
     assert!(r.ok, "{:?}", r.errors);
     assert!((r.bodies[0].volume - 6000.0).abs() < 1e-6);
     assert!(again.body(id).is_some());
+}
+
+#[test]
+fn an_stl_import_is_a_faceted_solid_and_an_unknown_extension_is_refused() {
+    let bytes = {
+        let path = std::env::temp_dir().join(format!("cdt-session-import-{}.stl", std::process::id()));
+        cdt_kernel::Solid::cuboid(10.0, 20.0, 30.0).unwrap().write_stl(path.to_str().unwrap(), 0.1).unwrap();
+        let b = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        b
+    };
+    let mut s = Session::new(Document::new("mesh"));
+
+    // The extension decides the format; one Cadette can't read is refused.
+    let err = s.apply(&[DocEdit::import_file("block.obj", &bytes, None)]).unwrap_err();
+    assert!(err.error.to_string().contains("block.obj: not a STEP or STL file"), "{err}");
+    // An STL under a STEP name is parsed as STEP and refused for what it is.
+    let err = s.apply(&[DocEdit::import_file("block.step", &bytes, None)]).unwrap_err();
+    assert!(err.error.to_string().contains("block.step: could not parse"), "{err}");
+    // One open triangle is refused with the reason.
+    let open = b"solid one\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid one\n";
+    let err = s.apply(&[DocEdit::import_file("tri.stl", open, None)]).unwrap_err();
+    assert!(err.error.to_string().contains("tri.stl: the mesh isn't watertight (3 open edge(s))"), "{err}");
+    assert!(s.document().history.is_empty() && s.document().assets.is_empty());
+
+    let out = s.apply(&[DocEdit::import_file("block.stl", &bytes, None)]).unwrap();
+    let id = out[0].created().unwrap();
+    let r = s.report();
+    assert!(r.ok, "{:?}", r.errors);
+    assert!((r.bodies[0].volume - 6000.0).abs() < 1e-6);
+    assert_eq!(r.bodies[0].faces, 12, "two triangles a side");
+    assert_eq!(r.features[0].summary, "Import block.stl");
+    let detail = s.body_detail(id).unwrap();
+    assert!(detail.faces.iter().all(|f| f.surface == "plane"));
 }

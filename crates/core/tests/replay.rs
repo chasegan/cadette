@@ -6,7 +6,7 @@
 //! Rust, independent of OCCT.
 
 use cdt_core::{
-    regenerate, BooleanOp, Document, EdgeAnchor, FaceAnchor, FeatureId, FeatureKind, GeometryBackend, LengthUnit,
+    regenerate, BooleanOp, Document, EdgeAnchor, FaceAnchor, FeatureId, FeatureKind, GeometryBackend, ImportFormat, LengthUnit,
     MissingReason, Profile, RegenError, SketchPlane, DVec3,
 };
 
@@ -27,11 +27,11 @@ impl GeometryBackend for Recording {
     fn make_sphere(&mut self, radius: f64) -> Result<String, String> {
         Ok(format!("sphere({radius:.0})"))
     }
-    fn import_step(&mut self, data: &[u8], scale: f64) -> Result<String, String> {
+    fn import(&mut self, format: ImportFormat, data: &[u8], scale: f64) -> Result<String, String> {
         if data.starts_with(b"bad") {
-            return Err("not a STEP file".into());
+            return Err(format!("not a {} file", format.label()));
         }
-        Ok(format!("step({}b,{scale})", data.len()))
+        Ok(format!("{}({}b,{scale})", format.label().to_lowercase(), data.len()))
     }
     fn sketch(&mut self, plane: SketchPlane, profile: Profile) -> Result<String, String> {
         Ok(format!("sketch({},{})", plane.label(), profile.type_name()))

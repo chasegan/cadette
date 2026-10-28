@@ -108,9 +108,9 @@ pub struct HistoryResponse {
     pub export_stl: bool,
     /// "Export STEP" was clicked — the host should write the model as STEP.
     pub export_step: bool,
-    /// "Import STEP" was clicked — the host should pick a STEP file and add
-    /// it as an Import feature.
-    pub import_step: bool,
+    /// "Import" was clicked — the host should pick a STEP or STL file and
+    /// add it as an Import feature.
+    pub import_file: bool,
     /// "New" was clicked — the host should reset to a blank project (confirming
     /// first if there are unsaved changes).
     pub new_project: bool,
@@ -334,8 +334,8 @@ fn command_bar(
             if icon_btn(ui, icon::FLOPPY_DISK, "Save project (.cdt)", true) {
                 resp.save_project = true;
             }
-            if icon_btn(ui, icon::FILE_ARROW_DOWN, "Import a STEP file as a new body", true) {
-                resp.import_step = true;
+            if icon_btn(ui, icon::FILE_ARROW_DOWN, "Import a STEP or STL file as a new body", true) {
+                resp.import_file = true;
             }
             ui.separator();
             // Edit + export.
@@ -724,7 +724,7 @@ pub fn selected_editor(ui: &mut Ui, doc: &mut Document, id: FeatureId) -> Editor
                 ui.label("File");
                 ui.label(asset.as_str());
             });
-            ui.label("The STEP file travels inside the project. To use a different file, import it again.");
+            ui.label("The file travels inside the project. To use a different file, import it again.");
         }
         FeatureKind::Sketch { plane, profile } => {
             changed |= plane_combo(ui, plane);
