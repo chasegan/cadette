@@ -176,6 +176,10 @@ std::unique_ptr<Shape> shell_tracked(const Shape& s,
                                      rust::Vec<int32_t>& edge_records,
                                      rust::Vec<int32_t>& offset_records);
 
+// --- Data exchange ----------------------------------------------------------
+std::unique_ptr<Shape> read_step(rust::Slice<const uint8_t> data);
+void write_step(const Shape& s, rust::Str path);
+
 // --- Display / export -------------------------------------------------------
 Mesh tessellate(const Shape& s, double deflection);
 void write_stl(const Shape& s, rust::Str path, double deflection);

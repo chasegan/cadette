@@ -159,6 +159,16 @@ impl GeometryBackend for KernelBackend {
         self.born(Solid::sphere(radius)?)
     }
 
+    fn import_step(&mut self, data: &[u8], scale: f64) -> Result<Body, KernelError> {
+        let solid = Solid::from_step(data)?;
+        let solid = if (scale - 1.0).abs() > 1e-12 {
+            solid.scale([scale; 3], [0.0; 3])?
+        } else {
+            solid
+        };
+        self.born(solid)
+    }
+
     fn sketch(&mut self, plane: SketchPlane, profile: Profile) -> Result<Body, KernelError> {
         let origin = plane.origin().to_array();
         let solid = match profile {

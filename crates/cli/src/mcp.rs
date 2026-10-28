@@ -118,6 +118,8 @@ fn tools() -> Vec<Value> {
         tool("cadette_check", "Regenerate and return ok + the errors (which step failed and why).", json!({ "type": "object", "properties": { "file": file_opt, "offline": offline, "pid": pid } })),
         tool("cadette_apply", "Apply a batch of edits (see cadette_help) all-or-nothing, regenerate, and return the outcomes (new ids) plus the fresh report. On a file: saved back (or to `out`). Through a window: one undoable step, saved if `save`.", json!({ "type": "object", "properties": { "file": file_opt, "offline": offline, "pid": pid, "edits": { "type": "array", "items": { "type": "object" }, "description": "The edits, e.g. [{\"op\":\"add\",\"kind\":{\"Box\":{\"size\":[40,13,26]}}}]." }, "label": { "type": "string", "description": "Shown to the user as the name of this step." }, "out": { "type": "string", "description": "Write the result to this file instead of back to `file`." }, "dry_run": { "type": "boolean" }, "save": { "type": "boolean", "description": "Through a window: also save the project to its file." } }, "required": ["edits"] })),
         tool("cadette_render", "Render the model to a PNG and return the image. Named views (iso/top/bottom/front/back/left/right) with optional yaw/pitch, size, dark theme, a highlighted body and a ground grid; or `as_seen` for the user's own camera/selection in a running window.", json!({ "type": "object", "properties": { "file": file_opt, "pid": pid, "out": { "type": "string", "description": "Where to write the PNG (a temp file if omitted)." }, "view": { "type": "string", "enum": ["iso", "top", "bottom", "front", "back", "left", "right"] }, "yaw": { "type": "number" }, "pitch": { "type": "number" }, "width": { "type": "integer" }, "height": { "type": "integer" }, "dark": { "type": "boolean" }, "highlight": { "type": "integer", "description": "Feature id of a visible body to tint." }, "grid": { "type": "number", "description": "Ground grid spacing in mm." }, "as_seen": { "type": "boolean", "description": "What the user sees in their window (camera, theme, selection)." } } })),
+        tool("cadette_import", "Import a STEP file (.step/.stp) as a new feature: exact B-rep, every solid in the file as one body, faces and edges addressable like any other body's (fillet, chamfer, shell, boolean, thread all work on it). The file is stored inside the project. Through a window: one undoable step.", json!({ "type": "object", "properties": { "file": file_opt, "offline": offline, "pid": pid, "step": { "type": "string", "description": "Path to the STEP file to import." }, "name": { "type": "string", "description": "The feature's name (default: the STEP file's stem)." }, "out": { "type": "string", "description": "Write the result to this file instead of back to `file`." }, "save": { "type": "boolean", "description": "Through a window: also save the project to its file." } }, "required": ["step"] })),
+        tool("cadette_export_step", "Write the visible bodies as a STEP file (exact geometry, millimetres) for other CAD tools.", json!({ "type": "object", "properties": { "file": file, "out": { "type": "string" } }, "required": ["file", "out"] })),
         tool("cadette_export_stl", "Write the visible bodies as a binary STL.", json!({ "type": "object", "properties": { "file": file, "out": { "type": "string" }, "deflection": { "type": "number", "description": "Mesh chord deviation in mm (default 0.05)." } }, "required": ["file", "out"] })),
         tool("cadette_state", "A running window's state: the open file, dirty flag, the user's selection (`selected_feature`, `picks` with body feature id + local face/edge index), visible bodies, camera, errors, and `busy` (mid-drag or sketching: edits are refused).", json!({ "type": "object", "properties": { "file": file_opt, "pid": pid } })),
         tool("cadette_undo", "Undo the last step in a running window.", json!({ "type": "object", "properties": { "file": file_opt, "pid": pid } })),
@@ -203,6 +205,21 @@ fn run_tool(name: &str, args: &Value) -> anyhow::Result<ops::Outcome> {
             };
             let out = args["out"].as_str().map(PathBuf::from);
             ops::render(&target(args), out.as_deref(), &render)
+        }
+        "cadette_import" => {
+            let step = args["step"].as_str().ok_or_else(|| anyhow!("step is required"))?;
+            ops::import_step(
+                &target(args),
+                std::path::Path::new(step),
+                args["name"].as_str().map(String::from),
+                args["out"].as_str().map(PathBuf::from),
+                args["save"].as_bool().unwrap_or(false),
+            )
+        }
+        "cadette_export_step" => {
+            let file = args["file"].as_str().ok_or_else(|| anyhow!("file is required"))?;
+            let out = args["out"].as_str().ok_or_else(|| anyhow!("out is required"))?;
+            ops::export_step(std::path::Path::new(file), std::path::Path::new(out))
         }
         "cadette_export_stl" => {
             let file = args["file"].as_str().ok_or_else(|| anyhow!("file is required"))?;

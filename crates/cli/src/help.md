@@ -47,6 +47,9 @@ Each edit is an object with an `op`:
 - `{"op":"reorder","id":N,"index":I}` — refused if a reference would point forward.
 - `{"op":"duplicate","id":N}` → a copy of the whole subtree feeding N.
 - `{"op":"set_rollback","position":P}`, `{"op":"rollback_to_tip"}`, `{"op":"tidy"}`.
+- `{"op":"import_step","file":"servo.step","data":BASE64}` (+ optional `"name"`)
+  → stores the STEP file in the project and adds an `Import` feature that
+  replays it. Prefer `cadette_import`, which reads the file for you.
 
 Ids created by `add` in one batch cannot be referenced later in the same
 batch — do two calls (add, read the id, then add the fillet on it).
@@ -57,6 +60,16 @@ Primitives (no inputs): `{"Box":{"size":[x,y,z]}}` (corner at the origin),
 `{"Cylinder":{"radius":r,"height":h}}` (axis +Z from the origin),
 `{"Sphere":{"radius":r}}` (centred at the origin). Position them with a
 Translate.
+
+Imported bodies: `{"Import":{"asset":"servo.step"}}` — a STEP file stored in
+the project (added with `cadette_import`, never by hand: the asset must
+exist). Every solid in the file becomes one body, exact B-rep in the file's
+units converted to the document's, placed where the file put it (Translate
+it like a primitive). Its faces and edges work like any other body's — read
+them with `detail`, then fillet, chamfer, shell, cut or thread. An assembly
+file (several solids) is one compound body like a Pattern's: boolean it as
+one, or import the parts separately. Surface-only files are refused.
+`cadette_export_step` writes the visible bodies back out for other CAD.
 
 Sketch faces: `{"Sketch":{"plane":PLANE,"profile":{"Rectangle":{"width":w,"height":h}}}}`
 or `"profile":{"Circle":{"radius":r}}` (centred on the plane origin).

@@ -28,6 +28,9 @@ More at **[cadette.org](https://cadette.org)**.
   constraints, driven by a pure-Rust Levenberg–Marquardt solver.
 - **Print-ready output** — STL export, plus `.cdt` project files that keep the
   full parametric history.
+- **STEP in and out** — import a vendor part (a servo, a bearing) as exact
+  B-rep and fillet, shell or cut it like anything else; export the model as
+  STEP for other CAD. The imported file travels inside the `.cdt`.
 
 ## Scripting and AI agents
 
@@ -41,6 +44,8 @@ cargo run -p cdt-cli -- check part.cdt             # exit 2 if a step failed to 
 echo '[{"op":"add","kind":{"Box":{"size":[40,13,26]}}}]' | cargo run -p cdt-cli -- apply part.cdt
 cargo run -p cdt-cli -- render part.cdt -o iso.png --view top --highlight 12
 cargo run -p cdt-cli -- export-stl part.cdt -o part.stl
+cargo run -p cdt-cli -- import part.cdt servo.step      # a STEP file as a new body
+cargo run -p cdt-cli -- export-step part.cdt -o part.step
 ```
 
 Edits are `DocEdit` batches — the verbs (`add`, `replace`, `suppress`,
@@ -50,6 +55,7 @@ data a `.cdt` file stores — applied all-or-nothing as one undo step.
 **MCP.** `cdt mcp` serves the same operations to an AI agent over the Model
 Context Protocol (stdio): tools `cadette_info`, `cadette_apply`,
 `cadette_render` (returns the image), `cadette_check`, `cadette_export_stl`,
+`cadette_import` and `cadette_export_step` (STEP in and out),
 `cadette_new`, and — for a running window — `cadette_state`, `cadette_undo`,
 `cadette_redo`, `cadette_save`, `cadette_windows`; plus a `cadette://guide`
 resource (also the `cadette_help` tool) that teaches the edit and feature JSON.

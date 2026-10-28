@@ -248,6 +248,36 @@ pub fn apply(target: &Target, batch: EditBatch, out: Option<PathBuf>, dry_run: b
     }
 }
 
+/// The edit that imports `step` (a STEP file on disk): its bytes, base64,
+/// under the file's own name.
+pub fn import_edit(step: &Path, name: Option<String>) -> anyhow::Result<DocEdit> {
+    use base64::Engine as _;
+    let bytes = std::fs::read(step).with_context(|| format!("reading {}", step.display()))?;
+    let file = step
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .ok_or_else(|| anyhow!("{} has no file name", step.display()))?;
+    Ok(DocEdit::ImportStep { name, file, data: base64::engine::general_purpose::STANDARD.encode(bytes) })
+}
+
+/// Import a STEP file as a new feature — through the window if one has the
+/// project open (one undoable step), else on the file.
+pub fn import_step(target: &Target, step: &Path, name: Option<String>, out: Option<PathBuf>, save: bool) -> anyhow::Result<Outcome> {
+    let edit = import_edit(step, name)?;
+    let label = match &edit {
+        DocEdit::ImportStep { file, .. } => format!("Import {file}"),
+        _ => unreachable!(),
+    };
+    apply(target, EditBatch { label: Some(label), edits: vec![edit] }, out, false, save)
+}
+
+pub fn export_step(file: &Path, out: &Path) -> anyhow::Result<Outcome> {
+    let mut session = open(file)?;
+    session.export_step(out).map_err(|e| anyhow!("{e}"))?;
+    let bytes = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0);
+    Ok(Outcome::ok(json!({ "written": out, "bytes": bytes })))
+}
+
 pub fn export_stl(file: &Path, out: &Path, deflection: Option<f64>) -> anyhow::Result<Outcome> {
     let deflection = deflection.unwrap_or(EXPORT_DEFLECTION_MM);
     let mut session = open(file)?;

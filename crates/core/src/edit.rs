@@ -37,6 +37,16 @@ pub enum DocEdit {
         name: Option<String>,
         kind: FeatureKind,
     },
+    /// Store a STEP file in the project and add an `Import` feature that
+    /// replays it, at the rollback bar. `file` is the file's name (it becomes
+    /// the asset's name, numbered if taken); `data` its bytes, base64. The
+    /// feature is named after the file unless `name` is given.
+    ImportStep {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        file: String,
+        data: String,
+    },
     /// Replace a feature's definition (edit its parameters). Its id, name and
     /// position are kept.
     Replace { id: FeatureId, kind: FeatureKind },
@@ -76,6 +86,8 @@ pub enum EditError {
     NotAGroup(FeatureId),
     #[error("{kind} is not an in-place transform")]
     NotATransform { kind: String },
+    #[error("the file data is not valid base64: {0}")]
+    BadData(String),
     #[error("the history would no longer be valid: {}", .0.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "))]
     Dependency(Vec<DependencyError>),
 }
@@ -127,6 +139,16 @@ impl DocEdit {
                     None => doc.insert_transform_numbered(kind.display_name(), kind.clone()),
                 })
             }
+            DocEdit::ImportStep { name, file, data } => {
+                use base64::Engine as _;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(data.trim())
+                    .map_err(|e| EditError::BadData(e.to_string()))?;
+                let asset = doc.assets.insert(file, bytes);
+                let kind = FeatureKind::Import { asset: asset.clone() };
+                let name = name.clone().unwrap_or_else(|| import_feature_name(&asset));
+                EditOutcome::Created(doc.add(name, kind))
+            }
             DocEdit::Replace { id, kind } => {
                 let f = doc.history.get_mut(*id).ok_or(EditError::UnknownFeature(*id))?;
                 f.kind = kind.clone();
@@ -175,6 +197,15 @@ impl DocEdit {
             }
             DocEdit::Tidy => EditOutcome::Removed(doc.tidy()),
         })
+    }
+}
+
+/// The feature name an import gets by default: the file's stem (`servo` for
+/// `servo.step`).
+fn import_feature_name(asset: &str) -> String {
+    match asset.rfind('.') {
+        Some(dot) if dot > 0 => asset[..dot].to_string(),
+        _ => asset.to_string(),
     }
 }
 
@@ -275,6 +306,35 @@ mod tests {
 
     fn box_kind(s: f64) -> FeatureKind {
         FeatureKind::Box { size: DVec3::splat(s) }
+    }
+
+    #[test]
+    fn import_step_stores_the_file_and_adds_a_feature_named_after_it() {
+        let mut doc = Document::new("t");
+        let edit = DocEdit::ImportStep { name: None, file: "parts/servo.step".into(), data: "SVNPLTEwMzAzLTIxOw==".into() };
+        let out = doc.apply_edits(std::slice::from_ref(&edit)).unwrap();
+        let id = out[0].created().unwrap();
+        let f = doc.history.get(id).unwrap();
+        assert_eq!(f.name, "servo");
+        assert_eq!(f.kind, FeatureKind::Import { asset: "servo.step".into() });
+        assert_eq!(doc.assets.get("servo.step").map(|b| b.as_ref()), Some(&b"ISO-10303-21;"[..]));
+
+        // The same file again shares the asset; a different file with the
+        // same name gets its own.
+        doc.apply_edits(&[edit]).unwrap();
+        assert_eq!(doc.assets.len(), 1);
+        let other = DocEdit::ImportStep { name: Some("Bolt".into()), file: "servo.step".into(), data: "b3RoZXI=".into() };
+        let out = doc.apply_edits(&[other]).unwrap();
+        let f = doc.history.get(out[0].created().unwrap()).unwrap();
+        assert_eq!(f.name, "Bolt");
+        assert_eq!(f.kind, FeatureKind::Import { asset: "servo 2.step".into() });
+
+        // Bad base64 is refused and leaves the document untouched.
+        let before = doc.history.len();
+        let err = doc.apply_edits(&[DocEdit::ImportStep { name: None, file: "x.step".into(), data: "@@@".into() }]).unwrap_err();
+        assert!(matches!(err.error, EditError::BadData(_)), "{err}");
+        assert_eq!(doc.history.len(), before);
+        assert!(!doc.assets.contains("x.step"));
     }
 
     #[test]

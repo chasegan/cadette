@@ -85,6 +85,70 @@ impl Modeler {
         });
     }
 
+    /// Prompt for a path and export the model as STEP (exact geometry, in
+    /// millimetres).
+    pub(crate) fn export_step(&mut self) {
+        if self.bodies.is_empty() {
+            self.status = Some("Nothing to export".into());
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("STEP", &["step", "stp"])
+            .set_file_name(format!("{}.step", self.doc.name))
+            .save_file()
+        else {
+            return; // user cancelled
+        };
+        let path = path.to_string_lossy().to_string();
+        let result = self.combined_body().and_then(|solid| {
+            let mm_per_unit = self.doc.units.mm_per_unit();
+            let solid = if (mm_per_unit - 1.0).abs() > 1e-12 {
+                solid.scale([mm_per_unit; 3], [0.0; 3]).map_err(|e| e.to_string())?
+            } else {
+                solid
+            };
+            solid.write_step(&path).map_err(|e| e.to_string())
+        });
+        self.status = Some(match result {
+            Ok(()) => format!("Exported {path}"),
+            Err(e) => format!("Export failed: {e}"),
+        });
+    }
+
+    /// Prompt for a STEP file and add it as an Import feature (one undo
+    /// step). Returns true if the document changed.
+    pub(crate) fn import_step(&mut self) -> bool {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("STEP", &["step", "stp"])
+            .pick_file()
+        else {
+            return false; // cancelled
+        };
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.status = Some(format!("Import failed: {e}"));
+                return false;
+            }
+        };
+        let file = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "import.step".into());
+        self.import_step_bytes(&file, bytes)
+    }
+
+    /// Store `bytes` as the asset `file` and add an Import feature replaying
+    /// it, selecting the new feature. Returns true if the document changed.
+    pub(crate) fn import_step_bytes(&mut self, file: &str, bytes: Vec<u8>) -> bool {
+        let before = self.doc.clone();
+        let asset = self.doc.assets.insert(file, bytes);
+        let name = asset.rfind('.').filter(|&dot| dot > 0).map(|dot| asset[..dot].to_string()).unwrap_or_else(|| asset.clone());
+        let id = self.doc.add(name, cdt_core::FeatureKind::Import { asset: asset.clone() });
+        self.record_undo(before);
+        self.ui.selected = Some(id);
+        self.selection.clear();
+        self.status = Some(format!("Imported {asset}"));
+        true
+    }
+
     /// Write the project (the parametric document) to `path` as a `.cdt` zip.
     pub(crate) fn save_project_to(&self, path: &str) -> Result<(), String> {
         let mut project = ProjectFile::new(self.doc.clone());

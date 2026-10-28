@@ -79,6 +79,14 @@
 #include <Poly_PolygonOnTriangulation.hxx>
 #include <TColStd_Array1OfInteger.hxx>
 #include <StlAPI_Writer.hxx>
+#include <STEPControl_Reader.hxx>
+#include <STEPControl_Writer.hxx>
+#include <IFSelect_ReturnStatus.hxx>
+#include <ShapeFix_Shape.hxx>
+#include <TopoDS_Shell.hxx>
+#include <Message.hxx>
+#include <Message_Messenger.hxx>
+#include <sstream>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopLoc_Location.hxx>
@@ -1903,6 +1911,101 @@ std::unique_ptr<Shape> shell(const Shape& s, rust::Slice<const double> anchors,
                              double thickness) {
   rust::Vec<int32_t> f, e, o;
   return shell_tracked(s, anchors, thickness, f, e, o);
+}
+
+// --- Data exchange ----------------------------------------------------------
+
+namespace {
+
+// The STEP translators narrate to OCCT's default messenger, which prints to
+// stdout — where the CLI's JSON and the MCP transport live. Failures reach
+// Rust as exceptions, so the narration is dropped for the duration.
+struct QuietMessenger {
+  Message_SequenceOfPrinters saved;
+  QuietMessenger() {
+    saved = Message::DefaultMessenger()->Printers();
+    Message::DefaultMessenger()->ChangePrinters().Clear();
+  }
+  ~QuietMessenger() { Message::DefaultMessenger()->ChangePrinters() = saved; }
+};
+
+}  // namespace
+
+std::unique_ptr<Shape> read_step(rust::Slice<const uint8_t> data) {
+  return guard("read_step", [&] {
+    QuietMessenger quiet;
+    if (data.empty()) {
+      throw std::runtime_error("read_step: the file is empty");
+    }
+    // The reader wants a stream; the name only labels messages.
+    std::string text(reinterpret_cast<const char*>(data.data()), data.size());
+    std::istringstream stream(text);
+    STEPControl_Reader reader;
+    if (reader.ReadStream("import.step", stream) != IFSelect_RetDone) {
+      throw std::runtime_error(
+          "read_step: not a STEP file (the reader could not parse it)");
+    }
+    if (reader.TransferRoots() == 0) {
+      throw std::runtime_error("read_step: the STEP file holds no shapes");
+    }
+    const TopoDS_Shape all = reader.OneShape();
+
+    // Keep the solids. A surface-only file may still carry closed free
+    // shells (some exporters skip the SOLID wrapper): promote those. Open
+    // faces, wires and points are dropped — Cadette models solids.
+    TopoDS_Compound comp;
+    BRep_Builder builder;
+    builder.MakeCompound(comp);
+    int solids = 0;
+    TopoDS_Shape single;
+    for (TopExp_Explorer ex(all, TopAbs_SOLID); ex.More(); ex.Next()) {
+      builder.Add(comp, ex.Current());
+      single = ex.Current();
+      ++solids;
+    }
+    if (solids == 0) {
+      for (TopExp_Explorer ex(all, TopAbs_SHELL, TopAbs_SOLID); ex.More(); ex.Next()) {
+        const TopoDS_Shell sh = TopoDS::Shell(ex.Current());
+        if (!BRep_Tool::IsClosed(sh)) continue;
+        BRepBuilderAPI_MakeSolid mk(sh);
+        if (!mk.IsDone()) continue;
+        TopoDS_Solid sol = mk.Solid();
+        BRepLib::OrientClosedSolid(sol);
+        builder.Add(comp, sol);
+        single = sol;
+        ++solids;
+      }
+    }
+    if (solids == 0) {
+      throw std::runtime_error(
+          "read_step: the STEP file has no solid bodies (surfaces or curves only)");
+    }
+    TopoDS_Shape result = solids == 1 ? single : TopoDS_Shape(comp);
+
+    // Exporters disagree on tolerances and orientation; heal only when the
+    // checker objects, so a clean file keeps its topology verbatim.
+    if (!BRepCheck_Analyzer(result).IsValid()) {
+      ShapeFix_Shape fix(result);
+      fix.Perform();
+      result = fix.Shape();
+    }
+    return std::make_unique<Shape>(result);
+  });
+}
+
+void write_step(const Shape& s, rust::Str path) {
+  guard("write_step", [&] {
+    QuietMessenger quiet;
+    STEPControl_Writer writer;
+    if (writer.Transfer(s.shape, STEPControl_AsIs) != IFSelect_RetDone) {
+      throw std::runtime_error("write_step: the shape could not be translated");
+    }
+    std::string p(path);
+    if (writer.Write(p.c_str()) != IFSelect_RetDone) {
+      throw std::runtime_error("write_step: writer reported failure for " + p);
+    }
+    return 0;
+  });
 }
 
 // --- Display / export -------------------------------------------------------

@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::assets::Assets;
 use crate::features::{Feature, FeatureId, FeatureKind};
 use crate::history::History;
 use crate::units::LengthUnit;
@@ -22,6 +23,11 @@ pub struct Document {
     /// which [`Self::sanitize`] clamps to the history's length.
     #[serde(default = "at_tip")]
     rollback: usize,
+    /// Files the history replays (an `Import`'s STEP), by name. Not part of
+    /// `document.json` — the project archive carries them as `assets/<name>`
+    /// entries and fills this in on load (see [`crate::Assets`]).
+    #[serde(skip)]
+    pub assets: Assets,
 }
 
 fn at_tip() -> usize {
@@ -36,7 +42,16 @@ impl Document {
             units: LengthUnit::Millimeter,
             history: History::new(),
             rollback: 0,
+            assets: Assets::default(),
         }
+    }
+
+    /// Whether any feature in the history (active or not) replays `asset`.
+    pub fn references_asset(&self, asset: &str) -> bool {
+        self.history
+            .features()
+            .iter()
+            .any(|f| matches!(&f.kind, FeatureKind::Import { asset: a } if a == asset))
     }
 
     /// Add a feature at the rollback bar (the tip, normally), returning its id.

@@ -1124,6 +1124,12 @@ impl Controller for Modeler {
         if resp.export_stl {
             self.export_stl();
         }
+        if resp.export_step {
+            self.export_step();
+        }
+        if resp.import_step {
+            changed |= self.import_step();
+        }
         if resp.new_project {
             changed |= self.new_document();
         }

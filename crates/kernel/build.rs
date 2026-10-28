@@ -5,7 +5,7 @@
 //!      `$VCPKG_INSTALLATION_ROOT/installed/x64-windows`,
 //!   2. a per-OS default: the Homebrew prefixes on macOS (Apple Silicon, then
 //!      Intel), the vcpkg layout under `VCPKG_INSTALLATION_ROOT` on Windows,
-//!      `/usr` on Linux (needs OCCT >= 7.7 — TKDESTL doesn't exist before).
+//!      `/usr` on Linux (needs OCCT >= 7.8 — TKDESTEP doesn't exist before).
 //!
 //! Headers live in `<prefix>/include/opencascade`; libraries in `<prefix>/lib`.
 
@@ -31,6 +31,9 @@ const OCCT_LIBS: &[&str] = &[
     "TKShHealing",
     "TKMesh",     // BRepMesh_IncrementalMesh
     "TKDESTL",    // StlAPI_Writer (moved here in OCCT 7.7+)
+    "TKXSBase",   // data-exchange base (XSControl_Reader)
+    "TKDE",       // data-exchange framework (OCCT 7.8+)
+    "TKDESTEP",   // STEPControl_Reader / STEPControl_Writer (OCCT 7.8+)
 ];
 
 fn occt_prefix(target_os: &str) -> String {

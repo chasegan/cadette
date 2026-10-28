@@ -29,6 +29,10 @@ impl GeometryBackend for Counting {
         self.ops += 1;
         Ok(format!("sphere({r})"))
     }
+    fn import_step(&mut self, data: &[u8], scale: f64) -> Result<String, String> {
+        self.ops += 1;
+        Ok(format!("step({}b,{scale})", data.len()))
+    }
     fn sketch(&mut self, _p: SketchPlane, _profile: Profile) -> Result<String, String> {
         self.ops += 1;
         Ok("sketch".into())

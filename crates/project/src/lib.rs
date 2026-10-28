@@ -5,6 +5,10 @@
 //!
 //! - `document.json` — the parametric [`Document`], wrapped in a versioned
 //!   envelope `{ "format_version": N, "document": { ... } }`.
+//! - `assets/<name>` — the files the history replays (an `Import` feature's
+//!   STEP), loaded into [`Document::assets`] and written back from it. Only
+//!   assets some feature still refers to are written, so a deleted import's
+//!   file does not ride along forever.
 //! - any other entries — opaque *extras* that travel with the project but are
 //!   not part of the model (the app stores its camera pose and grid settings
 //!   in `view.json`, so orbiting never dirties the document). Readers ignore
@@ -37,6 +41,8 @@ pub const FORMAT_VERSION: u64 = 1;
 pub const MIN_SUPPORTED_VERSION: u64 = 1;
 /// The archive entry holding the document.
 pub const DOCUMENT_ENTRY: &str = "document.json";
+/// The archive directory holding the document's assets (see [`Document::assets`]).
+pub const ASSET_DIR: &str = "assets/";
 
 /// Why a project could not be read or written.
 #[derive(Debug, thiserror::Error)]
@@ -137,6 +143,7 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<ProjectFile, ProjectError> {
     let mut archive = zip::ZipArchive::new(reader)?;
     let mut document = None;
     let mut extras = BTreeMap::new();
+    let mut assets = Vec::new();
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
         if entry.is_dir() {
@@ -146,11 +153,16 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<ProjectFile, ProjectError> {
         entry.read_to_end(&mut bytes)?;
         if entry.name() == DOCUMENT_ENTRY {
             document = Some(document_from_json(&bytes)?);
+        } else if let Some(name) = entry.name().strip_prefix(ASSET_DIR) {
+            assets.push((name.to_string(), bytes));
         } else {
             extras.insert(entry.name().to_string(), bytes);
         }
     }
-    let document = document.ok_or(ProjectError::NoDocument)?;
+    let mut document = document.ok_or(ProjectError::NoDocument)?;
+    for (name, bytes) in assets {
+        document.assets.set(&name, bytes);
+    }
     Ok(ProjectFile { document, extras })
 }
 
@@ -166,6 +178,12 @@ pub fn write<W: Write + Seek>(writer: W, project: &ProjectFile) -> Result<(), Pr
         .compression_method(zip::CompressionMethod::Deflated);
     zip.start_file(DOCUMENT_ENTRY, opts)?;
     zip.write_all(&document_to_json(&project.document)?)?;
+    for (name, bytes) in &project.document.assets {
+        if project.document.references_asset(name) {
+            zip.start_file(format!("{ASSET_DIR}{name}"), opts)?;
+            zip.write_all(bytes)?;
+        }
+    }
     for (name, bytes) in &project.extras {
         zip.start_file(name, opts)?;
         zip.write_all(bytes)?;
@@ -190,6 +208,27 @@ mod tests {
         let b = doc.add("Box", FeatureKind::Box { size: DVec3::new(10.0, 20.0, 30.0) });
         doc.add("Round", FeatureKind::FilletAll { source: b, radius: 2.0 });
         doc
+    }
+
+    #[test]
+    fn assets_ride_in_the_archive_while_a_feature_still_uses_them() {
+        let mut doc = sample();
+        let kept = doc.assets.insert("servo.step", b"ISO-10303-21;".to_vec());
+        let orphan = doc.assets.insert("old.step", b"ISO-10303-21; old".to_vec());
+        doc.add("servo", FeatureKind::Import { asset: kept.clone() });
+        let mut buf = Cursor::new(Vec::new());
+        write(&mut buf, &ProjectFile::new(doc)).unwrap();
+
+        // The archive holds exactly the referenced asset, under assets/.
+        let mut archive = zip::ZipArchive::new(Cursor::new(buf.get_ref().clone())).unwrap();
+        let names: Vec<String> = (0..archive.len()).map(|i| archive.by_index(i).unwrap().name().to_string()).collect();
+        assert!(names.contains(&format!("assets/{kept}")), "{names:?}");
+        assert!(!names.iter().any(|n| n.contains(&orphan)), "{names:?}");
+
+        let back = read(Cursor::new(buf.into_inner())).unwrap();
+        assert_eq!(back.document.assets.get(&kept).map(|b| b.as_ref()), Some(&b"ISO-10303-21;"[..]));
+        assert!(back.document.assets.get(&orphan).is_none());
+        assert!(back.extras.is_empty(), "assets are not extras: {:?}", back.extras.keys());
     }
 
     #[test]

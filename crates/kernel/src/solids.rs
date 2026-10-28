@@ -650,6 +650,22 @@ impl Solid {
         })
     }
 
+    // --- Data exchange ------------------------------------------------------
+
+    /// Read a STEP file (its bytes) into one solid — a compound of them when
+    /// the file holds several — in millimetres. Closed free shells become
+    /// solids; a file with no solid at all is an error, as is one the reader
+    /// can't parse.
+    pub fn from_step(data: &[u8]) -> Result<Self> {
+        Ok(Self::wrap(ffi::read_step(data)?))
+    }
+
+    /// Write this solid to `path` as a STEP file (AP214), in model units.
+    pub fn write_step(&self, path: &str) -> Result<()> {
+        ffi::write_step(&self.0, path)?;
+        Ok(())
+    }
+
     // --- Display / export ---------------------------------------------------
 
     /// Tessellate into a render-ready triangle [`Mesh`]. `deflection` is the

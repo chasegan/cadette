@@ -15,6 +15,7 @@
 //! - [`solver`] — the trait a sketch constraint solver implements.
 //! - [`regen`] — the replay engine tying them together.
 
+pub mod assets;
 pub mod backend;
 pub mod document;
 pub mod edit;
@@ -27,6 +28,7 @@ pub mod sketch;
 pub mod solver;
 pub mod units;
 
+pub use assets::Assets;
 pub use backend::GeometryBackend;
 pub use document::Document;
 pub use edit::{BatchError, DocEdit, EditError, EditOutcome};

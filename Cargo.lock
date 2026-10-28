@@ -556,6 +556,7 @@ dependencies = [
 name = "cdt-core"
 version = "0.2.5"
 dependencies = [
+ "base64",
  "glam",
  "serde",
  "serde_json",

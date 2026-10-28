@@ -240,6 +240,20 @@ impl Session {
         solid.write_stl(&path.as_ref().to_string_lossy(), deflection)?;
         Ok(())
     }
+
+    /// Write the visible model to `path` as a STEP file, in millimetres (the
+    /// document's unit is scaled away, so an inch model lands at true size).
+    pub fn export_step(&mut self, path: impl AsRef<Path>) -> Result<(), SessionError> {
+        let solid = self.combined_solid()?;
+        let mm_per_unit = self.doc.units.mm_per_unit();
+        let solid = if (mm_per_unit - 1.0).abs() > 1e-12 {
+            solid.scale([mm_per_unit; 3], [0.0; 3])?
+        } else {
+            solid
+        };
+        solid.write_step(&path.as_ref().to_string_lossy())?;
+        Ok(())
+    }
 }
 
 /// A human-readable message for a regeneration error, naming the features
@@ -278,6 +292,7 @@ pub fn kind_summary(kind: &FeatureKind) -> String {
         FeatureKind::Box { size } => format!("Box {}×{}×{}", size.x, size.y, size.z),
         FeatureKind::Cylinder { radius, height } => format!("Cylinder r={radius} h={height}"),
         FeatureKind::Sphere { radius } => format!("Sphere r={radius}"),
+        FeatureKind::Import { asset } => format!("Import {asset}"),
         FeatureKind::Sketch { .. } | FeatureKind::ConstraintSketch { .. } => "Sketch".into(),
         FeatureKind::Extrude { source, distance } => format!("Extrude #{} by {distance}", source.0),
         FeatureKind::Translate { source, offset } => {

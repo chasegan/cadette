@@ -74,6 +74,11 @@ pub enum FeatureKind {
     Cylinder { radius: f64, height: f64 },
     /// Sphere of `radius`, centered at the origin.
     Sphere { radius: f64 },
+    /// A body read from a STEP file stored as `asset` in the project (see
+    /// [`crate::Assets`]): every solid in the file, as one body. Its faces
+    /// and edges are named by index like a primitive's, stable while the
+    /// asset is.
+    Import { asset: String },
 
     /// A 2D sketch: a closed `profile` on `plane`. Evaluates to a planar face,
     /// which can be extruded into a solid.
@@ -374,6 +379,7 @@ impl FeatureKind {
             FeatureKind::Box { .. } => "Box",
             FeatureKind::Cylinder { .. } => "Cylinder",
             FeatureKind::Sphere { .. } => "Sphere",
+            FeatureKind::Import { .. } => "Import",
             FeatureKind::Sketch { .. } | FeatureKind::ConstraintSketch { .. } => "Sketch",
             FeatureKind::Extrude { .. } => "Extrude",
             FeatureKind::Translate { .. } => "Move",
@@ -422,6 +428,7 @@ impl FeatureKind {
             FeatureKind::Box { .. }
             | FeatureKind::Cylinder { .. }
             | FeatureKind::Sphere { .. }
+            | FeatureKind::Import { .. }
             | FeatureKind::Sketch { .. }
             | FeatureKind::ConstraintSketch { .. } => Vec::new(),
             FeatureKind::Translate { source, .. } => vec![*source],
@@ -512,6 +519,7 @@ impl FeatureKind {
             FeatureKind::Box { .. } => "Box",
             FeatureKind::Cylinder { .. } => "Cylinder",
             FeatureKind::Sphere { .. } => "Sphere",
+            FeatureKind::Import { .. } => "Import",
             FeatureKind::Sketch { .. } => "Sketch",
             FeatureKind::ConstraintSketch { .. } => "Sketch",
             FeatureKind::Translate { .. } => "Translate",

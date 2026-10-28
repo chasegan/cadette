@@ -517,6 +517,16 @@ mod bridge {
             offset_records: &mut Vec<i32>,
         ) -> Result<UniquePtr<Shape>>;
 
+        // --- Data exchange ------------------------------------------------
+        /// Read a STEP file's bytes: every solid in it (closed free shells
+        /// are promoted to solids), as one solid or a compound of them, in
+        /// the file's units converted to millimetres. Healed if OCCT's
+        /// checker rejects what the reader produced.
+        fn read_step(data: &[u8]) -> Result<UniquePtr<Shape>>;
+
+        /// Write the shape as an AP214 STEP file.
+        fn write_step(shape: &Shape, path: &str) -> Result<()>;
+
         // --- Display / export ---------------------------------------------
         /// Tessellate to a triangle mesh. `deflection` is the max chord
         /// deviation (model units); smaller = smoother and heavier.

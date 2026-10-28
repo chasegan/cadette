@@ -6,8 +6,8 @@
 //! Rust, independent of OCCT.
 
 use cdt_core::{
-    regenerate, BooleanOp, Document, EdgeAnchor, FaceAnchor, FeatureId, FeatureKind, GeometryBackend, MissingReason,
-    Profile, RegenError, SketchPlane, DVec3,
+    regenerate, BooleanOp, Document, EdgeAnchor, FaceAnchor, FeatureId, FeatureKind, GeometryBackend, LengthUnit,
+    MissingReason, Profile, RegenError, SketchPlane, DVec3,
 };
 
 /// A backend whose "body" is a symbolic string describing how it was built.
@@ -26,6 +26,12 @@ impl GeometryBackend for Recording {
     }
     fn make_sphere(&mut self, radius: f64) -> Result<String, String> {
         Ok(format!("sphere({radius:.0})"))
+    }
+    fn import_step(&mut self, data: &[u8], scale: f64) -> Result<String, String> {
+        if data.starts_with(b"bad") {
+            return Err("not a STEP file".into());
+        }
+        Ok(format!("step({}b,{scale})", data.len()))
     }
     fn sketch(&mut self, plane: SketchPlane, profile: Profile) -> Result<String, String> {
         Ok(format!("sketch({},{})", plane.label(), profile.type_name()))
@@ -724,4 +730,42 @@ fn an_unsolvable_sketch_is_an_error_and_is_not_built() {
     let mut cache = cdt_core::RegenCache::new();
     let regen = cache.regenerate_solved(&mut doc, &mut Recording, &mut FailConstrained);
     assert_eq!(regen.errors().len(), 2);
+}
+
+#[test]
+fn an_import_replays_its_asset_scaled_into_the_document_unit() {
+    let mut doc = Document::new("imp");
+    let asset = doc.assets.insert("servo.step", vec![0u8; 120]);
+    let servo = doc.add("servo", FeatureKind::Import { asset: asset.clone() });
+    let rounded = doc.add("Round", FeatureKind::FilletAll { source: servo, radius: 1.0 });
+    let regen = regenerate(&doc, &mut Recording);
+    assert!(regen.is_ok(), "{:?}", regen.errors());
+    assert_eq!(regen.visible(), &[rounded]);
+    assert_eq!(regen.body(rounded).unwrap(), "fillet(step(120b,1),1)", "millimetre documents take the file as is");
+
+    // An inch document scales the millimetre file down into its unit.
+    doc.units = LengthUnit::Inch;
+    let regen = regenerate(&doc, &mut Recording);
+    assert_eq!(regen.body(servo).unwrap(), &format!("step(120b,{})", 1.0 / 25.4));
+
+    // A feature whose file is gone from the project fails by name, and its
+    // dependents report the missing input rather than crashing.
+    doc.assets.remove(&asset);
+    let regen = regenerate(&doc, &mut Recording);
+    assert!(
+        regen.errors().iter().any(|e| matches!(e, RegenError::Invalid { feature, reason } if *feature == servo && reason.contains("missing from the project"))),
+        "{:?}",
+        regen.errors()
+    );
+    assert!(regen.body(rounded).is_none());
+
+    // A file the kernel rejects is a backend error on the import itself.
+    let bad = doc.assets.insert("bad.step", b"bad bytes".to_vec());
+    doc.history.get_mut(servo).unwrap().kind = FeatureKind::Import { asset: bad };
+    let regen = regenerate(&doc, &mut Recording);
+    assert!(
+        regen.errors().iter().any(|e| matches!(e, RegenError::Backend { feature, source } if *feature == servo && source == "not a STEP file")),
+        "{:?}",
+        regen.errors()
+    );
 }

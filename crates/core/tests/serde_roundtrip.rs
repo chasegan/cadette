@@ -84,6 +84,9 @@ fn sample_document() -> Document {
         open: vec![FaceAnchor { point: DVec3::new(5.0, 10.0, 30.0), normal: DVec3::Z }],
     });
     doc.add("Group 1", FeatureKind::Group { members: vec![fused, pad] });
+    // An Import names its asset; the bytes live outside document.json.
+    let asset = doc.assets.insert("servo.step", b"ISO-10303-21;".to_vec());
+    doc.add("servo", FeatureKind::Import { asset });
     doc
 }
 
