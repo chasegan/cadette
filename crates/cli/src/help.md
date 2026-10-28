@@ -78,8 +78,10 @@ call (the window caches it).
   identical to the exporter's (periodic faces may be split), so edge anchors
   from before an export don't carry across.
 - STL (`.stl`, ASCII or binary): a faceted solid — one planar face per
-  triangle, in millimetres (STL has no unit), each closed mesh one solid,
-  inner shells kept as cavities. Boolean, pattern, move, scale and export
+  triangle, read as millimetres (STL has no unit) and converted to the
+  document's unit like a STEP, each closed mesh one solid, inner shells
+  kept as cavities (decided by geometry, so a mirrored export still comes
+  in right side out). Boolean, pattern, move, scale and export
   work; `detail` lists every triangle; fillet/chamfer/shell on it are
   pointless (there are no real edges to round) and booleans on big meshes
   are slow. A mesh with open or non-manifold edges, or over 500,000

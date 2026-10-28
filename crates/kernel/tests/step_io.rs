@@ -225,6 +225,162 @@ fn an_stl_keeps_cavities_and_separate_bodies() {
 }
 
 #[test]
+fn concatenated_ascii_solids_and_nesting_are_read_by_geometry() {
+    // Two `solid … endsolid` blocks: the second is not dropped.
+    let a = Solid::cuboid(20.0, 20.0, 20.0).unwrap();
+    let b = Solid::cuboid(10.0, 10.0, 10.0).unwrap().translate(40.0, 0.0, 0.0).unwrap();
+    let ascii = |s: &Solid| {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdt-ascii-{}-{:p}.stl", std::process::id(), s));
+        // OCCT writes binary; make ASCII from the binary records.
+        s.write_stl(path.to_str().unwrap(), 0.1).unwrap();
+        let bin = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        let mut text = String::from("solid part\r\n");
+        for rec in bin[84..].chunks_exact(50) {
+            let f = |at: usize| f32::from_le_bytes(rec[at..at + 4].try_into().unwrap());
+            text += "facet normal 0 0 0\r\n outer loop\r\n";
+            for v in 0..3 {
+                text += &format!("  vertex {} {} {}\r\n", f(12 + v * 12), f(16 + v * 12), f(20 + v * 12));
+            }
+            text += " endloop\r\nendfacet\r\n";
+        }
+        text + "endsolid part\r\n"
+    };
+    let two = format!("{}\n\n{}", ascii(&a), ascii(&b));
+    let back = Solid::from_stl(two.as_bytes()).unwrap();
+    assert_eq!(back.topology().unwrap().solids, 2);
+    assert!((back.mass_properties().unwrap().volume - 9000.0).abs() < 1e-6);
+
+    // One body split over two blocks shares its vertices by position.
+    let text = ascii(&a);
+    let (head, tail) = text.split_at(text.len() / 2);
+    let cut = head.rfind("facet normal").unwrap();
+    let split = format!("{}endsolid x\nsolid y\n{}{}", &head[..cut], &head[cut..], tail);
+    let back = Solid::from_stl(split.as_bytes()).unwrap();
+    assert_eq!(back.topology().unwrap().solids, 1);
+    assert!((back.mass_properties().unwrap().volume - 8000.0).abs() < 1e-6);
+
+    // A hollow box exported mirrored (every shell inward) is still one
+    // solid with a cavity, not a solid and a second body.
+    let outer = Solid::cuboid(30.0, 30.0, 30.0).unwrap();
+    let inner = Solid::cuboid(10.0, 10.0, 10.0).unwrap().translate(10.0, 10.0, 10.0).unwrap();
+    let mut mirrored = stl_bytes(&outer.cut(&inner).unwrap(), 0.1);
+    for rec in mirrored[84..].chunks_exact_mut(50) {
+        let (v1, v2) = rec[24..48].split_at_mut(12);
+        v1.swap_with_slice(v2);
+    }
+    let back = Solid::from_stl(&mirrored).unwrap();
+    assert_eq!(back.topology().unwrap().solids, 1);
+    assert!((back.mass_properties().unwrap().volume - 26000.0).abs() < 1e-6);
+    assert!(back.is_valid().unwrap());
+
+    // A hollow block sitting in the notch of an L-bracket whose bounding
+    // box surrounds it: the cavity belongs to the block, not the bracket.
+    let bracket = Solid::cuboid(100.0, 100.0, 20.0).unwrap()
+        .cut(&Solid::cuboid(80.0, 80.0, 20.0).unwrap().translate(20.0, 20.0, 0.0).unwrap())
+        .unwrap();
+    let block = Solid::cuboid(40.0, 40.0, 20.0).unwrap()
+        .cut(&Solid::cuboid(20.0, 20.0, 10.0).unwrap().translate(10.0, 10.0, 5.0).unwrap())
+        .unwrap()
+        .translate(50.0, 50.0, 0.0)
+        .unwrap();
+    let scene = stl_bytes(&bracket.fuse(&block).unwrap(), 0.1);
+    let back = Solid::from_stl(&scene).unwrap();
+    assert_eq!(back.topology().unwrap().solids, 2);
+    assert!(back.is_valid().unwrap());
+    let want = 100.0 * 100.0 * 20.0 - 80.0 * 80.0 * 20.0 + 40.0 * 40.0 * 20.0 - 20.0 * 20.0 * 10.0;
+    assert!((back.mass_properties().unwrap().volume - want).abs() < 1e-6);
+}
+
+#[test]
+fn a_small_binary_stl_of_round_numbers_is_still_binary() {
+    // Zero normals and whole-number coordinates: every byte printable.
+    let tet = [[0.0f32, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]];
+    let faces = [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]];
+    let mut bytes = vec![b' '; 80];
+    bytes.extend_from_slice(&4u32.to_le_bytes());
+    for f in faces {
+        bytes.extend_from_slice(&[0u8; 12]);
+        for v in f {
+            for c in tet[v] {
+                bytes.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        bytes.extend_from_slice(&[0u8; 2]);
+    }
+    assert!(bytes.iter().all(|&b| b < 0x7f));
+    let back = Solid::from_stl(&bytes).unwrap();
+    assert!((back.mass_properties().unwrap().volume - 1000.0 / 6.0).abs() < 1e-6);
+}
+
+#[test]
+fn a_mesh_cut_by_a_box_still_renders_shaded_and_a_pyramid_keeps_its_edges() {
+    // The boolean merges coplanar triangles into polygons (each side facet
+    // of the cylinder becomes a quad); the seams between them stay hidden.
+    let cyl = Solid::cylinder(10.0, 20.0).unwrap();
+    let mesh = Solid::from_stl(&stl_bytes(&cyl, 0.002)).unwrap();
+    let bitten = mesh.cut(&Solid::cuboid(20.0, 20.0, 20.0).unwrap()).unwrap();
+    let topo = bitten.topology().unwrap();
+    assert!(topo.faces >= 100, "{} faces", topo.faces);
+    let drawn: std::collections::BTreeSet<u32> = bitten.tessellate(0.1).unwrap().edge_ids.iter().copied().collect();
+    // Of a side facet's four edges the two rims are creases and the two
+    // seams to its neighbours are not: well under three quarters drawn.
+    assert!(drawn.len() * 4 < topo.edges as usize * 3, "{} of {} edges drawn", drawn.len(), topo.edges);
+
+    // Six faces, all triangles, meeting at 16°: a design, every edge drawn.
+    let pyramid = "solid p
+facet normal 0 0 0
+outer loop
+vertex 0 0 0
+vertex 0 100 0
+vertex 100 100 0
+endloop
+endfacet
+facet normal 0 0 0
+outer loop
+vertex 0 0 0
+vertex 100 100 0
+vertex 100 0 0
+endloop
+endfacet
+facet normal 0 0 0
+outer loop
+vertex 0 0 0
+vertex 100 0 0
+vertex 50 50 10
+endloop
+endfacet
+facet normal 0 0 0
+outer loop
+vertex 100 0 0
+vertex 100 100 0
+vertex 50 50 10
+endloop
+endfacet
+facet normal 0 0 0
+outer loop
+vertex 100 100 0
+vertex 0 100 0
+vertex 50 50 10
+endloop
+endfacet
+facet normal 0 0 0
+outer loop
+vertex 0 100 0
+vertex 0 0 0
+vertex 50 50 10
+endloop
+endfacet
+endsolid p
+";
+    let p = Solid::from_stl(pyramid.as_bytes()).unwrap();
+    assert!((p.mass_properties().unwrap().volume - 100.0 * 100.0 * 10.0 / 3.0).abs() < 1e-6);
+    let drawn: std::collections::BTreeSet<u32> = p.tessellate(0.1).unwrap().edge_ids.iter().copied().collect();
+    assert_eq!(drawn.len(), 9, "four base edges, four slopes, one base diagonal");
+}
+
+#[test]
 fn a_curved_body_through_stl_is_a_mesh_and_can_be_cut_and_exported() {
     let cyl = Solid::cylinder(10.0, 20.0).unwrap();
     let back = Solid::from_stl(&stl_bytes(&cyl, 0.05)).unwrap();
@@ -262,6 +418,38 @@ fn broken_meshes_are_refused_by_name() {
     let open = "solid one\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid one\n";
     let e = err(open.as_bytes());
     assert!(e.contains("isn't watertight") && e.contains("3 open edge"), "{e}");
+    // A Klein bottle (the figure-8 immersion) is closed and every edge is
+    // shared by two triangles, but it has no inside: refused as unorientable.
+    let klein = {
+        let (n, m) = (12usize, 12usize);
+        let p = |i: usize, j: usize| {
+            let u = i as f64 / n as f64 * std::f64::consts::TAU;
+            // Half a step off the grid: the figure-8 crosses itself at v = 0
+            // and π, and a vertex there would be shared by four triangles.
+            let v = (j as f64 + 0.5) / m as f64 * std::f64::consts::TAU;
+            let r = 3.0 + (u / 2.0).cos() * v.sin() - (u / 2.0).sin() * (2.0 * v).sin();
+            [r * u.cos(), r * u.sin(), (u / 2.0).sin() * v.sin() + (u / 2.0).cos() * (2.0 * v).sin()]
+        };
+        // Going once round in u lands on the same curve traversed backwards.
+        let at = |i: usize, j: usize| if i < n { p(i, j % m) } else { p(0, m - 1 - j % m) };
+        let mut s = String::from("solid k\n");
+        let mut tri = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
+            s += "facet normal 0 0 0\nouter loop\n";
+            for v in [a, b, c] {
+                s += &format!("vertex {} {} {}\n", v[0], v[1], v[2]);
+            }
+            s += "endloop\nendfacet\n";
+        };
+        for i in 0..n {
+            for j in 0..m {
+                tri(at(i, j), at(i + 1, j), at(i + 1, j + 1));
+                tri(at(i, j), at(i + 1, j + 1), at(i, j + 1));
+            }
+        }
+        s + "endsolid k\n"
+    };
+    let e = err(klein.as_bytes());
+    assert!(e.contains("no inside and outside"), "{e}");
     // A truncated binary file.
     let whole = stl_bytes(&Solid::cuboid(1.0, 1.0, 1.0).unwrap(), 0.1);
     let e = err(&whole[..whole.len() - 20]);

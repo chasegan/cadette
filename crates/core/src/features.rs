@@ -575,8 +575,10 @@ impl ImportFormat {
     /// The format a file name's extension names (case-insensitive), or
     /// `None` for anything Cadette can't import.
     pub fn of_name(file: &str) -> Option<Self> {
-        let ext = file.rsplit('.').next().filter(|e| e.len() < file.len())?;
-        match ext.to_ascii_lowercase().as_str() {
+        // Same split as the asset store's: a name that is all extension
+        // (`.stl`) has none, so its numbered copy (`.stl 2`) can't lose it.
+        let dot = file.rfind('.').filter(|&dot| dot > 0)?;
+        match file[dot + 1..].to_ascii_lowercase().as_str() {
             "step" | "stp" => Some(ImportFormat::Step),
             "stl" => Some(ImportFormat::Stl),
             _ => None,
@@ -605,6 +607,8 @@ mod import_format_tests {
         assert_eq!(ImportFormat::of_name("cap.stl"), Some(ImportFormat::Stl));
         assert_eq!(ImportFormat::of_name("cap.obj"), None);
         assert_eq!(ImportFormat::of_name("stl"), None);
+        assert_eq!(ImportFormat::of_name(".stl"), None);
+        assert_eq!(ImportFormat::of_name("a.b.STP"), Some(ImportFormat::Step));
         assert_eq!(ImportFormat::of_name(""), None);
     }
 }

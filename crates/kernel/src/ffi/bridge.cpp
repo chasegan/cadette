@@ -83,7 +83,6 @@
 #include <Standard_ReadLineBuffer.hxx>
 #include <Message_ProgressRange.hxx>
 #include <Geom_Plane.hxx>
-#include <Bnd_Box.hxx>
 #include <Precision.hxx>
 #include <array>
 #include <unordered_map>
@@ -2119,30 +2118,45 @@ std::unique_ptr<Shape> read_stl(rust::Slice<const uint8_t> data) {
     // --- Parse ---------------------------------------------------------
     MeshCollector mesh;
     {
-      std::string text(reinterpret_cast<const char*>(data.data()), data.size());
-      std::istringstream stream(text, std::ios::in | std::ios::binary);
+      const std::string text(reinterpret_cast<const char*>(data.data()), data.size());
+      // A binary file is exactly a header, a count and 50 bytes a triangle;
+      // OCCT's sniff only looks for non-printable bytes, which a small
+      // file of round numbers may not have.
+      bool binary = false;
+      if (text.size() >= 84) {
+        const auto* b = reinterpret_cast<const unsigned char*>(text.data()) + 80;
+        const uint64_t count = b[0] | (b[1] << 8) | (b[2] << 16) | (static_cast<uint64_t>(b[3]) << 24);
+        binary = text.size() == 84 + 50 * count;
+      }
       bool ok;
-      // The sniff reads ahead ~256 bytes; a shorter file leaves the stream
-      // at end-of-file, which the readers would take for an empty one.
-      const bool ascii = mesh.IsAscii(stream, true);
-      stream.clear();
-      stream.seekg(0);
-      if (ascii) {
-        Standard_ReadLineBuffer buffer(1024 * 1024);
-        const std::streampos end = static_cast<std::streampos>(text.size());
+      if (!binary) {
+        std::istringstream sniff(text, std::ios::in | std::ios::binary);
+        binary = !mesh.IsAscii(sniff, true);
+      }
+      if (binary) {
+        std::istringstream stream(text, std::ios::in | std::ios::binary);
+        ok = mesh.ReadBinary(stream, Message_ProgressRange());
+      } else {
+        // Concatenated `solid … endsolid` blocks: OCCT's reader stops at
+        // each `endsolid` but its line buffer has read far past it, so
+        // each block is cut out of the text and read on its own.
         ok = true;
-        // Concatenated ASCII solids: one `solid … endsolid` block per pass.
-        while (ok) {
-          ok = mesh.ReadAscii(stream, buffer, end, Message_ProgressRange());
-          size_t at = static_cast<size_t>(std::max<std::streamoff>(0, stream.tellg()));
-          if (!stream.good() || at >= text.size()) break;
+        size_t at = 0;
+        while (ok && at < text.size()) {
           while (at < text.size() && std::isspace(static_cast<unsigned char>(text[at]))) ++at;
           if (at >= text.size()) break;
-          stream.clear();
-          stream.seekg(static_cast<std::streamoff>(at));
+          size_t end = text.find("endsolid", at);
+          if (end == std::string::npos) {
+            end = text.size();
+          } else {
+            end = text.find('\n', end);
+            end = end == std::string::npos ? text.size() : end + 1;
+          }
+          std::istringstream block(text.substr(at, end - at), std::ios::in | std::ios::binary);
+          Standard_ReadLineBuffer buffer(1024 * 1024);
+          ok = mesh.ReadAscii(block, buffer, static_cast<std::streampos>(end - at), Message_ProgressRange());
+          at = end;
         }
-      } else {
-        ok = mesh.ReadBinary(stream, Message_ProgressRange());
       }
       if (!ok) {
         const std::string why = quiet.why();
@@ -2160,15 +2174,53 @@ std::unique_ptr<Shape> read_stl(rust::Slice<const uint8_t> data) {
           " triangles; a faceted body is capped at " + std::to_string(kMaxTriangles) +
           " — decimate it in a mesh tool first");
     }
-    const auto& nodes = mesh.nodes;
+
+    // --- Merge coincident nodes across the whole file ------------------
+    // OCCT merges within one block only; a body split over several
+    // `solid` blocks shares vertices by position alone.
+    std::vector<gp_XYZ> nodes;
+    nodes.reserve(mesh.nodes.size());
+    std::vector<int> remap(mesh.nodes.size());
+    {
+      struct Key {
+        int64_t x, y, z;
+        bool operator==(const Key& o) const { return x == o.x && y == o.y && z == o.z; }
+      };
+      struct KeyHash {
+        size_t operator()(const Key& k) const {
+          return std::hash<int64_t>()(k.x) ^ (std::hash<int64_t>()(k.y) * 31) ^ (std::hash<int64_t>()(k.z) * 961);
+        }
+      };
+      std::unordered_map<Key, int, KeyHash> seen;
+      seen.reserve(mesh.nodes.size());
+      for (size_t i = 0; i < mesh.nodes.size(); ++i) {
+        const gp_XYZ& p = mesh.nodes[i];
+        const Key k{static_cast<int64_t>(std::llround(p.X() * 1e6)), static_cast<int64_t>(std::llround(p.Y() * 1e6)),
+                    static_cast<int64_t>(std::llround(p.Z() * 1e6))};
+        auto it = seen.find(k);
+        if (it == seen.end()) {
+          it = seen.emplace(k, static_cast<int>(nodes.size())).first;
+          nodes.push_back(p);
+        }
+        remap[i] = it->second;
+      }
+    }
     std::vector<std::array<int, 3>> tris;
     tris.reserve(mesh.tris.size());
     std::vector<gp_XYZ> normals;  // unnormalised, per kept triangle
     normals.reserve(mesh.tris.size());
-    for (const auto& t : mesh.tris) {
-      if (t[0] == t[1] || t[1] == t[2] || t[0] == t[2]) continue;
+    size_t degenerate = 0;
+    for (const auto& raw : mesh.tris) {
+      const std::array<int, 3> t{remap[raw[0]], remap[raw[1]], remap[raw[2]]};
+      if (t[0] == t[1] || t[1] == t[2] || t[0] == t[2]) {
+        ++degenerate;
+        continue;
+      }
       const gp_XYZ n = (nodes[t[1]] - nodes[t[0]]).Crossed(nodes[t[2]] - nodes[t[0]]);
-      if (n.SquareModulus() < 1e-20) continue;  // zero-area sliver
+      if (n.SquareModulus() < 1e-20) {  // zero-area sliver
+        ++degenerate;
+        continue;
+      }
       tris.push_back(t);
       normals.push_back(n);
     }
@@ -2201,6 +2253,9 @@ std::unique_ptr<Shape> read_stl(rust::Slice<const uint8_t> data) {
       if (nonmanifold > 0) {
         if (!what.empty()) what += " and ";
         what += std::to_string(nonmanifold) + " edge(s) shared by more than two triangles";
+      }
+      if (degenerate > 0) {
+        what += ", after dropping " + std::to_string(degenerate) + " zero-area triangle(s)";
       }
       throw std::runtime_error(
           "read_stl: the mesh isn't watertight (" + what +
@@ -2236,11 +2291,29 @@ std::unique_ptr<Shape> read_stl(rust::Slice<const uint8_t> data) {
       }
       ++components;
     }
+    // A surface with no inside (a Möbius band's closed cousins) can't be
+    // oriented: some edge is still walked the same way by both triangles.
+    size_t twisted = 0;
+    for (const auto& kv : edges) {
+      const int a = static_cast<int>(kv.first >> 32), b = static_cast<int>(kv.first & 0xffffffffu);
+      if (walks(tris[kv.second.tri[0]], a, b) == walks(tris[kv.second.tri[1]], a, b)) ++twisted;
+    }
+    if (twisted > 0) {
+      throw std::runtime_error(
+          "read_stl: the mesh has no inside and outside (" + std::to_string(twisted) +
+          " edge(s) are walked the same way by both their triangles) — it can't be a solid");
+    }
 
-    // --- Inside or out: signed volume and bounds per component ----------
+    // --- Inside or out, by geometry ------------------------------------
+    // Winding says nothing reliable (a mirrored export flips every shell),
+    // so each component is placed by casting a ray from one of its
+    // triangles through every other component: an odd number of crossings
+    // means that one surrounds it. Surrounded by an even number: an outer
+    // shell, faces turned outward. Odd: a cavity of the innermost of them,
+    // faces turned into the void.
     struct Comp {
       double volume6 = 0;
-      Bnd_Box box;
+      int depth = 0;
       int outer = -1;  // for a cavity: the solid it hollows
       std::vector<size_t> tris;
     };
@@ -2248,26 +2321,57 @@ std::unique_ptr<Shape> read_stl(rust::Slice<const uint8_t> data) {
     for (size_t i = 0; i < tris.size(); ++i) {
       Comp& c = comps[component[i]];
       c.tris.push_back(i);
-      const gp_XYZ& p0 = nodes[tris[i][0]];
-      c.volume6 += p0.Dot(normals[i]);
-      for (int k = 0; k < 3; ++k) c.box.Add(gp_Pnt(nodes[tris[i][k]]));
+      c.volume6 += nodes[tris[i][0]].Dot(normals[i]);
     }
-    // A shell with inward normals and a solid around it is a cavity of the
-    // smallest such solid; one with nothing around it is just inside out.
-    for (int ci = 0; ci < components; ++ci) {
-      if (comps[ci].volume6 >= 0) continue;
-      int best = -1;
-      for (int cj = 0; cj < components; ++cj) {
-        if (cj == ci || comps[cj].volume6 <= 0) continue;
-        double jx0, jy0, jz0, jx1, jy1, jz1, ix0, iy0, iz0, ix1, iy1, iz1;
-        comps[cj].box.Get(jx0, jy0, jz0, jx1, jy1, jz1);
-        comps[ci].box.Get(ix0, iy0, iz0, ix1, iy1, iz1);
-        const bool inside = jx0 <= ix0 && jy0 <= iy0 && jz0 <= iz0 && ix1 <= jx1 && iy1 <= jy1 && iz1 <= jz1;
-        if (inside && (best < 0 || comps[cj].volume6 < comps[best].volume6)) best = cj;
+    if (components > 1) {
+      // Nothing like an axis or a diagonal: meshes of round numbers put
+      // vertices and edges exactly on those, and a ray through a vertex
+      // counts wrong.
+      const gp_XYZ dir(0.31830988618, 0.57721566490, 0.75487766625);
+      const auto crosses = [&](const gp_XYZ& origin, size_t i) {
+        // Möller–Trumbore, for a hit ahead of the origin.
+        const gp_XYZ& p0 = nodes[tris[i][0]];
+        const gp_XYZ e1 = nodes[tris[i][1]] - p0, e2 = nodes[tris[i][2]] - p0;
+        const gp_XYZ h = dir.Crossed(e2);
+        const double det = e1.Dot(h);
+        if (std::fabs(det) < 1e-14) return false;
+        const double inv = 1.0 / det;
+        const gp_XYZ s = origin - p0;
+        const double u = inv * s.Dot(h);
+        if (u < 0.0 || u > 1.0) return false;
+        const gp_XYZ q = s.Crossed(e1);
+        const double v = inv * dir.Dot(q);
+        if (v < 0.0 || u + v > 1.0) return false;
+        return inv * e2.Dot(q) > 1e-9;
+      };
+      std::vector<std::vector<int>> inside(components);  // ci → the components around it
+      for (int ci = 0; ci < components; ++ci) {
+        const auto& t = tris[comps[ci].tris[0]];
+        const gp_XYZ origin = (nodes[t[0]] + nodes[t[1]] + nodes[t[2]]) / 3.0;
+        for (int cj = 0; cj < components; ++cj) {
+          if (cj == ci) continue;
+          size_t hits = 0;
+          for (const size_t i : comps[cj].tris) hits += crosses(origin, i) ? 1 : 0;
+          if (hits % 2 == 1) inside[ci].push_back(cj);
+        }
+        comps[ci].depth = static_cast<int>(inside[ci].size());
       }
-      if (best >= 0) {
+      for (int ci = 0; ci < components; ++ci) {
+        if (comps[ci].depth % 2 == 0) continue;
+        // The innermost outer shell around it; a cavity can't hollow a
+        // cavity, so one at odd depth is skipped (a ray that grazed a
+        // vertex could put it there).
+        int best = -1;
+        for (const int cj : inside[ci]) {
+          if (comps[cj].depth % 2 != 0) continue;
+          if (best < 0 || comps[cj].depth > comps[best].depth) best = cj;
+        }
         comps[ci].outer = best;
-      } else {
+      }
+    }
+    for (int ci = 0; ci < components; ++ci) {
+      const bool want_positive = comps[ci].outer < 0;
+      if ((comps[ci].volume6 > 0) != want_positive) {
         for (const size_t i : comps[ci].tris) {
           std::swap(tris[i][1], tris[i][2]);
           normals[i].Reverse();
@@ -2435,29 +2539,56 @@ Mesh tessellate(const Shape& s, double deflection) {
     TopExp::MapShapes(shape, TopAbs_EDGE, edge_map);
     std::vector<bool> emitted(edge_map.Extent() + 1, false);
 
-    // A faceted body (an imported STL) is all planar triangles; drawing the
-    // seam between two of them that meet nearly flat would turn the body
-    // into a wireframe. Such seams are skipped; a crease stays. Real B-rep
-    // faces are never triangles meeting like that, so they are untouched.
+    // A faceted body (an imported STL) is all flat straight-edged faces —
+    // triangles as read, polygons once a boolean has merged coplanar ones;
+    // drawing the seam between two that meet nearly flat would turn the
+    // body into a wireframe. Such seams are skipped; a crease stays. The
+    // decision is per solid: nearly every face flat and straight-edged,
+    // and enough of them that it can't be a design — a dozen when they are
+    // all triangles (a cube from a mesh), a hundred otherwise (a shallow
+    // pyramid, a bracket with a drafted gusset keep every edge).
     TopTools_IndexedMapOfShape face_map;
     TopExp::MapShapes(shape, TopAbs_FACE, face_map);
     std::vector<char> is_triangle(face_map.Extent() + 1, 0);
     std::vector<gp_Dir> normal(face_map.Extent() + 1, gp_Dir(0, 0, 1));
-    for (int fi = 1; fi <= face_map.Extent(); ++fi) {
-      const TopoDS_Face face = TopoDS::Face(face_map(fi));
+    // The edge count of a flat straight-edged face (0 otherwise).
+    const auto flat_face = [&](const TopoDS_Face& face, gp_Dir& n) {
       BRepAdaptor_Surface surf(face, Standard_False);
-      if (surf.GetType() != GeomAbs_Plane) continue;
+      if (surf.GetType() != GeomAbs_Plane) return 0;
       int edges = 0;
-      bool straight = true;
       for (TopExp_Explorer eex(face, TopAbs_EDGE); eex.More(); eex.Next()) {
         ++edges;
-        if (BRepAdaptor_Curve(TopoDS::Edge(eex.Current())).GetType() != GeomAbs_Line) straight = false;
+        if (BRepAdaptor_Curve(TopoDS::Edge(eex.Current())).GetType() != GeomAbs_Line) return 0;
       }
-      if (edges != 3 || !straight) continue;
-      gp_Dir n = surf.Plane().Axis().Direction();
+      n = surf.Plane().Axis().Direction();
       if (face.Orientation() == TopAbs_REVERSED) n.Reverse();
-      is_triangle[fi] = 1;
-      normal[fi] = n;
+      return edges;
+    };
+    {
+      // Faces outside any solid (a sketch, a shell) are judged with the
+      // whole shape; each solid is judged on its own.
+      std::vector<TopoDS_Shape> units;
+      for (TopExp_Explorer sx(shape, TopAbs_SOLID); sx.More(); sx.Next()) units.push_back(sx.Current());
+      if (units.empty()) units.push_back(shape);
+      for (const TopoDS_Shape& unit : units) {
+        std::vector<int> flat;
+        int faces = 0;
+        bool all_triangles = true;
+        for (TopExp_Explorer fx(unit, TopAbs_FACE); fx.More(); fx.Next()) {
+          ++faces;
+          const int fi = face_map.FindIndex(fx.Current());
+          gp_Dir n;
+          const int edges = fi > 0 ? flat_face(TopoDS::Face(fx.Current()), n) : 0;
+          if (edges == 0) continue;
+          if (edges != 3) all_triangles = false;
+          flat.push_back(fi);
+          normal[fi] = n;
+        }
+        const bool enough = faces >= (all_triangles ? 12 : 100);
+        if (enough && flat.size() * 10 >= static_cast<size_t>(faces) * 9) {
+          for (const int fi : flat) is_triangle[fi] = 1;
+        }
+      }
     }
     TopTools_IndexedDataMapOfShapeListOfShape edge_faces;
     TopExp::MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, edge_faces);

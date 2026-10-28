@@ -217,7 +217,8 @@ pub fn import_feature_name(doc: &Document, file: &str) -> String {
     let stem = match file.rfind('.') {
         Some(dot) if dot > 0 => &file[..dot],
         _ => file,
-    };
+    }
+    .trim();
     if !doc.history.features().iter().any(|f| f.name == stem) {
         return stem.to_string();
     }
