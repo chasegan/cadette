@@ -84,7 +84,13 @@
 #include <RWStl_Reader.hxx>
 #include <Standard_ReadLineBuffer.hxx>
 #include <Message_ProgressRange.hxx>
-#include <Geom_Plane.hxx>
+#include <TopoDS_Wire.hxx>
+#include <TopoDS_Solid.hxx>
+#include <GeomAbs_SurfaceType.hxx>
+#include <GeomAbs_CurveType.hxx>
+#include <cstdint>
+#include <functional>
+#include <utility>
 #include <Precision.hxx>
 #include <array>
 #include <unordered_map>
