@@ -42,6 +42,8 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <Geom_Plane.hxx>
+#include <TColStd_Array1OfReal.hxx>
+#include <Poly_Triangle.hxx>
 #include <Geom_CylindricalSurface.hxx>
 #include <Geom2d_Line.hxx>
 #include <Geom2d_Curve.hxx>
@@ -2415,6 +2417,26 @@ std::unique_ptr<Shape> read_stl(rust::Slice<const uint8_t> data) {
         for (TopExp_Explorer ex(wire, TopAbs_EDGE); ex.More(); ex.Next()) {
           BRepLib::BuildPCurveForEdgeOnPlane(TopoDS::Edge(ex.Current()), face);
         }
+        // The face is its own exact triangulation: hand it over so the
+        // mesher reuses it instead of re-meshing every facet of a big scan.
+        Handle(Poly_Triangulation) tri = new Poly_Triangulation(3, 1, Standard_False);
+        for (int k = 0; k < 3; ++k) tri->SetNode(k + 1, gp_Pnt(nodes[t[k]]));
+        tri->SetTriangle(1, Poly_Triangle(1, 2, 3));
+        tri->Deflection(0.0);
+        builder.UpdateFace(face, tri);
+        for (int k = 0; k < 3; ++k) {
+          const int a = t[k], b = t[(k + 1) % 3];
+          // The edge runs from its lower-numbered node (see `edge`).
+          const int lo = a < b ? k + 1 : (k + 1) % 3 + 1, hi = a < b ? (k + 1) % 3 + 1 : k + 1;
+          TColStd_Array1OfInteger ids(1, 2);
+          ids(1) = lo;
+          ids(2) = hi;
+          TColStd_Array1OfReal params(1, 2);
+          params(1) = 0.0;
+          params(2) = (nodes[b] - nodes[a]).Modulus();
+          Handle(Poly_PolygonOnTriangulation) poly = new Poly_PolygonOnTriangulation(ids, params);
+          builder.UpdateEdge(edge(a, b), poly, tri);
+        }
         builder.Add(shell, face);
       }
       shell.Closed(Standard_True);
@@ -2446,20 +2468,57 @@ std::unique_ptr<Shape> read_stl(rust::Slice<const uint8_t> data) {
 
 // --- Display / export -------------------------------------------------------
 
+namespace {
+
+// The shape to read triangulations from, meshed to `deflection`. Faces
+// that already carry a fine enough triangulation — an imported mesh, or
+// the untouched facets of one after a boolean — are left alone; only the
+// rest are meshed, and on a COPY, never the caller's shape: BRepMesh
+// stores its triangulation inside the TShape, and the regen cache hands
+// out shallow Solid clones that share one TShape. Meshing the original
+// would bake a stale triangulation into the shared shape, which then
+// corrupts downstream transforms (e.g. a resize's GTransform reuses it →
+// a "floating" top face). With nothing to mesh there is nothing to copy.
+TopoDS_Shape meshed(const TopoDS_Shape& original, double deflection) {
+  const auto bare = [&](const TopoDS_Shape& shape, std::vector<TopoDS_Face>* out) {
+    size_t faces = 0, missing = 0;
+    for (TopExp_Explorer fx(shape, TopAbs_FACE); fx.More(); fx.Next()) {
+      ++faces;
+      TopLoc_Location loc;
+      const Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(TopoDS::Face(fx.Current()), loc);
+      if (!tri.IsNull() && tri->Deflection() <= deflection) continue;
+      ++missing;
+      if (out) out->push_back(TopoDS::Face(fx.Current()));
+    }
+    return std::make_pair(faces, missing);
+  };
+  const auto [faces, missing] = bare(original, nullptr);
+  if (missing == 0) return original;
+  const TopoDS_Shape shape = BRepBuilderAPI_Copy(original, Standard_True, Standard_True).Shape();
+  TopoDS_Shape todo = shape;
+  if (missing < faces) {
+    std::vector<TopoDS_Face> rest;
+    bare(shape, &rest);
+    TopoDS_Compound comp;
+    BRep_Builder builder;
+    builder.MakeCompound(comp);
+    for (const TopoDS_Face& f : rest) builder.Add(comp, f);
+    todo = comp;
+  }
+  BRepMesh_IncrementalMesh mesher(todo, deflection, /*isRelative=*/false,
+                                  /*angDeflection=*/0.5,
+                                  /*isInParallel=*/true);
+  mesher.Perform();
+  return shape;
+}
+
+}  // namespace
+
 Mesh tessellate(const Shape& s, double deflection) {
   return guard("tessellate", [&] {
     Mesh m;
 
-    // Mesh a COPY, never the caller's shape: BRepMesh stores its triangulation
-    // inside the TShape, and the regen cache hands out shallow Solid clones that
-    // share one TShape. Meshing the original would bake a stale triangulation
-    // into the shared shape, which then corrupts downstream transforms (e.g. a
-    // resize's GTransform reuses it → a "floating" top face).
-    const TopoDS_Shape shape = BRepBuilderAPI_Copy(s.shape).Shape();
-    BRepMesh_IncrementalMesh mesher(shape, deflection, /*isRelative=*/false,
-                                    /*angDeflection=*/0.5,
-                                    /*isInParallel=*/true);
-    mesher.Perform();
+    const TopoDS_Shape shape = meshed(s.shape, deflection);
 
     uint32_t base = 0;        // running vertex offset across faces
     // Face id = TopExp face index, incremented for every face so it matches
@@ -2757,12 +2816,8 @@ rust::Vec<double> face_edge_midpoints(const Shape& s, uint32_t index) {
 
 void write_stl(const Shape& s, rust::Str path, double deflection) {
   guard("write_stl", [&] {
-    // Mesh a copy (like tessellate): the export compound shares its sub-shapes'
-    // TShapes with the cached bodies, so meshing in place would bake a stale
-    // triangulation into them and corrupt a later resize.
-    const TopoDS_Shape shape = BRepBuilderAPI_Copy(s.shape).Shape();
-    BRepMesh_IncrementalMesh mesher(shape, deflection, false, 0.5, true);
-    mesher.Perform();
+    // Meshed like tessellate: a copy where anything needs meshing.
+    const TopoDS_Shape shape = meshed(s.shape, deflection);
     StlAPI_Writer writer;
     writer.ASCIIMode() = false;  // compact binary STL
     std::string p(path);

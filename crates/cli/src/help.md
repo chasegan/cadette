@@ -68,8 +68,9 @@ asset must exist; the extension says which format). Every solid in the
 file becomes one body, placed where the file put it (Translate it like a
 primitive). An assembly or multi-part file is one compound body like a
 Pattern's (`solids` in the report says how many): boolean it as one, or
-import the parts separately. A big file costs its parse time on every CLI
-call (the window caches it).
+import the parts separately. A big file costs its parse and the report's
+validity check on every CLI call — about a second per 20,000 triangles
+(the window caches the body).
 - STEP (`.step`/`.stp`): exact B-rep in the file's units converted to the
   document's. Its faces and edges work like any other body's — read them
   with `detail`, then fillet, chamfer, shell, cut or thread. A file that

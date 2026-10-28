@@ -232,8 +232,21 @@ fn main() -> ExitCode {
             } else {
                 serde_json::to_string_pretty(&outcome.value)
             };
-            match text {
-                Ok(t) => println!("{t}"),
+            let t = match text {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            // `println!` would panic if the reader has gone (`cdt … | head`);
+            // a closed pipe just means nobody wants the rest.
+            use std::io::Write as _;
+            let mut out = std::io::stdout().lock();
+            let written = out.write_all(t.as_bytes()).and_then(|()| out.write_all(b"\n")).and_then(|()| out.flush());
+            match written {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
                 Err(e) => {
                     eprintln!("error: {e}");
                     return ExitCode::from(1);
