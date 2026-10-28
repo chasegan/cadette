@@ -85,6 +85,7 @@
 #include <TopoDS_Shell.hxx>
 #include <Message.hxx>
 #include <Message_Messenger.hxx>
+#include <Message_SequenceOfPrinters.hxx>  // not reached through Message_Messenger on every OCCT
 #include <Message_Printer.hxx>
 #include <Interface_Check.hxx>
 #include <cctype>
