@@ -82,10 +82,15 @@
 #include <STEPControl_Reader.hxx>
 #include <STEPControl_Writer.hxx>
 #include <IFSelect_ReturnStatus.hxx>
-#include <ShapeFix_Shape.hxx>
 #include <TopoDS_Shell.hxx>
 #include <Message.hxx>
 #include <Message_Messenger.hxx>
+#include <Message_Printer.hxx>
+#include <Interface_Check.hxx>
+#include <cctype>
+#include <cstring>
+#include <Interface_InterfaceModel.hxx>
+#include <XSControl_WorkSession.hxx>
 #include <sstream>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
@@ -969,6 +974,15 @@ std::unique_ptr<Shape> rotate(const Shape& s, double cx, double cy, double cz,
 std::unique_ptr<Shape> scale(const Shape& s, double sx, double sy, double sz,
                              double ax, double ay, double az) {
   return guard("scale", [&] {
+    if (sx == sy && sy == sz && sx > 0.0) {
+      // A uniform scale is a similarity: gp_Trsf keeps planes, cylinders and
+      // spheres analytic (a GTrsf would turn them into B-splines), which
+      // matters for everything downstream — fillets, threads, STEP export.
+      gp_Trsf t;
+      t.SetScale(gp_Pnt(ax, ay, az), sx);
+      BRepBuilderAPI_Transform xf(s.shape, t, /*copy=*/true);
+      return std::make_unique<Shape>(xf.Shape());
+    }
     gp_GTrsf t;
     t.SetVectorialPart(gp_Mat(sx, 0, 0, 0, sy, 0, 0, 0, sz));
     t.SetTranslationPart(gp_XYZ(ax * (1.0 - sx), ay * (1.0 - sy), az * (1.0 - sz)));
@@ -1689,7 +1703,8 @@ std::unique_ptr<Shape> shell_tracked(const Shape& s,
       throw std::runtime_error(
           "shell: the body is " + std::to_string(solids) +
           " separate solids — shell one body (e.g. the seed before patterning "
-          "it, or each part before the union)");
+          "it, each part before the union, or import an assembly's parts "
+          "separately)");
     }
     TopTools_IndexedMapOfShape in_faces;
     TopExp::MapShapes(s.shape, TopAbs_FACE, in_faces);
@@ -1917,16 +1932,49 @@ std::unique_ptr<Shape> shell(const Shape& s, rust::Slice<const double> anchors,
 
 namespace {
 
+// A printer that keeps what OCCT reports at failure gravity — the parser's
+// "unexpected end of file, line N" — so the error Rust sees can say why.
+class CollectingPrinter : public Message_Printer {
+public:
+  DEFINE_STANDARD_RTTI_INLINE(CollectingPrinter, Message_Printer)
+  CollectingPrinter() { myTraceLevel = Message_Fail; }
+  mutable std::string failures;
+
+protected:
+  void send(const TCollection_AsciiString& text, const Message_Gravity gravity) const override {
+    if (gravity < Message_Fail) return;
+    if (!failures.empty()) failures += "; ";
+    failures += text.ToCString();
+  }
+};
+
 // The STEP translators narrate to OCCT's default messenger, which prints to
-// stdout — where the CLI's JSON and the MCP transport live. Failures reach
-// Rust as exceptions, so the narration is dropped for the duration.
+// stdout — where the CLI's JSON and the MCP transport live. For the duration
+// the default printers are swapped for a collector: the narration is
+// dropped, failures are kept for the error message.
 struct QuietMessenger {
   Message_SequenceOfPrinters saved;
+  Handle(CollectingPrinter) collector = new CollectingPrinter();
   QuietMessenger() {
     saved = Message::DefaultMessenger()->Printers();
     Message::DefaultMessenger()->ChangePrinters().Clear();
+    Message::DefaultMessenger()->AddPrinter(collector);
   }
   ~QuietMessenger() { Message::DefaultMessenger()->ChangePrinters() = saved; }
+  // OCCT's own diagnosis, in a form that reads after a colon.
+  std::string why() const {
+    std::string why = collector->failures;
+    // "**** ERR StepFile : Undefined Parsing: Line 262: ... ****" → the middle.
+    const auto strip = [&](const char* pat) {
+      for (size_t at = why.find(pat); at != std::string::npos; at = why.find(pat)) {
+        why.erase(at, std::strlen(pat));
+      }
+    };
+    strip("**** ERR StepFile : ");
+    strip(" ****");
+    while (!why.empty() && std::isspace(static_cast<unsigned char>(why.back()))) why.pop_back();
+    return why;
+  }
 };
 
 }  // namespace
@@ -1942,8 +1990,22 @@ std::unique_ptr<Shape> read_step(rust::Slice<const uint8_t> data) {
     std::istringstream stream(text);
     STEPControl_Reader reader;
     if (reader.ReadStream("import.step", stream) != IFSelect_RetDone) {
+      const std::string why = quiet.why();
       throw std::runtime_error(
-          "read_step: not a STEP file (the reader could not parse it)");
+          "read_step: could not parse the file (not a STEP file, or truncated)" +
+          (why.empty() ? std::string() : ": " + why));
+    }
+    // The parser drops entities it can't read and carries on; a body with a
+    // hole where a point should be is not an import, it is a trap. Count
+    // the failures and refuse.
+    const Handle(Interface_InterfaceModel) model = reader.WS()->Model();
+    const int syntax_failures =
+        model.IsNull() ? 0 : model->GlobalCheck()->NbFails();
+    if (syntax_failures > 0) {
+      throw std::runtime_error(
+          "read_step: the STEP file has " + std::to_string(syntax_failures) +
+          " syntax error(s), so entities were dropped — re-export it from "
+          "the CAD that made it");
     }
     if (reader.TransferRoots() == 0) {
       throw std::runtime_error("read_step: the STEP file holds no shapes");
@@ -1967,9 +2029,7 @@ std::unique_ptr<Shape> read_step(rust::Slice<const uint8_t> data) {
       for (TopExp_Explorer ex(all, TopAbs_SHELL, TopAbs_SOLID); ex.More(); ex.Next()) {
         const TopoDS_Shell sh = TopoDS::Shell(ex.Current());
         if (!BRep_Tool::IsClosed(sh)) continue;
-        BRepBuilderAPI_MakeSolid mk(sh);
-        if (!mk.IsDone()) continue;
-        TopoDS_Solid sol = mk.Solid();
+        TopoDS_Solid sol = BRepBuilderAPI_MakeSolid(sh).Solid();
         BRepLib::OrientClosedSolid(sol);
         builder.Add(comp, sol);
         single = sol;
@@ -1980,16 +2040,12 @@ std::unique_ptr<Shape> read_step(rust::Slice<const uint8_t> data) {
       throw std::runtime_error(
           "read_step: the STEP file has no solid bodies (surfaces or curves only)");
     }
-    TopoDS_Shape result = solids == 1 ? single : TopoDS_Shape(comp);
-
-    // Exporters disagree on tolerances and orientation; heal only when the
-    // checker objects, so a clean file keeps its topology verbatim.
-    if (!BRepCheck_Analyzer(result).IsValid()) {
-      ShapeFix_Shape fix(result);
-      fix.Perform();
-      result = fix.Shape();
-    }
-    return std::make_unique<Shape>(result);
+    // The reader has already run OCCT's FromSTEP healing sequence on every
+    // shape; a second ShapeFix pass never fired in testing and would take
+    // minutes on a large assembly under the kernel lock, as would a
+    // BRepCheck pass here (28 s on a 32 MB file). The report's `valid` flag
+    // tells the user what the checker thinks when they ask.
+    return std::make_unique<Shape>(solids == 1 ? single : TopoDS_Shape(comp));
   });
 }
 

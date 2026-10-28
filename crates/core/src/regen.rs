@@ -248,6 +248,9 @@ pub struct RegenCache<B> {
 
 struct CacheEntry<B> {
     kind: FeatureKind,
+    /// What the feature consumed beyond its kind and inputs — an Import's
+    /// file bytes and the document unit (see [`kind_fingerprint`]).
+    fingerprint: u64,
     /// The version of each input at the time this feature was built.
     input_versions: Vec<u64>,
     version: u64,
@@ -337,8 +340,10 @@ impl<B: Clone> RegenCache<B> {
                 .map(|id| self.entries.get(id).map_or(0, |e| e.version))
                 .collect();
 
+            let fingerprint = kind_fingerprint(document, &feature.kind);
             let reusable = self.entries.get(&feature.id).is_some_and(|e| {
                 e.kind == feature.kind
+                    && e.fingerprint == fingerprint
                     && e.input_versions == input_versions
                     && inputs.iter().all(|id| bodies.contains_key(id))
             });
@@ -359,6 +364,7 @@ impl<B: Clone> RegenCache<B> {
                         feature.id,
                         CacheEntry {
                             kind: feature.kind.clone(),
+                            fingerprint,
                             input_versions,
                             version: self.next_version,
                             body: body.clone(),
@@ -387,6 +393,20 @@ impl<B: Clone> RegenCache<B> {
             visible,
             errors,
         }
+    }
+}
+
+/// Everything a feature's result depends on that its kind does not spell
+/// out. An Import names its asset, but builds from the asset's bytes scaled
+/// by the document unit; if either changes under the same name the cached
+/// body is stale. Zero for every other kind.
+fn kind_fingerprint(document: &Document, kind: &FeatureKind) -> u64 {
+    match kind {
+        FeatureKind::Import { asset } => {
+            let bytes = document.assets.fingerprint(asset).unwrap_or(0);
+            bytes ^ document.units.mm_per_unit().to_bits().rotate_left(17)
+        }
+        _ => 0,
     }
 }
 

@@ -46,6 +46,24 @@ impl Document {
         }
     }
 
+    /// Drop the assets no feature replays any more (a deleted import's
+    /// file), returning how many went. The archive writer skips them
+    /// anyway; pruning before a new import frees the plain name.
+    pub fn prune_assets(&mut self) -> usize {
+        let before = self.assets.len();
+        let referenced: std::collections::BTreeSet<String> = self
+            .history
+            .features()
+            .iter()
+            .filter_map(|f| match &f.kind {
+                FeatureKind::Import { asset } => Some(asset.clone()),
+                _ => None,
+            })
+            .collect();
+        self.assets.retain(|name| referenced.contains(name));
+        before - self.assets.len()
+    }
+
     /// Whether any feature in the history (active or not) replays `asset`.
     pub fn references_asset(&self, asset: &str) -> bool {
         self.history

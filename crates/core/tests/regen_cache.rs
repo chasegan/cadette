@@ -250,3 +250,33 @@ fn suppress_then_unsuppress_rebuilds_only_when_needed() {
     cache.regenerate(&doc, &mut backend);
     assert_eq!(backend.ops, 4, "only the union rebuilds; box and cylinder reused");
 }
+
+#[test]
+fn an_import_rebuilds_when_its_file_or_the_unit_changes_under_the_same_name() {
+    let mut doc = Document::new("imp");
+    let asset = doc.assets.insert("servo.step", vec![0u8; 3]);
+    let servo = doc.add("servo", FeatureKind::Import { asset: asset.clone() });
+    let mut cache = RegenCache::new();
+    let mut backend = Counting::default();
+    let regen = cache.regenerate(&doc, &mut backend);
+    assert_eq!(regen.body(servo).unwrap(), "step(3b,1)");
+    assert_eq!(backend.ops, 1);
+
+    // Same kind, same name: reused.
+    let regen = cache.regenerate(&doc, &mut backend);
+    assert_eq!(regen.body(servo).unwrap(), "step(3b,1)");
+    assert_eq!(backend.ops, 1);
+
+    // Different bytes under the same name (an undo-then-re-import, or a
+    // reload): the kind is unchanged but the body must not be.
+    doc.assets.set(&asset, vec![0u8; 5]);
+    let regen = cache.regenerate(&doc, &mut backend);
+    assert_eq!(regen.body(servo).unwrap(), "step(5b,1)");
+    assert_eq!(backend.ops, 2);
+
+    // A unit change rescales the import.
+    doc.units = cdt_core::LengthUnit::Inch;
+    let regen = cache.regenerate(&doc, &mut backend);
+    assert_eq!(regen.body(servo).unwrap(), &format!("step(5b,{})", 1.0 / 25.4));
+    assert_eq!(backend.ops, 3);
+}

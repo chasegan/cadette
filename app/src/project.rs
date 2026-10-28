@@ -1,7 +1,7 @@
 //! Project and STL file I/O: saving/opening `.cdt` project archives and
 //! exporting the visible model as STL, including the `rfd` file dialogs.
 
-use cdt_core::{Document, RegenCache};
+use cdt_core::{DocEdit, Document, RegenCache};
 use cdt_kernel::Solid;
 use cdt_project::ProjectFile;
 use cdt_render::CameraPose;
@@ -136,16 +136,30 @@ impl Modeler {
     }
 
     /// Store `bytes` as the asset `file` and add an Import feature replaying
-    /// it, selecting the new feature. Returns true if the document changed.
+    /// it — the same [`DocEdit::ImportStep`] the CLI and the link apply, as
+    /// one undo step, selecting the new feature. A file the kernel can't
+    /// read is refused before anything lands. Returns true if the document
+    /// changed.
     pub(crate) fn import_step_bytes(&mut self, file: &str, bytes: Vec<u8>) -> bool {
+        let edits = [DocEdit::import_step(file, &bytes, None)];
+        if let Err(e) = cdt_session::check_imports(&edits) {
+            self.status = Some(format!("Import failed: {}", e.error));
+            return false;
+        }
         let before = self.doc.clone();
-        let asset = self.doc.assets.insert(file, bytes);
-        let name = asset.rfind('.').filter(|&dot| dot > 0).map(|dot| asset[..dot].to_string()).unwrap_or_else(|| asset.clone());
-        let id = self.doc.add(name, cdt_core::FeatureKind::Import { asset: asset.clone() });
+        let outcomes = match self.doc.apply_edits(&edits) {
+            Ok(o) => o,
+            Err(e) => {
+                self.status = Some(format!("Import failed: {}", e.error));
+                return false;
+            }
+        };
         self.record_undo(before);
-        self.ui.selected = Some(id);
+        let id = outcomes[0].created();
+        self.ui.selected = id.or(self.ui.selected);
         self.selection.clear();
-        self.status = Some(format!("Imported {asset}"));
+        let name = id.and_then(|id| self.doc.history.get(id)).map(|f| f.name.clone()).unwrap_or_default();
+        self.status = Some(format!("Imported {file} as {name}"));
         true
     }
 

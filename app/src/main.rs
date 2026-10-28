@@ -239,6 +239,12 @@ fn doc_signature(doc: &Document) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     serde_json::to_vec(doc).unwrap_or_default().hash(&mut h);
+    // Assets are not in the JSON; a swapped file under the same name still
+    // counts as a change.
+    for name in doc.assets.names() {
+        name.hash(&mut h);
+        doc.assets.fingerprint(name).hash(&mut h);
+    }
     h.finish()
 }
 
@@ -3222,6 +3228,50 @@ mod tests {
             _ => None,
         });
         assert_eq!(edges, Some(2));
+    }
+
+    #[test]
+    fn importing_a_step_adds_an_undoable_feature_and_refuses_junk() {
+        let cube = cdt_kernel::Solid::cuboid(25.4, 25.4, 25.4).unwrap();
+        let path = std::env::temp_dir().join(format!("cdt-app-import-{}.step", std::process::id()));
+        cube.write_step(path.to_str().unwrap()).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        let mut m = Modeler::new();
+        m.doc = Document::new("imp");
+        assert!(m.import_step_bytes("cube.step", bytes.clone()));
+        let _ = m.mesh();
+        assert!(m.ui.errors.is_empty(), "{:?}", m.ui.errors);
+        let v = m.bodies.first().expect("one body").solid.volume().unwrap();
+        assert!((v - 25.4f64.powi(3)).abs() < 1e-6, "volume {v}");
+        let first = m.doc.history.features()[0].id;
+        assert_eq!(m.ui.selected, Some(first), "the import is selected");
+        assert_eq!(m.doc.history.features()[0].name, "cube");
+
+        // The same file again: one asset, a numbered feature.
+        assert!(m.import_step_bytes("cube.step", bytes));
+        assert_eq!(m.doc.assets.len(), 1);
+        assert_eq!(m.doc.history.len(), 2);
+        assert_eq!(m.doc.history.features()[1].name, "cube 2");
+
+        // Junk is refused before it touches the document.
+        assert!(!m.import_step_bytes("junk.step", b"not a step file".to_vec()));
+        assert!(m.status.as_deref().unwrap_or("").starts_with("Import failed: the file can't be imported: junk.step"), "{:?}", m.status);
+        assert_eq!(m.doc.history.len(), 2);
+        assert!(!m.doc.assets.contains("junk.step"));
+
+        // Each import is one undo step; the asset rides the undo stack.
+        assert!(m.undo());
+        assert_eq!(m.doc.history.len(), 1);
+        assert!(m.undo());
+        assert_eq!(m.doc.history.len(), 0);
+        assert!(m.doc.assets.is_empty() || !m.doc.references_asset("cube.step"));
+        assert!(m.redo());
+        assert_eq!(m.doc.history.len(), 1);
+        assert_eq!(m.doc.assets.get("cube.step").map(|b| b.len()), Some(m.doc.assets.get("cube.step").unwrap().len()));
+        let _ = m.mesh();
+        assert!(m.ui.errors.is_empty(), "redo rebuilds from the asset: {:?}", m.ui.errors);
     }
 
     #[test]

@@ -520,8 +520,9 @@ mod bridge {
         // --- Data exchange ------------------------------------------------
         /// Read a STEP file's bytes: every solid in it (closed free shells
         /// are promoted to solids), as one solid or a compound of them, in
-        /// the file's units converted to millimetres. Healed if OCCT's
-        /// checker rejects what the reader produced.
+        /// the file's units converted to millimetres. A file the parser
+        /// can't fully read (truncated, syntax errors) is refused, not
+        /// patched.
         fn read_step(data: &[u8]) -> Result<UniquePtr<Shape>>;
 
         /// Write the shape as an AP214 STEP file.

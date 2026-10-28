@@ -67,8 +67,13 @@ exist). Every solid in the file becomes one body, exact B-rep in the file's
 units converted to the document's, placed where the file put it (Translate
 it like a primitive). Its faces and edges work like any other body's — read
 them with `detail`, then fillet, chamfer, shell, cut or thread. An assembly
-file (several solids) is one compound body like a Pattern's: boolean it as
-one, or import the parts separately. Surface-only files are refused.
+file (several solids) is one compound body like a Pattern's (`solids` in
+the report says how many): boolean it as one, or import the parts
+separately. A file that isn't STEP, is truncated, has syntax errors or holds
+no solid is refused at import, so nothing lands. Topology is exact but not
+necessarily identical to the exporter's (periodic faces may be split), so
+edge anchors from before an export don't carry across. A big file costs its
+parse time on every CLI call (the window caches it).
 `cadette_export_step` writes the visible bodies back out for other CAD.
 
 Sketch faces: `{"Sketch":{"plane":PLANE,"profile":{"Rectangle":{"width":w,"height":h}}}}`

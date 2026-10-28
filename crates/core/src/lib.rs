@@ -31,7 +31,7 @@ pub mod units;
 pub use assets::Assets;
 pub use backend::GeometryBackend;
 pub use document::Document;
-pub use edit::{BatchError, DocEdit, EditError, EditOutcome};
+pub use edit::{decode_import_data, import_feature_name, BatchError, DocEdit, EditError, EditOutcome};
 pub use features::{
     thread_profile, BooleanOp, EdgeAnchor, FaceAnchor, Feature, FeatureId, FeatureKind, Helix,
     PatternLayout, SweepPath,

@@ -60,6 +60,9 @@ pub struct BodyReport {
     pub volume: f64,
     pub surface_area: f64,
     pub centroid: [f64; 3],
+    /// How many separate solids the body holds — more than one for a
+    /// Pattern, a Group, or an imported assembly.
+    pub solids: usize,
     pub faces: usize,
     pub edges: usize,
     /// OCCT's validity check (closed, non-self-intersecting).
@@ -166,6 +169,7 @@ pub fn build_report(doc: &Document, regen: &Regeneration<Body, KernelError>) -> 
                 volume: props.map(|p| p.volume).unwrap_or(f64::NAN),
                 surface_area: props.map(|p| p.surface_area).unwrap_or(f64::NAN),
                 centroid: props.map(|p| p.centroid).unwrap_or([f64::NAN; 3]),
+                solids: topo.as_ref().map(|t| t.solids as usize).unwrap_or(0),
                 faces: topo.as_ref().map(|t| t.faces as usize).unwrap_or(0),
                 edges: topo.as_ref().map(|t| t.edges as usize).unwrap_or(0),
                 valid: topo.as_ref().map(|t| t.is_valid).unwrap_or(false),

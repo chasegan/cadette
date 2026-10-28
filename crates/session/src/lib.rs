@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use cdt_core::{
-    BatchError, DocEdit, Document, EditOutcome, FeatureId, FeatureKind, MissingReason,
+    BatchError, DocEdit, Document, EditError, EditOutcome, FeatureId, FeatureKind, MissingReason,
     RegenCache, RegenError, Regeneration, SolveStatus,
 };
 use cdt_kernel::{Body, KernelBackend, KernelError, Solid};
@@ -146,6 +146,7 @@ impl Session {
     /// Apply a batch of edits as one undo entry (all-or-nothing, see
     /// [`Document::apply_edits`]) and rebuild.
     pub fn apply(&mut self, edits: &[DocEdit]) -> Result<Vec<EditOutcome>, BatchError> {
+        check_imports(edits)?;
         let before = self.doc.clone();
         let outcomes = self.doc.apply_edits(edits)?;
         self.push_undo(before);
@@ -254,6 +255,23 @@ impl Session {
         solid.write_step(&path.as_ref().to_string_lossy())?;
         Ok(())
     }
+}
+
+/// Refuse a batch whose [`DocEdit::ImportStep`] the kernel can't read, before
+/// anything lands: a file that isn't STEP, is truncated, or holds no solid
+/// would otherwise sit in the project as a permanently failed feature with
+/// its bytes. Every host that applies edits calls this first.
+pub fn check_imports(edits: &[DocEdit]) -> Result<(), BatchError> {
+    for (index, edit) in edits.iter().enumerate() {
+        if let DocEdit::ImportStep { file, data, .. } = edit {
+            let bytes = cdt_core::decode_import_data(data).map_err(|error| BatchError { index, error })?;
+            if let Err(e) = Solid::from_step(&bytes) {
+                let reason = e.0.strip_prefix("read_step: ").unwrap_or(&e.0).to_string();
+                return Err(BatchError { index, error: EditError::BadFile(format!("{file}: {reason}")) });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A human-readable message for a regeneration error, naming the features

@@ -100,3 +100,42 @@ fn export_and_mesh_and_save_round_trip() {
     let mut empty = Session::new(Document::new("e"));
     assert!(empty.export_stl(dir.join("never.stl"), 0.1).is_err(), "nothing to export");
 }
+
+#[test]
+fn a_step_import_is_checked_before_it_lands_and_survives_a_save() {
+    let bytes = {
+        let path = std::env::temp_dir().join(format!("cdt-session-import-{}.step", std::process::id()));
+        cdt_kernel::Solid::cuboid(10.0, 20.0, 30.0).unwrap().write_step(path.to_str().unwrap()).unwrap();
+        let b = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        b
+    };
+    let mut s = Session::new(Document::new("imp"));
+
+    // Junk is refused as a batch error — nothing lands, no undo entry.
+    let err = s.apply(&[DocEdit::import_step("junk.step", b"hello", None)]).unwrap_err();
+    assert_eq!(err.index, 0);
+    assert!(err.error.to_string().contains("junk.step: could not parse"), "{err}");
+    assert!(s.document().history.is_empty());
+    assert!(s.document().assets.is_empty());
+    assert!(!s.can_undo());
+
+    // A real file lands, builds, and is in the saved archive.
+    let out = s.apply(&[DocEdit::import_step("block.step", &bytes, None)]).unwrap();
+    let id = out[0].created().unwrap();
+    let r = s.report();
+    assert!(r.ok, "{:?}", r.errors);
+    assert_eq!(r.bodies.len(), 1);
+    assert!((r.bodies[0].volume - 6000.0).abs() < 1e-6);
+    assert_eq!(r.bodies[0].solids, 1);
+    assert_eq!(r.features[0].summary, "Import block.step");
+
+    let path = std::env::temp_dir().join(format!("cdt-session-import-{}.cdt", std::process::id()));
+    s.save_as(&path).unwrap();
+    let mut again = Session::open(&path).unwrap();
+    std::fs::remove_file(&path).ok();
+    let r = again.report();
+    assert!(r.ok, "{:?}", r.errors);
+    assert!((r.bodies[0].volume - 6000.0).abs() < 1e-6);
+    assert!(again.body(id).is_some());
+}

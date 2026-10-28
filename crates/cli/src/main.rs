@@ -93,6 +93,7 @@ enum Command {
     /// Write the visible bodies as a STEP file (exact B-rep, in millimetres).
     ExportStep {
         file: PathBuf,
+        /// Where to write the STEP file.
         #[arg(short, long)]
         out: PathBuf,
     },
@@ -150,7 +151,9 @@ enum LiveCommand {
     },
     /// Import a STEP file into the open project as one undo step.
     Import {
+        /// The STEP file (.step / .stp) to import.
         step: PathBuf,
+        /// The feature's name (default: the STEP file's stem).
         #[arg(long)]
         name: Option<String>,
         /// Also save the project to its file afterwards.

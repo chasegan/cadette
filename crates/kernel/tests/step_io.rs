@@ -80,9 +80,36 @@ fn import_scales_into_the_document_unit() {
 }
 
 #[test]
-fn garbage_and_empty_files_are_refused_by_name() {
+fn garbage_empty_truncated_and_damaged_files_are_refused_by_name() {
     let err = Solid::from_step(b"hello, not a step file").err().unwrap();
-    assert!(err.0.contains("not a STEP file"), "{}", err.0);
+    assert!(err.0.contains("not a STEP file, or truncated"), "{}", err.0);
     let err = Solid::from_step(b"").err().unwrap();
     assert!(err.0.contains("empty"), "{}", err.0);
+
+    // A file cut in half: the parser's own diagnosis comes through.
+    let bytes = step_bytes(&bored_block());
+    let err = Solid::from_step(&bytes[..bytes.len() / 2]).err().unwrap();
+    assert!(err.0.contains("unexpected end of file"), "{}", err.0);
+
+    // One entity made unparsable: OCCT would drop it and hand back a body
+    // with a hole; the import refuses instead.
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    let at = text.find("CARTESIAN_POINT(").unwrap();
+    let damaged = format!("{}CARTESIAN_POINT(!!{}", &text[..at], &text[at + "CARTESIAN_POINT(".len()..]);
+    let err = Solid::from_step(damaged.as_bytes()).err().unwrap();
+    assert!(err.0.contains("syntax error"), "{}", err.0);
+}
+
+#[test]
+fn a_uniform_scale_keeps_imported_surfaces_analytic() {
+    let bytes = step_bytes(&bored_block());
+    let mut backend = KernelBackend::default();
+    backend.begin_feature(FeatureId(1));
+    let inch = backend.import_step(&bytes, 1.0 / 25.4).unwrap();
+    let kinds: Vec<_> = inch.faces().unwrap().into_iter().map(|f| f.surface).collect();
+    assert!(
+        kinds.iter().any(|k| matches!(k, cdt_kernel::SurfaceKind::Cylinder)),
+        "the bore stays a cylinder after scaling, not a B-spline: {kinds:?}"
+    );
+    assert!(!kinds.iter().any(|k| matches!(k, cdt_kernel::SurfaceKind::BSpline)), "{kinds:?}");
 }

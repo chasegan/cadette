@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 
-use cdt_core::FeatureId;
+use cdt_core::{DocEdit, FeatureId};
 use cdt_render::{Controller, HeadlessRenderer, Pick, RenderOptions};
 use cdt_session::link::{socket_path, Instance, LinkRequest, LinkResponse};
 use cdt_session::{body_detail, build_report};
@@ -63,13 +63,23 @@ impl Link {
                             let response = match serde_json::from_str::<LinkRequest>(&line) {
                                 Err(e) => LinkResponse::error(format!("malformed request: {e}")),
                                 Ok(request) => {
+                                    let wait = match &request {
+                                        LinkRequest::Apply { batch, .. }
+                                            if batch.edits.iter().any(|e| matches!(e, DocEdit::ImportStep { .. })) =>
+                                        {
+                                            600
+                                        }
+                                        _ => 30,
+                                    };
                                     let (reply_tx, reply_rx) = mpsc::sync_channel(1);
                                     if tx.send((request, reply_tx)).is_err() {
                                         LinkResponse::error("the window is closing")
                                     } else {
                                         // The UI thread handles it on its next frame; a
                                         // hidden window may not be drawing, so wait a while.
-                                        match reply_rx.recv_timeout(std::time::Duration::from_secs(30)) {
+                                        // An import parses its STEP twice (check, then
+                                        // regen), which can take minutes on an assembly.
+                                        match reply_rx.recv_timeout(std::time::Duration::from_secs(wait)) {
                                             Ok(r) => r,
                                             Err(_) => LinkResponse::error(
                                                 "the window did not answer (is it hidden or busy?)",
@@ -211,6 +221,9 @@ impl Modeler {
             LinkRequest::Apply { batch, save } => {
                 if self.busy() {
                     return (LinkResponse::error("the user is mid-edit (dragging or sketching); try again shortly"), false);
+                }
+                if let Err(e) = cdt_session::check_imports(&batch.edits) {
+                    return (LinkResponse::error(e.to_string()), false);
                 }
                 let before = self.doc.clone();
                 let outcomes = match self.doc.apply_edits(&batch.edits) {

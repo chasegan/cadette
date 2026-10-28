@@ -67,7 +67,9 @@ pub enum ProjectError {
 #[derive(Clone, Debug, Default)]
 pub struct ProjectFile {
     pub document: Document,
-    /// Every archive entry other than the document, by name (e.g. `view.json`).
+    /// Every archive entry other than the document and its assets, by name
+    /// (e.g. `view.json`). Names under `assets/` are reserved for
+    /// [`Document::assets`] and are not written.
     pub extras: BTreeMap<String, Vec<u8>>,
 }
 
@@ -154,7 +156,11 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<ProjectFile, ProjectError> {
         if entry.name() == DOCUMENT_ENTRY {
             document = Some(document_from_json(&bytes)?);
         } else if let Some(name) = entry.name().strip_prefix(ASSET_DIR) {
-            assets.push((name.to_string(), bytes));
+            // Only bare file names: a hand-made `assets/../x` is dropped,
+            // and the feature that names it reports its file missing.
+            if cdt_core::Assets::is_clean_name(name) {
+                assets.push((name.to_string(), bytes));
+            }
         } else {
             extras.insert(entry.name().to_string(), bytes);
         }
@@ -179,12 +185,15 @@ pub fn write<W: Write + Seek>(writer: W, project: &ProjectFile) -> Result<(), Pr
     zip.start_file(DOCUMENT_ENTRY, opts)?;
     zip.write_all(&document_to_json(&project.document)?)?;
     for (name, bytes) in &project.document.assets {
-        if project.document.references_asset(name) {
+        if project.document.references_asset(name) && cdt_core::Assets::is_clean_name(name) {
             zip.start_file(format!("{ASSET_DIR}{name}"), opts)?;
             zip.write_all(bytes)?;
         }
     }
     for (name, bytes) in &project.extras {
+        if name.starts_with(ASSET_DIR) {
+            continue; // reserved for the document's assets
+        }
         zip.start_file(name, opts)?;
         zip.write_all(bytes)?;
     }
@@ -229,6 +238,40 @@ mod tests {
         assert_eq!(back.document.assets.get(&kept).map(|b| b.as_ref()), Some(&b"ISO-10303-21;"[..]));
         assert!(back.document.assets.get(&orphan).is_none());
         assert!(back.extras.is_empty(), "assets are not extras: {:?}", back.extras.keys());
+    }
+
+    #[test]
+    fn asset_entries_with_a_directory_part_are_dropped_and_extras_never_shadow_assets() {
+        // A hand-made archive: good and bad asset names, an extra under assets/.
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buf);
+            let opts = zip::write::SimpleFileOptions::default();
+            let mut doc = sample();
+            doc.add("ok", FeatureKind::Import { asset: "ok.step".into() });
+            doc.add("evil", FeatureKind::Import { asset: "../evil.step".into() });
+            zip.start_file(DOCUMENT_ENTRY, opts).unwrap();
+            zip.write_all(&document_to_json(&doc).unwrap()).unwrap();
+            for name in ["assets/ok.step", "assets/../evil.step", "assets/sub/x.step", "assets//abs.step"] {
+                zip.start_file(name, opts).unwrap();
+                zip.write_all(b"ISO-10303-21;").unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        let back = read(Cursor::new(buf.into_inner())).unwrap();
+        let names: Vec<&str> = back.document.assets.names().collect();
+        assert_eq!(names, ["ok.step"]);
+        assert!(back.extras.is_empty());
+
+        // Writing: an extra under assets/ is skipped rather than colliding.
+        let mut project = back;
+        project.extras.insert("assets/ok.step".into(), b"shadow".to_vec());
+        project.extras.insert("view.json".into(), b"{}".to_vec());
+        let mut buf = Cursor::new(Vec::new());
+        write(&mut buf, &project).unwrap();
+        let again = read(Cursor::new(buf.into_inner())).unwrap();
+        assert_eq!(again.document.assets.get("ok.step").map(|b| b.as_ref()), Some(&b"ISO-10303-21;"[..]));
+        assert_eq!(again.extras.keys().collect::<Vec<_>>(), ["view.json"]);
     }
 
     #[test]

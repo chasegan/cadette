@@ -88,6 +88,8 @@ pub enum EditError {
     NotATransform { kind: String },
     #[error("the file data is not valid base64: {0}")]
     BadData(String),
+    #[error("the file can't be imported: {0}")]
+    BadFile(String),
     #[error("the history would no longer be valid: {}", .0.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "))]
     Dependency(Vec<DependencyError>),
 }
@@ -140,13 +142,17 @@ impl DocEdit {
                 })
             }
             DocEdit::ImportStep { name, file, data } => {
-                use base64::Engine as _;
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(data.trim())
-                    .map_err(|e| EditError::BadData(e.to_string()))?;
+                let bytes = decode_import_data(data)?;
+                // A deleted import's orphaned file would otherwise keep the
+                // plain name and push this one to `name 2`.
+                doc.prune_assets();
                 let asset = doc.assets.insert(file, bytes);
                 let kind = FeatureKind::Import { asset: asset.clone() };
-                let name = name.clone().unwrap_or_else(|| import_feature_name(&asset));
+                let name = match name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+                    Some(given) => given.to_string(),
+                    // From the file, not the asset: `servo 2.step` is still a servo.
+                    None => import_feature_name(doc, file.rsplit(['/', '\\']).next().unwrap_or(file)),
+                };
                 EditOutcome::Created(doc.add(name, kind))
             }
             DocEdit::Replace { id, kind } => {
@@ -201,11 +207,39 @@ impl DocEdit {
 }
 
 /// The feature name an import gets by default: the file's stem (`servo` for
-/// `servo.step`).
-fn import_feature_name(asset: &str) -> String {
-    match asset.rfind('.') {
-        Some(dot) if dot > 0 => asset[..dot].to_string(),
-        _ => asset.to_string(),
+/// `servo.step`), numbered from 2 when a feature already has it.
+pub fn import_feature_name(doc: &Document, file: &str) -> String {
+    let stem = match file.rfind('.') {
+        Some(dot) if dot > 0 => &file[..dot],
+        _ => file,
+    };
+    if !doc.history.features().iter().any(|f| f.name == stem) {
+        return stem.to_string();
+    }
+    format!("{stem} {}", doc.history.next_name_number(stem).max(2))
+}
+
+/// The bytes behind an [`DocEdit::ImportStep`]'s `data`: standard base64,
+/// padded or not.
+pub fn decode_import_data(data: &str) -> Result<Vec<u8>, EditError> {
+    use base64::Engine as _;
+    const LENIENT: base64::engine::GeneralPurpose = base64::engine::GeneralPurpose::new(
+        &base64::alphabet::STANDARD,
+        base64::engine::general_purpose::PAD
+            .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent),
+    );
+    LENIENT.decode(data.trim()).map_err(|e| EditError::BadData(e.to_string()))
+}
+
+impl DocEdit {
+    /// An [`DocEdit::ImportStep`] for a file already read into memory.
+    pub fn import_step(file: impl Into<String>, bytes: &[u8], name: Option<String>) -> Self {
+        use base64::Engine as _;
+        DocEdit::ImportStep {
+            name,
+            file: file.into(),
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        }
     }
 }
 
@@ -319,15 +353,35 @@ mod tests {
         assert_eq!(f.kind, FeatureKind::Import { asset: "servo.step".into() });
         assert_eq!(doc.assets.get("servo.step").map(|b| b.as_ref()), Some(&b"ISO-10303-21;"[..]));
 
-        // The same file again shares the asset; a different file with the
-        // same name gets its own.
-        doc.apply_edits(&[edit]).unwrap();
+        // The same file again shares the asset and numbers the feature; a
+        // different file with the same name gets its own asset.
+        let out = doc.apply_edits(std::slice::from_ref(&edit)).unwrap();
         assert_eq!(doc.assets.len(), 1);
+        assert_eq!(doc.history.get(out[0].created().unwrap()).unwrap().name, "servo 2");
         let other = DocEdit::ImportStep { name: Some("Bolt".into()), file: "servo.step".into(), data: "b3RoZXI=".into() };
         let out = doc.apply_edits(&[other]).unwrap();
         let f = doc.history.get(out[0].created().unwrap()).unwrap();
         assert_eq!(f.name, "Bolt");
         assert_eq!(f.kind, FeatureKind::Import { asset: "servo 2.step".into() });
+
+        // Unpadded base64 and a blank name are both fine.
+        let out = doc
+            .apply_edits(&[DocEdit::ImportStep { name: Some("  ".into()), file: "servo.step".into(), data: "b3RoZXI".into() }])
+            .unwrap();
+        let f = doc.history.get(out[0].created().unwrap()).unwrap();
+        assert_eq!(f.name, "servo 3");
+        assert_eq!(f.kind, FeatureKind::Import { asset: "servo 2.step".into() }, "the same bytes as Bolt, shared");
+
+        // Removing an import and importing a different same-named file: the
+        // orphan is pruned first, so the plain name is free again.
+        let first = doc.history.features()[0].id;
+        doc.apply_edits(&[DocEdit::Remove { id: first }, DocEdit::Remove { id: doc.history.features()[1].id }]).unwrap();
+        assert_eq!(doc.history.len(), 2, "{:?}", doc.history.features().iter().map(|f| &f.name).collect::<Vec<_>>());
+        let out = doc.apply_edits(&[DocEdit::import_step("servo.step", b"third", None)]).unwrap();
+        let f = doc.history.get(out[0].created().unwrap()).unwrap();
+        assert_eq!(f.kind, FeatureKind::Import { asset: "servo.step".into() });
+        assert!(doc.assets.contains("servo 2.step"), "still used by Bolt");
+        assert_eq!(doc.assets.len(), 2);
 
         // Bad base64 is refused and leaves the document untouched.
         let before = doc.history.len();
