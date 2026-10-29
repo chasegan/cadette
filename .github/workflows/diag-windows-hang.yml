@@ -10,11 +10,13 @@ on:
       package:
         description: cargo package
         default: cdt-kernel
+      # An empty dispatch input falls back to its default, so "none" and
+      # "all" are the explicit ways to say so.
       test:
-        description: integration test target (empty = the package's unit tests)
+        description: integration test target ("none" = the package's unit tests)
         default: chamfer_shell
       filter:
-        description: test-name filter (empty = all)
+        description: test-name filter ("all" = every test)
         default: a_shell_names_the_inner_walls
       seconds:
         description: how long to wait before dumping stacks
@@ -40,7 +42,7 @@ jobs:
       - name: Build the test binary
         id: build
         run: |
-          $target = if ("${{ inputs.test }}" -ne "") { "--test", "${{ inputs.test }}" } else { @() }
+          $target = if ("${{ inputs.test }}" -ne "none") { "--test", "${{ inputs.test }}" } else { @() }
           $lines = cargo test -p ${{ inputs.package }} @target --no-run --message-format=json 2>$null
           $exe = $lines | ForEach-Object { $_ | ConvertFrom-Json } |
             Where-Object { $_.reason -eq "compiler-artifact" -and $_.executable } |
@@ -61,7 +63,8 @@ jobs:
       - name: Run, wait, dump
         run: |
           $exe = "${{ steps.build.outputs.exe }}"
-          $args = @("${{ inputs.filter }}", "--test-threads=1", "--nocapture")
+          $filter = if ("${{ inputs.filter }}" -ne "all") { @("${{ inputs.filter }}") } else { @() }
+          $args = $filter + @("--test-threads=1", "--nocapture")
           $p = Start-Process -FilePath $exe -ArgumentList $args -PassThru -NoNewWindow `
                  -RedirectStandardOutput out.txt -RedirectStandardError err.txt
           Wait-Process -Id $p.Id -Timeout ${{ inputs.seconds }} -ErrorAction SilentlyContinue
