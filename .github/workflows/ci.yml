@@ -27,8 +27,6 @@ jobs:
           - os: windows-latest
             label: Windows
     runs-on: ${{ matrix.os }}
-    # A hung test must not hold a runner for GitHub's six-hour default.
-    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
 
@@ -80,12 +78,16 @@ jobs:
 
       - name: Run tests (macOS)
         if: runner.os == 'macOS'
+        # A hung test must not hold a runner for GitHub's six-hour default.
+        # (On the step, not the job: a cold vcpkg OCCT build alone is ~2 h.)
+        timeout-minutes: 30
         run: |
           export CDT_OCCT_PREFIX="$(brew --prefix opencascade)"
           cargo test --workspace --locked
 
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
+        timeout-minutes: 30
         # build.rs derives the OCCT prefix from VCPKG_INSTALLATION_ROOT, which
         # the runner predefines. cdt-render is excluded until its wgpu-device
         # tests are verified against the runner's WARP adapter.
