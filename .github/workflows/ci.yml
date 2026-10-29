@@ -68,6 +68,4 @@ jobs:
         timeout-minutes: 30
         # cdt-render is excluded until its wgpu-device tests are verified
         # against the runner's WARP adapter.
-        # One test at a time, so a hang is named by the last line of the log
-        # instead of hiding among the tests in flight on other threads.
-        run: cargo test --workspace --locked --exclude cdt-render --no-fail-fast -- --test-threads=1
+        run: cargo test --workspace --locked --exclude cdt-render --no-fail-fast
