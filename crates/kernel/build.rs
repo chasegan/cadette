@@ -70,7 +70,8 @@ fn install_hint(target_os: &str) -> &'static str {
         "windows" => {
             "Install with `vcpkg install opencascade --triplet x64-windows`, or unzip an \
              official `opencascade-<version>-vc14-64.zip` from OCCT's GitHub releases and \
-             point CDT_OCCT_PREFIX at it (its `win64/vc14/bin` must be on PATH at runtime)"
+             point CDT_OCCT_PREFIX at it (its `win64/vc14/bin` must be on PATH at runtime, with \
+             tbb12.dll and jemalloc.dll from the matching 3rdparty package beside it)"
         }
         _ => "Install OpenCASCADE >= 7.7 via your package manager or vcpkg",
     }
