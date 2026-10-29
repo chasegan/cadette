@@ -27,6 +27,8 @@ jobs:
           - os: windows-latest
             label: Windows
     runs-on: ${{ matrix.os }}
+    # A hung test must not hold a runner for GitHub's six-hour default.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
 
@@ -40,10 +42,14 @@ jobs:
 
       - name: Restore vcpkg binary cache
         if: runner.os == 'Windows'
-        # OCCT compiles for ~40-60 min cold; vcpkg's binary cache makes later
-        # runs restore it in seconds. A per-run key with a shared restore
-        # prefix means every run saves its (possibly updated) archives.
-        uses: actions/cache@v4
+        # OCCT compiles for 1-2 h cold; vcpkg's binary cache makes later runs
+        # restore it in seconds. A per-run key with a shared restore prefix
+        # means every run saves its (possibly updated) archives. Restore and
+        # save are separate steps: the save runs right after the install, so
+        # a test failure, a hang hitting the timeout or a cancel later in the
+        # job (all of which skip an action's post step) can't throw the build
+        # away.
+        uses: actions/cache/restore@v4
         with:
           path: vcpkg-binary-cache
           key: vcpkg-occt-x64-windows-${{ github.run_id }}
@@ -58,6 +64,13 @@ jobs:
           vcpkg install opencascade --triplet x64-windows
           # Test executables load the OCCT DLLs from PATH at runtime.
           Add-Content $env:GITHUB_PATH "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin"
+
+      - name: Save vcpkg binary cache
+        if: runner.os == 'Windows'
+        uses: actions/cache/save@v4
+        with:
+          path: vcpkg-binary-cache
+          key: vcpkg-occt-x64-windows-${{ github.run_id }}
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -76,4 +89,6 @@ jobs:
         # build.rs derives the OCCT prefix from VCPKG_INSTALLATION_ROOT, which
         # the runner predefines. cdt-render is excluded until its wgpu-device
         # tests are verified against the runner's WARP adapter.
-        run: cargo test --workspace --locked --exclude cdt-render
+        # One test at a time, so a hang is named by the last line of the log
+        # instead of hiding among the tests in flight on other threads.
+        run: cargo test --workspace --locked --exclude cdt-render --no-fail-fast -- --test-threads=1
