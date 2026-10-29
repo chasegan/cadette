@@ -2,8 +2,8 @@ name: CI
 
 # Test on every push and PR. macOS gets the full suite (the render crate's
 # tests create a real wgpu device, which the runner's Metal backend provides).
-# Windows provisions OCCT via the runner's preinstalled vcpkg and skips the
-# render crate until WARP (software DX12) support there is verified.
+# Windows downloads OCCT's official release binaries and skips the render
+# crate until WARP (software DX12) support there is verified.
 on:
   push:
     paths-ignore: ['docs/**', 'md/**', 'branding/**', '*.md']
@@ -38,37 +38,23 @@ jobs:
           brew untap aws/tap 2>/dev/null || true
           brew install opencascade
 
-      - name: Restore vcpkg binary cache
+      - name: Install OpenCASCADE (official Windows package)
         if: runner.os == 'Windows'
-        # OCCT compiles for 1-2 h cold; vcpkg's binary cache makes later runs
-        # restore it in seconds. A per-run key with a shared restore prefix
-        # means every run saves its (possibly updated) archives. Restore and
-        # save are separate steps: the save runs right after the install, so
-        # a test failure, a hang hitting the timeout or a cancel later in the
-        # job (all of which skip an action's post step) can't throw the build
-        # away.
-        uses: actions/cache/restore@v4
-        with:
-          path: vcpkg-binary-cache
-          key: vcpkg-occt-x64-windows-${{ github.run_id }}
-          restore-keys: vcpkg-occt-x64-windows-
-
-      - name: Install OpenCASCADE (vcpkg)
-        if: runner.os == 'Windows'
+        # vcpkg builds OCCT from source, close to two hours cold; OCCT's own
+        # release binaries download in seconds. Pinned to the version vcpkg's
+        # port currently ships, so this tests what Windows builders get.
+        # build.rs recognises the package layout (inc/, win64/vc14/{lib,bin}).
         env:
-          VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-binary-cache
+          OCCT_VERSION: 8.0.1
         run: |
-          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
-          vcpkg install opencascade --triplet x64-windows
+          $url = "https://github.com/Open-Cascade-SAS/OCCT/releases/download/V$env:OCCT_VERSION/opencascade-release-no-pch.zip"
+          Invoke-WebRequest -Uri $url -OutFile occt.zip
+          Expand-Archive occt.zip -DestinationPath occt-outer
+          Expand-Archive "occt-outer\opencascade-$env:OCCT_VERSION-vc14-64.zip" -DestinationPath occt
+          $prefix = "$PWD\occt\opencascade-$env:OCCT_VERSION-vc14-64"
+          Add-Content $env:GITHUB_ENV "CDT_OCCT_PREFIX=$prefix"
           # Test executables load the OCCT DLLs from PATH at runtime.
-          Add-Content $env:GITHUB_PATH "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin"
-
-      - name: Save vcpkg binary cache
-        if: runner.os == 'Windows'
-        uses: actions/cache/save@v4
-        with:
-          path: vcpkg-binary-cache
-          key: vcpkg-occt-x64-windows-${{ github.run_id }}
+          Add-Content $env:GITHUB_PATH "$prefix\win64\vc14\bin"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -88,9 +74,8 @@ jobs:
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
         timeout-minutes: 30
-        # build.rs derives the OCCT prefix from VCPKG_INSTALLATION_ROOT, which
-        # the runner predefines. cdt-render is excluded until its wgpu-device
-        # tests are verified against the runner's WARP adapter.
+        # cdt-render is excluded until its wgpu-device tests are verified
+        # against the runner's WARP adapter.
         # One test at a time, so a hang is named by the last line of the log
         # instead of hiding among the tests in flight on other threads.
         run: cargo test --workspace --locked --exclude cdt-render --no-fail-fast -- --test-threads=1

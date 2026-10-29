@@ -8,6 +8,10 @@
 //!      `/usr` on Linux (needs OCCT >= 7.8 — TKDESTEP doesn't exist before).
 //!
 //! Headers live in `<prefix>/include/opencascade`; libraries in `<prefix>/lib`.
+//! The official Windows packages from OCCT's GitHub releases
+//! (`opencascade-<version>-vc14-64.zip`) lay out differently — headers in
+//! `<prefix>/inc`, libraries in `<prefix>/win64/vc14/lib`, DLLs in
+//! `<prefix>/win64/vc14/bin` — and are recognised too.
 
 use std::path::Path;
 
@@ -63,7 +67,11 @@ fn occt_prefix(target_os: &str) -> String {
 fn install_hint(target_os: &str) -> &'static str {
     match target_os {
         "macos" => "Install with `brew install opencascade`",
-        "windows" => "Install with `vcpkg install opencascade --triplet x64-windows`",
+        "windows" => {
+            "Install with `vcpkg install opencascade --triplet x64-windows`, or unzip an \
+             official `opencascade-<version>-vc14-64.zip` from OCCT's GitHub releases and \
+             point CDT_OCCT_PREFIX at it (its `win64/vc14/bin` must be on PATH at runtime)"
+        }
         _ => "Install OpenCASCADE >= 7.7 via your package manager or vcpkg",
     }
 }
@@ -74,8 +82,15 @@ fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let prefix = occt_prefix(&target_os);
 
-    let include = format!("{prefix}/include/opencascade");
-    let libdir = format!("{prefix}/lib");
+    // An official OCCT Windows package, or an installed layout (Homebrew,
+    // vcpkg, a `make install`).
+    let (include, libdir) = if Path::new(&format!("{prefix}/inc")).is_dir()
+        && Path::new(&format!("{prefix}/win64/vc14/lib")).is_dir()
+    {
+        (format!("{prefix}/inc"), format!("{prefix}/win64/vc14/lib"))
+    } else {
+        (format!("{prefix}/include/opencascade"), format!("{prefix}/lib"))
+    };
 
     if !Path::new(&include).is_dir() {
         panic!(
