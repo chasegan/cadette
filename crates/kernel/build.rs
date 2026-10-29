@@ -111,6 +111,16 @@ fn main() {
         // Keep windows.h's min/max macros from mangling OCCT headers.
         bridge.define("NOMINMAX", None);
     }
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        // MSVC compiles C++ WITHOUT unwinding semantics unless told otherwise
+        // (neither cc nor cxx-build adds the flag): try/catch still catches,
+        // but destructors of the frames unwound through are skipped. The
+        // bridge reports every OCCT failure by throwing through `guard`,
+        // whose lock_guard then never released the kernel mutex — the next
+        // kernel call from another thread waited forever (a test suite hang
+        // after any test that exercised an error path).
+        bridge.flag("/EHsc");
+    }
     bridge.compile("cdt_kernel_bridge");
 
     println!("cargo:rerun-if-changed=src/ffi.rs");
