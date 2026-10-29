@@ -1,0 +1,76 @@
+name: Diagnose a Windows hang
+
+# Runs one test binary (optionally one test) on Windows, and if it is still
+# running after `seconds`, attaches cdb and prints every thread's stack —
+# the only way to see where a test that never finishes is stuck, since a
+# job's log cannot be read until the job ends.
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: cargo package
+        default: cdt-kernel
+      test:
+        description: integration test target (empty = the package's unit tests)
+        default: chamfer_shell
+      filter:
+        description: test-name filter (empty = all)
+        default: a_shell_names_the_inner_walls
+      seconds:
+        description: how long to wait before dumping stacks
+        default: "120"
+
+jobs:
+  diagnose:
+    name: Stacks of a hung Windows test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/occt-windows
+        with:
+          version: "8.0.1"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build the test binary
+        id: build
+        run: |
+          $target = if ("${{ inputs.test }}" -ne "") { "--test", "${{ inputs.test }}" } else { @() }
+          $lines = cargo test -p ${{ inputs.package }} @target --no-run --message-format=json 2>$null
+          $exe = $lines | ForEach-Object { $_ | ConvertFrom-Json } |
+            Where-Object { $_.reason -eq "compiler-artifact" -and $_.executable } |
+            Select-Object -Last 1 -ExpandProperty executable
+          if (-not $exe) { throw "no test executable produced" }
+          "exe=$exe" | Add-Content $env:GITHUB_OUTPUT
+          Write-Host "test executable: $exe"
+
+      - name: Debugging Tools for Windows (cdb)
+        run: |
+          $cdb = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
+          if (-not (Test-Path $cdb)) {
+            choco install -y windbg --no-progress | Out-Null
+          }
+          if (-not (Test-Path $cdb)) { throw "cdb not found at $cdb" }
+          "cdb=$cdb" | Add-Content $env:GITHUB_ENV
+
+      - name: Run, wait, dump
+        run: |
+          $exe = "${{ steps.build.outputs.exe }}"
+          $args = @("${{ inputs.filter }}", "--test-threads=1", "--nocapture")
+          $p = Start-Process -FilePath $exe -ArgumentList $args -PassThru -NoNewWindow `
+                 -RedirectStandardOutput out.txt -RedirectStandardError err.txt
+          Wait-Process -Id $p.Id -Timeout ${{ inputs.seconds }} -ErrorAction SilentlyContinue
+          if ($p.HasExited) {
+            Write-Host "::notice::the test finished on its own (exit $($p.ExitCode))"
+          } else {
+            Write-Host "::warning::still running after ${{ inputs.seconds }} s — stacks of every thread:"
+            & $env:cdb -p $p.Id -lines -c "~*kv 60; q" 2>&1
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          }
+          Write-Host "=== test stdout ==="; Get-Content out.txt -ErrorAction SilentlyContinue
+          Write-Host "=== test stderr ==="; Get-Content err.txt -ErrorAction SilentlyContinue

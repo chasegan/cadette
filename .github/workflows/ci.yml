@@ -44,39 +44,9 @@ jobs:
         # release binaries download in seconds. Pinned to the version vcpkg's
         # port currently ships, so this tests what Windows builders get.
         # build.rs recognises the package layout (inc/, win64/vc14/{lib,bin}).
-        env:
-          OCCT_VERSION: 8.0.1
-        # The release assets are zips wrapping zips; 7-Zip (on the runner)
-        # unpacks the inner one in place. The official DLLs import third-party
-        # ones that live in the separate 3rdparty package: TKernel needs
-        # jemalloc and TBB, and TKDESTEP reaches TKService (via TKXCAF/TKV3d),
-        # which needs freetype, FreeImage, ffmpeg and OpenVR. Just those DLLs
-        # are pulled out of it, next to OCCT's.
-        run: |
-          $base = "https://github.com/Open-Cascade-SAS/OCCT/releases/download/V$env:OCCT_VERSION"
-          Invoke-WebRequest -Uri "$base/opencascade-release-no-pch.zip" -OutFile occt.zip
-          Invoke-WebRequest -Uri "$base/3rdparty-vc14-64.zip" -OutFile 3rdparty.zip
-          7z x -y occt.zip -ooutter | Out-Null
-          7z x -y "outter\opencascade-$env:OCCT_VERSION-vc14-64.zip" -oocct | Out-Null
-          7z x -y 3rdparty.zip -ooutter | Out-Null
-          $prefix = "$PWD\occt\opencascade-$env:OCCT_VERSION-vc14-64"
-          $bin = "$prefix\win64\vc14\bin"
-          $third = @(
-            "3rdparty-vc14-64\tbb-2021.13.0-x64\bin\tbb12.dll",
-            "3rdparty-vc14-64\jemalloc-vc14-64\bin\jemalloc.dll",
-            "3rdparty-vc14-64\freetype-2.13.3-x64\bin\freetype.dll",
-            "3rdparty-vc14-64\freeimage-3.18.0-x64\bin\FreeImage.dll",
-            "3rdparty-vc14-64\ffmpeg-3.3.4-64\bin\avcodec-57.dll",
-            "3rdparty-vc14-64\ffmpeg-3.3.4-64\bin\avformat-57.dll",
-            "3rdparty-vc14-64\ffmpeg-3.3.4-64\bin\avutil-55.dll",
-            "3rdparty-vc14-64\ffmpeg-3.3.4-64\bin\swscale-4.dll",
-            "3rdparty-vc14-64\openvr-1.14.15-64\bin\win64\openvr_api.dll"
-          )
-          7z e -y "outter\3rdparty-vc14-64.zip" "-o$bin" @third | Out-Null
-          Get-ChildItem $bin -Filter "*.dll" | Where-Object { $_.Name -notlike "TK*" }
-          Add-Content $env:GITHUB_ENV "CDT_OCCT_PREFIX=$prefix"
-          # Test executables load the OCCT DLLs from PATH at runtime.
-          Add-Content $env:GITHUB_PATH $bin
+        uses: ./.github/actions/occt-windows
+        with:
+          version: "8.0.1"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
